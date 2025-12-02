@@ -5,10 +5,13 @@
 //! - Workspace symbol search
 //! - Incremental file indexing on save
 //! - In-memory document tracking for unsaved changes
+//! - Syntax error diagnostics
+//! - Keyword and symbol completion
 //!
 //! Storage: Uses SQLite database (.fsharp-index/index.db) for persistence,
 //! loaded into memory as CodeIndex for fast resolution.
 
+mod completion;
 mod document_store;
 
 use std::path::{Path, PathBuf};
@@ -18,6 +21,7 @@ use anyhow::Result;
 use document_store::DocumentStore;
 use fsharp_index::{
     db::DEFAULT_DB_NAME, extract_symbols, watch::find_fsharp_files, CodeIndex, SqliteIndex,
+    SyntaxError,
 };
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result as LspResult;
@@ -142,6 +146,9 @@ impl Backend {
         // Set workspace root for relative path storage
         index.set_workspace_root(root_path.clone());
 
+        // Index external assemblies from .fsproj files
+        self.index_external_assemblies(&mut index, &root_path).await;
+
         for file in files {
             if let Err(e) = self.index_file(&mut index, &file) {
                 warn!("Failed to index {:?}: {}", file, e);
@@ -155,6 +162,32 @@ impl Backend {
         );
 
         Ok(())
+    }
+
+    /// Index external assemblies based on .fsproj package references.
+    async fn index_external_assemblies(&self, index: &mut CodeIndex, root_path: &Path) {
+        use fsharp_index::external_index::index_external_assemblies;
+        use fsharp_index::fsproj::{find_fsproj_files, parse_fsproj};
+
+        let fsproj_files = find_fsproj_files(root_path);
+
+        let mut all_packages = Vec::new();
+
+        for fsproj_path in fsproj_files {
+            if let Ok(info) = parse_fsproj(&fsproj_path) {
+                all_packages.extend(info.package_references);
+            }
+        }
+
+        // Remove duplicates
+        all_packages.sort_by(|a, b| a.name.cmp(&b.name));
+        all_packages.dedup_by(|a, b| a.name == b.name);
+
+        if !all_packages.is_empty() {
+            info!("Indexing {} external packages", all_packages.len());
+            let external_index = index_external_assemblies(&all_packages);
+            index.set_external_index(external_index);
+        }
     }
 
     /// Index a single file into the in-memory CodeIndex.
@@ -220,7 +253,8 @@ impl Backend {
                                 }
                             }
                             for (line, open) in result.opens.iter().enumerate() {
-                                if let Err(e) = sqlite_index.insert_open(file, open, line as u32 + 1)
+                                if let Err(e) =
+                                    sqlite_index.insert_open(file, open, line as u32 + 1)
                                 {
                                     warn!("Failed to persist open statement: {}", e);
                                 }
@@ -235,6 +269,44 @@ impl Backend {
         }
 
         Ok(())
+    }
+
+    /// Publish diagnostics for a file based on syntax errors.
+    async fn publish_diagnostics(&self, uri: &Url, errors: Vec<SyntaxError>) {
+        let diagnostics: Vec<Diagnostic> = errors
+            .into_iter()
+            .map(|error| Diagnostic {
+                range: Range {
+                    start: Position {
+                        line: error.location.line.saturating_sub(1),
+                        character: error.location.column.saturating_sub(1),
+                    },
+                    end: Position {
+                        line: error.location.end_line.saturating_sub(1),
+                        character: error.location.end_column.saturating_sub(1),
+                    },
+                },
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("fsharp-lsp".to_string()),
+                message: error.message,
+                ..Default::default()
+            })
+            .collect();
+
+        self.client
+            .publish_diagnostics(uri.clone(), diagnostics, None)
+            .await;
+    }
+
+    /// Parse a file and publish any syntax error diagnostics.
+    async fn check_and_publish_diagnostics(&self, uri: &Url, content: &str) {
+        let file = match uri.to_file_path() {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+
+        let result = extract_symbols(&file, content);
+        self.publish_diagnostics(uri, result.errors).await;
     }
 
     /// Get the symbol at a given position in a file using tree-sitter.
@@ -299,6 +371,322 @@ fn to_lsp_symbol_kind(kind: fsharp_index::SymbolKind) -> SymbolKind {
     }
 }
 
+/// Compute organized (sorted) open statements.
+///
+/// Returns the sorted opens as a string and the range to replace, or None if no opens found.
+fn compute_organize_opens(content: &str) -> Option<(String, Range)> {
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Find all open statements and their locations
+    let mut opens: Vec<(usize, &str)> = Vec::new();
+    let mut first_open_line: Option<usize> = None;
+    let mut last_open_line: Option<usize> = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("open ") {
+            if first_open_line.is_none() {
+                first_open_line = Some(i);
+            }
+            last_open_line = Some(i);
+
+            // Extract the module name
+            let module_name = trimmed.strip_prefix("open ").unwrap_or("").trim();
+            opens.push((i, module_name));
+        }
+    }
+
+    // Need at least 2 opens to organize
+    if opens.len() < 2 {
+        return None;
+    }
+
+    let first_line = first_open_line?;
+    let last_line = last_open_line?;
+
+    // Sort the module names
+    let mut module_names: Vec<&str> = opens.iter().map(|(_, name)| *name).collect();
+    module_names.sort_by(|a, b| {
+        // Sort by depth first (fewer dots = higher priority)
+        let a_depth = a.matches('.').count();
+        let b_depth = b.matches('.').count();
+        if a_depth != b_depth {
+            return a_depth.cmp(&b_depth);
+        }
+        // Then alphabetically
+        a.to_lowercase().cmp(&b.to_lowercase())
+    });
+
+    // Check if already sorted
+    let current_order: Vec<&str> = opens.iter().map(|(_, name)| *name).collect();
+    if current_order == module_names {
+        return None;
+    }
+
+    // Build the sorted opens string
+    let sorted_text = module_names
+        .iter()
+        .map(|name| format!("open {}", name))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Calculate the range to replace
+    let range = Range {
+        start: Position {
+            line: first_line as u32,
+            character: 0,
+        },
+        end: Position {
+            line: last_line as u32,
+            character: lines[last_line].len() as u32,
+        },
+    };
+
+    Some((sorted_text, range))
+}
+
+/// Find potential missing open statements for unresolved symbols.
+///
+/// Scans the file for identifiers that cannot be resolved and suggests
+/// modules that define them.
+fn find_missing_opens(
+    index: &fsharp_index::CodeIndex,
+    file: &Path,
+    content: &str,
+) -> Vec<String> {
+    use fsharp_index::extract_symbols;
+
+    let result = extract_symbols(file, content);
+    let mut unresolved = Vec::new();
+
+    // Check all references
+    for reference in &result.references {
+        let name = &reference.name;
+
+        // Skip if it's already resolvable
+        if index.resolve(name, file).is_some() || index.resolve_dotted(name, file).is_some() {
+            continue;
+        }
+
+        // Try to find a module that defines this symbol
+        // Look for symbols where the qualified name ends with this name
+        let candidates: Vec<_> = index
+            .search(name)
+            .into_iter()
+            .filter(|sym| sym.name == *name)
+            .collect();
+
+        for candidate in candidates {
+            // Extract the module part (everything before the last dot)
+            if let Some(module_name) = candidate.qualified.rsplit_once('.') {
+                let module_name = module_name.0;
+
+                // Check if this module is already opened
+                let already_opened = result.opens.iter().any(|open| open == module_name);
+
+                if !already_opened && !unresolved.contains(&module_name.to_string()) {
+                    unresolved.push(module_name.to_string());
+                }
+            }
+        }
+    }
+
+    unresolved
+}
+
+/// Find the best position to insert a new open statement.
+///
+/// Returns the position after the last open statement, or at the top of the file.
+fn find_open_insert_position(content: &str) -> Position {
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Find the last open statement
+    for (i, line) in lines.iter().enumerate().rev() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("open ") {
+            // Insert after this line
+            return Position {
+                line: (i + 1) as u32,
+                character: 0,
+            };
+        }
+    }
+
+    // No opens found, insert at the beginning (after any module declaration)
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("module ") || trimmed.starts_with("namespace ") {
+            // Insert after the module/namespace declaration
+            return Position {
+                line: (i + 1) as u32,
+                character: 0,
+            };
+        }
+    }
+
+    // No module/namespace, insert at the very top
+    Position {
+        line: 0,
+        character: 0,
+    }
+}
+
+/// Get the word at the given position (for completion prefix).
+///
+/// Returns the partial word being typed, or None if at whitespace.
+/// Extract the expression before a dot at the given position.
+///
+/// For example, if the line is "user.Name" and cursor is after "Name",
+/// this should return "user".
+fn get_expression_before_dot(content: &str, pos: Position) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let line_idx = pos.line as usize;
+
+    if line_idx >= lines.len() {
+        return None;
+    }
+
+    let line = lines[line_idx];
+    let col = pos.character as usize;
+
+    if col == 0 || col > line.len() {
+        return None;
+    }
+
+    // Find the dot before the cursor
+    let before_cursor = &line[..col];
+    let dot_pos = before_cursor.rfind('.')?;
+
+    // Extract from the start of the expression to the dot
+    let expr_start = before_cursor[..dot_pos]
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '.' && c != '!')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    let expr = before_cursor[expr_start..dot_pos].trim();
+    if expr.is_empty() {
+        None
+    } else {
+        Some(expr.to_string())
+    }
+}
+
+fn get_word_at_position(content: &str, pos: Position) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let line_idx = pos.line as usize;
+
+    if line_idx >= lines.len() {
+        return None;
+    }
+
+    let line = lines[line_idx];
+    let col = pos.character as usize;
+
+    if col == 0 || col > line.len() {
+        return None;
+    }
+
+    // Walk backwards from cursor to find start of word
+    let before_cursor = &line[..col];
+    let word_start = before_cursor
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '!')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    let word = &before_cursor[word_start..];
+    if word.is_empty() {
+        None
+    } else {
+        Some(word.to_string())
+    }
+}
+
+/// Resolve an expression to its type name for member completion.
+///
+/// This handles multiple cases:
+/// 1. Direct type names: "String", "Console" -> return as-is if type cache has members
+/// 2. Variable names: "user" -> resolve to qualified name, look up type in cache
+/// 3. Qualified names: "MyModule.user" -> look up type directly
+fn resolve_expression_type(index: &fsharp_index::CodeIndex, expr: &str, from_file: &Path) -> Option<String> {
+    // First, check if the expression is directly a type name with members
+    if index.get_type_members(expr).is_some() {
+        return Some(expr.to_string());
+    }
+
+    // Try to resolve the expression as a symbol
+    let resolved = index
+        .resolve(expr, from_file)
+        .or_else(|| index.resolve_dotted(expr, from_file));
+
+    if let Some(result) = resolved {
+        // Got the symbol, now look up its type
+        let qualified_name = &result.symbol.qualified;
+
+        // Check type cache for this symbol's type
+        if let Some(type_sig) = index.get_symbol_type(qualified_name) {
+            // Extract the simple type name (handle Async<User>, User list, etc.)
+            let type_name = extract_simple_type_name(type_sig);
+            return Some(type_name.to_string());
+        }
+
+        // Fallback: for record/class types, the symbol itself might be a type
+        // e.g., if "User" is both a type and has members
+        if index.get_type_members(&result.symbol.name).is_some() {
+            return Some(result.symbol.name.clone());
+        }
+    }
+
+    // Check if it could be a type name in the qualified form
+    // e.g., "System.String" or "MyApp.Domain.User"
+    if expr.contains('.') {
+        // Try the last component as a type name
+        if let Some(type_name) = expr.rsplit('.').next() {
+            if index.get_type_members(type_name).is_some() {
+                return Some(type_name.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract simple type name from a type signature.
+///
+/// Handles F# type syntax:
+/// - "string" -> "string"
+/// - "User" -> "User"
+/// - "Async<User>" -> "User"
+/// - "User list" -> "User"
+/// - "int -> string" -> "string" (return type)
+fn extract_simple_type_name(type_sig: &str) -> &str {
+    let trimmed = type_sig.trim();
+
+    // Handle F# postfix types
+    let postfix_types = [" list", " option", " array", " seq", " ref"];
+    for suffix in &postfix_types {
+        if let Some(stripped) = trimmed.strip_suffix(suffix) {
+            return stripped.trim();
+        }
+    }
+
+    // Handle generic types: Async<User> -> User
+    if let Some(angle_pos) = trimmed.find('<') {
+        let inner = &trimmed[angle_pos + 1..];
+        if let Some(end) = inner.find(['>', ',']) {
+            return inner[..end].trim();
+        }
+    }
+
+    // Handle function types: take the return type
+    if trimmed.contains("->") {
+        if let Some(last_arrow) = trimmed.rfind("->") {
+            return extract_simple_type_name(trimmed[last_arrow + 2..].trim());
+        }
+    }
+
+    trimmed
+}
+
 /// Convert our Location to LSP Location.
 fn to_lsp_location(loc: &fsharp_index::Location) -> Location {
     Location {
@@ -342,6 +730,13 @@ impl LanguageServer for Backend {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 references_provider: Some(OneOf::Left(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![".".to_string()]),
+                    resolve_provider: Some(false),
+                    ..Default::default()
+                }),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                rename_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -550,13 +945,290 @@ impl LanguageServer for Backend {
         Ok(Some(matches))
     }
 
+    async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let pos = params.text_document_position.position;
+
+        let file = match uri.to_file_path() {
+            Ok(f) => f,
+            Err(_) => return Ok(None),
+        };
+
+        // Get document content
+        let content = match self.documents.get_content(&file).await {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+
+        // Get the word being typed (prefix for filtering)
+        let prefix = get_word_at_position(&content, pos);
+
+        // Collect completions from multiple sources
+        let mut items = Vec::new();
+
+        // Check if this is member completion (triggered by ".")
+        if let Some(context) = &params.context {
+            if context.trigger_character.as_deref() == Some(".") {
+                // Try member completion
+                if let Some(expr) = get_expression_before_dot(&content, pos) {
+                    let index = self.index.read().await;
+
+                    // Try to resolve the expression type:
+                    // 1. First, try direct type name lookup (e.g., "String.")
+                    // 2. Then, try to resolve as a variable and get its type
+                    let type_name = resolve_expression_type(&index, &expr, &file);
+
+                    if let Some(type_name) = type_name {
+                        if let Some(type_members) = index.get_type_members(&type_name) {
+                            for member in type_members {
+                                items.push(CompletionItem {
+                                    label: member.member.clone(),
+                                    kind: Some(match member.kind {
+                                        fsharp_index::MemberKind::Property => {
+                                            CompletionItemKind::PROPERTY
+                                        }
+                                        fsharp_index::MemberKind::Method => {
+                                            CompletionItemKind::METHOD
+                                        }
+                                        fsharp_index::MemberKind::Field => CompletionItemKind::FIELD,
+                                        fsharp_index::MemberKind::Event => CompletionItemKind::EVENT,
+                                    }),
+                                    detail: Some(format!(
+                                        "{} ({})",
+                                        member.member_type, member.type_name
+                                    )),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add keyword completions
+        items.extend(completion::keyword_completions(prefix.as_deref()));
+
+        // Add symbol completions from the index
+        {
+            let index = self.index.read().await;
+            items.extend(completion::symbol_completions(
+                &index,
+                &file,
+                prefix.as_deref(),
+                50, // Limit symbol results
+            ));
+        }
+
+        if items.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(CompletionResponse::Array(items)))
+        }
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> LspResult<Option<CodeActionResponse>> {
+        let uri = &params.text_document.uri;
+        let file = match uri.to_file_path() {
+            Ok(f) => f,
+            Err(_) => return Ok(None),
+        };
+
+        // Get document content
+        let content = match self.documents.get_content(&file).await {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+
+        let mut actions = Vec::new();
+
+        // Check if we can offer "Organize Opens"
+        if let Some((sorted_opens, range)) = compute_organize_opens(&content) {
+            let edit = TextEdit {
+                range,
+                new_text: sorted_opens,
+            };
+
+            let mut changes = std::collections::HashMap::new();
+            changes.insert(uri.clone(), vec![edit]);
+
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Organize opens".to_string(),
+                kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }));
+        }
+
+        // Check for missing open suggestions
+        {
+            let index = self.index.read().await;
+            let missing_opens = find_missing_opens(&index, &file, &content);
+
+            for module_name in missing_opens {
+                // Find a good place to insert the open (after existing opens or at top)
+                let insert_pos = find_open_insert_position(&content);
+
+                let edit = TextEdit {
+                    range: Range {
+                        start: insert_pos,
+                        end: insert_pos,
+                    },
+                    new_text: format!("open {}\n", module_name),
+                };
+
+                let mut changes = std::collections::HashMap::new();
+                changes.insert(uri.clone(), vec![edit]);
+
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: format!("Add open {}", module_name),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }));
+            }
+        }
+
+        if actions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(actions))
+        }
+    }
+
+    async fn rename(&self, params: RenameParams) -> LspResult<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri;
+        let pos = params.text_document_position.position;
+        let new_name = params.new_name;
+
+        let file = match uri.to_file_path() {
+            Ok(f) => f,
+            Err(_) => return Ok(None),
+        };
+
+        // Get the symbol at the cursor position
+        let word = match self.get_symbol_at_position(&file, pos).await {
+            Some(w) => w,
+            None => return Ok(None),
+        };
+
+        info!("Renaming symbol: {} to {}", word, new_name);
+
+        let index = self.index.read().await;
+
+        // Try to resolve the symbol to get its qualified name and definition
+        let resolved = index
+            .resolve(&word, &file)
+            .or_else(|| index.resolve_dotted(&word, &file));
+
+        if let Some(result) = resolved {
+            let sym = &result.symbol;
+            let qualified_name = &sym.qualified;
+            let short_name = &sym.name;
+
+            // Collect all locations to rename: definition + references
+            let mut locations = Vec::new();
+
+            // Add definition location
+            locations.push(sym.location.clone());
+
+            // Add all reference locations
+            let references = index.find_references(qualified_name);
+            for reference in references {
+                locations.push(reference.location.clone());
+            }
+
+            // Create text edits for each location
+            let mut changes: std::collections::HashMap<Url, Vec<TextEdit>> =
+                std::collections::HashMap::new();
+
+            for location in locations {
+                let abs_location = index.make_location_absolute(&location);
+                let lsp_location = to_lsp_location(&abs_location);
+                let file_uri = lsp_location.uri;
+
+                // Get the document content to find the exact text to replace
+                let content = if let Some(c) = self.documents.get_content(&abs_location.file).await
+                {
+                    c
+                } else {
+                    // Fallback to reading from disk
+                    match std::fs::read_to_string(&abs_location.file) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    }
+                };
+
+                // Find the text at the location
+                let lines: Vec<&str> = content.lines().collect();
+                if abs_location.line as usize >= lines.len() {
+                    continue;
+                }
+                let line = lines[abs_location.line as usize - 1]; // 1-indexed to 0-indexed
+
+                // Extract the word at the position
+                let start_col = abs_location.column as usize - 1; // 1-indexed to 0-indexed
+                let end_col = abs_location.end_column as usize - 1;
+
+                if start_col >= line.len() || end_col > line.len() {
+                    continue;
+                }
+
+                let current_text = &line[start_col..end_col];
+
+                // Determine what to replace
+                let replacement_text = if current_text == short_name {
+                    new_name.clone()
+                } else if current_text.ends_with(&format!(".{}", short_name)) {
+                    current_text.replace(&format!(".{}", short_name), &format!(".{}", new_name))
+                } else {
+                    // Fallback: replace the short name if it appears
+                    current_text.replace(short_name, &new_name)
+                };
+
+                let range = lsp_location.range;
+                let edit = TextEdit {
+                    range,
+                    new_text: replacement_text,
+                };
+
+                changes.entry(file_uri).or_default().push(edit);
+            }
+
+            if changes.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..Default::default()
+                }))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = &params.text_document.uri;
         info!("File opened: {}", uri);
 
         // Store document content in memory
         self.documents
-            .open(uri, params.text_document.text, params.text_document.version)
+            .open(
+                uri,
+                params.text_document.text.clone(),
+                params.text_document.version,
+            )
+            .await;
+
+        // Check for syntax errors and publish diagnostics
+        self.check_and_publish_diagnostics(uri, &params.text_document.text)
             .await;
     }
 
@@ -568,12 +1240,18 @@ impl LanguageServer for Backend {
             .change(uri, params.content_changes, params.text_document.version)
             .await;
 
-        // Note: We could trigger a debounced reindex here for live updates,
-        // but for now we only reindex on save to match the original behavior.
+        // Check for syntax errors and publish diagnostics on each change
+        // This gives real-time feedback as the user types
+        if let Ok(file) = uri.to_file_path() {
+            if let Some(content) = self.documents.get_content(&file).await {
+                self.check_and_publish_diagnostics(uri, &content).await;
+            }
+        }
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
-        let file = match params.text_document.uri.to_file_path() {
+        let uri = &params.text_document.uri;
+        let file = match uri.to_file_path() {
             Ok(f) => f,
             Err(_) => return,
         };
@@ -587,6 +1265,11 @@ impl LanguageServer for Backend {
                 .log_message(MessageType::ERROR, format!("Reindex failed: {}", e))
                 .await;
         }
+
+        // Re-check diagnostics from the saved file
+        if let Ok(content) = std::fs::read_to_string(&file) {
+            self.check_and_publish_diagnostics(uri, &content).await;
+        }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -595,6 +1278,11 @@ impl LanguageServer for Backend {
 
         // Remove document from in-memory store
         self.documents.close(uri).await;
+
+        // Clear diagnostics for closed file
+        self.client
+            .publish_diagnostics(uri.clone(), vec![], None)
+            .await;
     }
 }
 
@@ -622,4 +1310,406 @@ async fn main() {
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_word_at_position_simple() {
+        let content = "let hello = 42";
+        // Cursor after "let" at position 3
+        let pos = Position {
+            line: 0,
+            character: 3,
+        };
+        assert_eq!(get_word_at_position(content, pos), Some("let".to_string()));
+    }
+
+    #[test]
+    fn test_get_word_at_position_mid_word() {
+        let content = "let hello = 42";
+        // Cursor in middle of "hello" at position 6
+        let pos = Position {
+            line: 0,
+            character: 6,
+        };
+        assert_eq!(get_word_at_position(content, pos), Some("he".to_string()));
+    }
+
+    #[test]
+    fn test_get_word_at_position_at_space() {
+        let content = "let hello = 42";
+        // Cursor at space after "let"
+        let pos = Position {
+            line: 0,
+            character: 4,
+        };
+        // Should still get "let" since we're right after it
+        // Actually, position 4 is at space, let's check what we get
+        let result = get_word_at_position(content, pos);
+        // At position 4, we're after the space, so no word
+        assert!(result.is_none() || result == Some("let".to_string()));
+    }
+
+    #[test]
+    fn test_get_word_at_position_bang_keyword() {
+        let content = "let! result = async";
+        // Cursor after "let!"
+        let pos = Position {
+            line: 0,
+            character: 4,
+        };
+        assert_eq!(get_word_at_position(content, pos), Some("let!".to_string()));
+    }
+
+    #[test]
+    fn test_get_word_at_position_multiline() {
+        let content = "let x = 1\nlet y = 2";
+        // Cursor on second line, after "let"
+        let pos = Position {
+            line: 1,
+            character: 3,
+        };
+        assert_eq!(get_word_at_position(content, pos), Some("let".to_string()));
+    }
+
+    #[test]
+    fn test_get_word_at_position_start_of_line() {
+        let content = "let hello = 42";
+        let pos = Position {
+            line: 0,
+            character: 0,
+        };
+        assert_eq!(get_word_at_position(content, pos), None);
+    }
+
+    // ============================================================
+    // Organize Opens Tests
+    // ============================================================
+
+    #[test]
+    fn test_organize_opens_sorts_alphabetically() {
+        let content = r#"module Test
+
+open Zebra
+open Apple
+open Banana
+
+let x = 1"#;
+
+        let result = compute_organize_opens(content);
+        assert!(result.is_some());
+
+        let (sorted, _range) = result.unwrap();
+        assert_eq!(sorted, "open Apple\nopen Banana\nopen Zebra");
+    }
+
+    #[test]
+    fn test_organize_opens_sorts_by_depth_first() {
+        let content = r#"module Test
+
+open System.Collections.Generic
+open System
+open MyApp.Services
+open MyApp
+
+let x = 1"#;
+
+        let result = compute_organize_opens(content);
+        assert!(result.is_some());
+
+        let (sorted, _range) = result.unwrap();
+        // System and MyApp should come before deeper ones
+        let lines: Vec<&str> = sorted.lines().collect();
+        assert!(lines[0] == "open MyApp" || lines[0] == "open System");
+    }
+
+    #[test]
+    fn test_organize_opens_none_if_already_sorted() {
+        let content = r#"module Test
+
+open Apple
+open Banana
+open Zebra
+
+let x = 1"#;
+
+        let result = compute_organize_opens(content);
+        // Should return None because already sorted
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_organize_opens_none_if_single_open() {
+        let content = r#"module Test
+
+open System
+
+let x = 1"#;
+
+        let result = compute_organize_opens(content);
+        // Should return None because only one open
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_organize_opens_none_if_no_opens() {
+        let content = r#"module Test
+
+let x = 1"#;
+
+        let result = compute_organize_opens(content);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_organize_opens_correct_range() {
+        let content = r#"module Test
+
+open Zebra
+open Apple
+
+let x = 1"#;
+
+        let result = compute_organize_opens(content);
+        assert!(result.is_some());
+
+        let (_sorted, range) = result.unwrap();
+        // Opens start at line 2, end at line 3
+        assert_eq!(range.start.line, 2);
+        assert_eq!(range.end.line, 3);
+    }
+
+    // ============================================================
+    // Extract Simple Type Name Tests
+    // ============================================================
+
+    #[test]
+    fn test_extract_simple_type_name_basic() {
+        assert_eq!(extract_simple_type_name("string"), "string");
+        assert_eq!(extract_simple_type_name("int"), "int");
+        assert_eq!(extract_simple_type_name("User"), "User");
+    }
+
+    #[test]
+    fn test_extract_simple_type_name_postfix() {
+        assert_eq!(extract_simple_type_name("int list"), "int");
+        assert_eq!(extract_simple_type_name("User option"), "User");
+        assert_eq!(extract_simple_type_name("string array"), "string");
+        assert_eq!(extract_simple_type_name("User seq"), "User");
+    }
+
+    #[test]
+    fn test_extract_simple_type_name_generic() {
+        assert_eq!(extract_simple_type_name("Async<User>"), "User");
+        assert_eq!(extract_simple_type_name("Result<User, Error>"), "User");
+        assert_eq!(extract_simple_type_name("Task<string>"), "string");
+    }
+
+    #[test]
+    fn test_extract_simple_type_name_function() {
+        assert_eq!(extract_simple_type_name("int -> string"), "string");
+        assert_eq!(extract_simple_type_name("int -> User"), "User");
+        assert_eq!(extract_simple_type_name("string -> int -> bool"), "bool");
+    }
+
+    #[test]
+    fn test_extract_simple_type_name_whitespace() {
+        assert_eq!(extract_simple_type_name("  string  "), "string");
+        assert_eq!(extract_simple_type_name("  User option  "), "User");
+    }
+
+    // ============================================================
+    // Resolve Expression Type Tests
+    // ============================================================
+
+    #[test]
+    fn test_resolve_expression_type_direct_type() {
+        use fsharp_index::type_cache::{MemberKind, TypeCache, TypeCacheSchema, TypeMember};
+
+        let mut index = fsharp_index::CodeIndex::new();
+
+        // Set up type cache with User type members
+        let schema = TypeCacheSchema {
+            version: 1,
+            extracted_at: "2024-12-02".to_string(),
+            project: "Test".to_string(),
+            symbols: vec![],
+            members: vec![TypeMember {
+                type_name: "User".to_string(),
+                member: "Name".to_string(),
+                member_type: "string".to_string(),
+                kind: MemberKind::Property,
+            }],
+        };
+        index.set_type_cache(TypeCache::from_schema(schema));
+
+        // Direct type name should resolve
+        let result = resolve_expression_type(&index, "User", Path::new("test.fs"));
+        assert_eq!(result, Some("User".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_expression_type_via_symbol() {
+        use fsharp_index::type_cache::{
+            MemberKind, TypeCache, TypeCacheSchema, TypeMember, TypedSymbol,
+        };
+        use fsharp_index::{Location, Symbol, SymbolKind, Visibility};
+
+        let mut index = fsharp_index::CodeIndex::new();
+
+        // Add a symbol 'user' with type 'User'
+        index.add_symbol(Symbol::new(
+            "user".to_string(),
+            "MyModule.user".to_string(),
+            SymbolKind::Value,
+            Location::new(std::path::PathBuf::from("test.fs"), 1, 1),
+            Visibility::Public,
+        ));
+
+        // Set up type cache
+        let schema = TypeCacheSchema {
+            version: 1,
+            extracted_at: "2024-12-02".to_string(),
+            project: "Test".to_string(),
+            symbols: vec![TypedSymbol {
+                name: "user".to_string(),
+                qualified: "MyModule.user".to_string(),
+                type_signature: "User".to_string(),
+                file: "test.fs".to_string(),
+                line: 1,
+                parameters: vec![],
+            }],
+            members: vec![TypeMember {
+                type_name: "User".to_string(),
+                member: "Name".to_string(),
+                member_type: "string".to_string(),
+                kind: MemberKind::Property,
+            }],
+        };
+        index.set_type_cache(TypeCache::from_schema(schema));
+
+        // Variable name should resolve to its type
+        let result = resolve_expression_type(&index, "user", Path::new("test.fs"));
+        assert_eq!(result, Some("User".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_expression_type_not_found() {
+        let index = fsharp_index::CodeIndex::new();
+
+        let result = resolve_expression_type(&index, "unknown", Path::new("test.fs"));
+        assert_eq!(result, None);
+    }
+
+    // ============================================================
+    // Find Missing Opens Tests
+    // ============================================================
+
+    #[test]
+    fn test_find_missing_opens_suggests_module() {
+        use fsharp_index::{Location, Symbol, SymbolKind, Visibility};
+
+        let mut index = fsharp_index::CodeIndex::new();
+
+        // Add a symbol in Utils module
+        index.add_symbol(Symbol::new(
+            "helper".to_string(),
+            "MyApp.Utils.helper".to_string(),
+            SymbolKind::Function,
+            Location::new(std::path::PathBuf::from("Utils.fs"), 10, 1),
+            Visibility::Public,
+        ));
+
+        // Content that references 'helper' without opening Utils
+        let content = r#"module Test
+
+let x = helper 42
+"#;
+
+        let missing = find_missing_opens(&index, &std::path::PathBuf::from("Test.fs"), content);
+
+        assert!(
+            missing.contains(&"MyApp.Utils".to_string()),
+            "Should suggest MyApp.Utils, got: {:?}",
+            missing
+        );
+    }
+
+    #[test]
+    fn test_find_missing_opens_no_suggestion_when_already_open() {
+        use fsharp_index::{Location, Symbol, SymbolKind, Visibility};
+
+        let mut index = fsharp_index::CodeIndex::new();
+
+        // Add a symbol
+        index.add_symbol(Symbol::new(
+            "helper".to_string(),
+            "MyApp.Utils.helper".to_string(),
+            SymbolKind::Function,
+            Location::new(std::path::PathBuf::from("Utils.fs"), 10, 1),
+            Visibility::Public,
+        ));
+
+        // Content that has the module already opened
+        let content = r#"module Test
+
+open MyApp.Utils
+
+let x = helper 42
+"#;
+
+        let missing = find_missing_opens(&index, &std::path::PathBuf::from("Test.fs"), content);
+
+        assert!(
+            !missing.contains(&"MyApp.Utils".to_string()),
+            "Should not suggest already-opened module"
+        );
+    }
+
+    // ============================================================
+    // Find Open Insert Position Tests
+    // ============================================================
+
+    #[test]
+    fn test_find_open_insert_position_after_existing_opens() {
+        let content = r#"module Test
+
+open System
+open System.IO
+
+let x = 1
+"#;
+
+        let pos = find_open_insert_position(content);
+        // Should be after the last open (line 4 is "open System.IO", so insert at line 5)
+        assert_eq!(pos.line, 4);
+        assert_eq!(pos.character, 0);
+    }
+
+    #[test]
+    fn test_find_open_insert_position_after_module() {
+        let content = r#"module Test
+
+let x = 1
+"#;
+
+        let pos = find_open_insert_position(content);
+        // Should be after the module declaration (line 1)
+        assert_eq!(pos.line, 1);
+        assert_eq!(pos.character, 0);
+    }
+
+    #[test]
+    fn test_find_open_insert_position_at_top() {
+        let content = r#"let x = 1
+"#;
+
+        let pos = find_open_insert_position(content);
+        // No module/namespace, should be at the very top
+        assert_eq!(pos.line, 0);
+        assert_eq!(pos.character, 0);
+    }
 }

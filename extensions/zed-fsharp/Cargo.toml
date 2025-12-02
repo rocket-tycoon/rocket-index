@@ -5,6 +5,10 @@ edition = "2021"
 license = "MIT"
 description = "F# language support for Zed with fast, stable indexing"
 
+# This extension is built separately from the main workspace
+# (requires wasm32-wasip1 target)
+[workspace]
+
 [lib]
 crate-type = ["cdylib"]
 

@@ -3,6 +3,16 @@
 //! This extension provides:
 //! - Syntax highlighting via tree-sitter-fsharp
 //! - Language server integration via fsharp-lsp
+//!
+//! ## Local Development
+//!
+//! Set the `FSHARP_LSP_PATH` environment variable to use a local binary:
+//! ```bash
+//! export FSHARP_LSP_PATH="/path/to/fsharp-tools/target/release/fsharp-lsp"
+//! ```
+//!
+//! Then restart Zed. The extension will use your local binary instead of
+//! downloading from GitHub.
 
 use std::fs;
 use zed_extension_api::{self as zed, Result};
@@ -23,7 +33,7 @@ impl zed::Extension for FSharpExtension {
         _language_server_id: &zed::LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
-        let binary_path = self.ensure_binary()?;
+        let binary_path = self.ensure_binary(worktree)?;
 
         Ok(zed::Command {
             command: binary_path,
@@ -34,8 +44,12 @@ impl zed::Extension for FSharpExtension {
 }
 
 impl FSharpExtension {
-    /// Ensure the fsharp-lsp binary is available, downloading it if necessary.
-    fn ensure_binary(&mut self) -> Result<String> {
+    /// Ensure the fsharp-lsp binary is available.
+    ///
+    /// Resolution order:
+    /// 1. FSHARP_LSP_PATH environment variable (for local development)
+    /// 2. Download from GitHub releases (for production)
+    fn ensure_binary(&mut self, worktree: &zed::Worktree) -> Result<String> {
         // Return cached path if available and valid
         if let Some(path) = &self.cached_binary_path {
             if fs::metadata(path).is_ok() {
@@ -43,6 +57,41 @@ impl FSharpExtension {
             }
         }
 
+        // Check for local development override
+        if let Some(path) = self.check_local_binary(worktree) {
+            self.cached_binary_path = Some(path.clone());
+            return Ok(path);
+        }
+
+        // Fall back to downloading from GitHub
+        self.download_binary()
+    }
+
+    /// Check for a local binary via FSHARP_LSP_PATH environment variable.
+    fn check_local_binary(&self, worktree: &zed::Worktree) -> Option<String> {
+        let env = worktree.shell_env();
+
+        // Check FSHARP_LSP_PATH environment variable
+        for (key, value) in &env {
+            if key == "FSHARP_LSP_PATH" && !value.is_empty() {
+                // Verify the binary exists
+                if fs::metadata(value).is_ok() {
+                    eprintln!("fsharp-lsp: using local binary at {}", value);
+                    return Some(value.clone());
+                } else {
+                    eprintln!(
+                        "fsharp-lsp: FSHARP_LSP_PATH set to '{}' but binary not found",
+                        value
+                    );
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Download the fsharp-lsp binary from GitHub releases.
+    fn download_binary(&mut self) -> Result<String> {
         // Determine platform and architecture
         let (platform, arch) = zed::current_platform();
 
