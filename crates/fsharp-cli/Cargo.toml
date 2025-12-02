@@ -1,0 +1,20 @@
+[package]
+name = "fsharp-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Command-line tool for F# codebase indexing and navigation"
+
+[[bin]]
+name = "fsharp-index"
+path = "src/main.rs"
+
+[dependencies]
+fsharp-index.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

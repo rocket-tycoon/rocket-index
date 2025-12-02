@@ -1,0 +1,16 @@
+id = "fsharp"
+name = "F#"
+description = "F# language support with fast, stable indexing"
+version = "0.1.0"
+schema_version = 1
+authors = ["Alastair"]
+repository = "https://github.com/yourname/fsharp-tools"
+
+[language_servers.fsharp-lsp]
+name = "F# Language Server"
+languages = ["F#"]
+
+[grammars.fsharp]
+repository = "https://github.com/ionide/tree-sitter-fsharp"
+rev = "main"
+path = "fsharp"

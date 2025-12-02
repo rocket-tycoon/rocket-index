@@ -1,0 +1,17 @@
+[package]
+name = "zed-fsharp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "F# language support for Zed with fast, stable indexing"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

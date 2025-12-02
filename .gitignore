@@ -1,0 +1,47 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Cargo lock file (optional, often included for binaries)
+# Cargo.lock
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build artifacts
+*.pdb
+*.exe
+*.dll
+*.so
+*.dylib
+
+# fsharp-index artifacts
+.fsharp-index/
+
+# Zed extension build artifacts
+extensions/zed-fsharp/target/
+*.wasm
+
+# Test artifacts
+*.log
+
+# Environment files
+.env
+.env.local
+
+# Coverage reports
+*.lcov
+coverage/
+
+# Profiling
+*.profraw
+*.profdata
+
+# Temporary files
+*.tmp
+*.temp

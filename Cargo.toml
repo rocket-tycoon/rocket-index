@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/fsharp-index",
+    "crates/fsharp-cli",
+    "crates/fsharp-lsp",
+]
+# Note: zed-fsharp extension is built separately with its own toolchain
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Alastair"]
+repository = "https://github.com/yourname/fsharp-tools"
+
+[workspace.dependencies]
+# Shared dependencies across crates
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# tree-sitter for parsing
+tree-sitter = "0.24"
+tree-sitter-fsharp = "0.1.0"
+
+# LSP dependencies
+tower-lsp = "0.20"
+
+# CLI dependencies
+clap = { version = "4.0", features = ["derive"] }
+
+# File watching
+notify = "6.0"
+
+# Internal crates
+fsharp-index = { path = "crates/fsharp-index" }
