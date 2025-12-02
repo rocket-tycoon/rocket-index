@@ -57,7 +57,7 @@ fn build_creates_sqlite_index_with_metadata() -> TestResult {
 
     Command::cargo_bin("fsharp-index")?
         .current_dir(workspace.root())
-        .args(["build", "--root", "."])
+        .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success()
         .stdout(contains("Indexed"));
@@ -79,13 +79,13 @@ fn def_command_reads_from_sqlite_index() -> TestResult {
 
     Command::cargo_bin("fsharp-index")?
         .current_dir(workspace.root())
-        .args(["build", "--root", "."])
+        .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
     Command::cargo_bin("fsharp-index")?
         .current_dir(workspace.root())
-        .args(["def", "DefinitionSmoke.hello"])
+        .args(["def", "DefinitionSmoke.hello", "--format", "text"])
         .assert()
         .success()
         .stdout(contains("App.fs"));
@@ -164,7 +164,7 @@ fn multi_file_project_indexes_all_symbols() -> TestResult {
     // Build the index
     Command::cargo_bin("fsharp-index")?
         .current_dir(workspace.root())
-        .args(["build", "--root", "."])
+        .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success()
         .stdout(contains("3 files"))
@@ -180,14 +180,14 @@ fn symbol_search_finds_types_and_functions() -> TestResult {
     // Build the index
     Command::cargo_bin("fsharp-index")?
         .current_dir(workspace.root())
-        .args(["build", "--root", "."])
+        .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
     // Search for User type
     Command::cargo_bin("fsharp-index")?
         .current_dir(workspace.root())
-        .args(["symbols", "*User*"])
+        .args(["symbols", "*User*", "--format", "text"])
         .assert()
         .success()
         .stdout(contains("MyApp.Domain.User"))
@@ -196,7 +196,7 @@ fn symbol_search_finds_types_and_functions() -> TestResult {
     // Search for functions
     Command::cargo_bin("fsharp-index")?
         .current_dir(workspace.root())
-        .args(["symbols", "*process*"])
+        .args(["symbols", "*process*", "--format", "text"])
         .assert()
         .success()
         .stdout(contains("MyApp.Services.processOrder"));
@@ -211,14 +211,14 @@ fn def_resolves_across_modules() -> TestResult {
     // Build the index
     Command::cargo_bin("fsharp-index")?
         .current_dir(workspace.root())
-        .args(["build", "--root", "."])
+        .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
     // Look up a function in Services that uses Domain
     Command::cargo_bin("fsharp-index")?
         .current_dir(workspace.root())
-        .args(["def", "MyApp.Services.processOrder", "--context"])
+        .args(["def", "MyApp.Services.processOrder", "--context", "--format", "text"])
         .assert()
         .success()
         .stdout(contains("Services.fs"))
@@ -234,14 +234,14 @@ fn spider_traverses_dependencies() -> TestResult {
     // Build the index
     Command::cargo_bin("fsharp-index")?
         .current_dir(workspace.root())
-        .args(["build", "--root", "."])
+        .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
     // Spider from main should find dependencies
     Command::cargo_bin("fsharp-index")?
         .current_dir(workspace.root())
-        .args(["spider", "MyApp.App.main", "--depth", "2"])
+        .args(["spider", "MyApp.App.main", "--depth", "2", "--format", "text"])
         .assert()
         .success()
         // Should find the user and order references

@@ -22,13 +22,22 @@ use fsharp_index::{
 use rayon::prelude::*;
 
 /// Exit codes for the CLI
+///
+/// These follow the documented contract in the AI Agent Integration Strategy:
+/// - 0: Success
+/// - 1: Not found (valid query, no results)
+/// - 2: Error (invalid input, missing file, etc.)
 mod exit_codes {
     pub const SUCCESS: u8 = 0;
-    pub const SYMBOL_NOT_FOUND: u8 = 1;
-    pub const INDEX_NOT_FOUND: u8 = 2;
-    #[allow(dead_code)]
-    pub const PARSE_ERROR: u8 = 3;
-    pub const INVALID_ARGS: u8 = 4;
+    pub const NOT_FOUND: u8 = 1;
+    pub const ERROR: u8 = 2;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum OutputFormat {
+    Json,
+    Pretty,
+    Text,
 }
 
 /// F# codebase indexing and navigation tool
@@ -39,9 +48,17 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// Output results as JSON
-    #[arg(long, global = true)]
+    /// Output format
+    #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Json)]
+    format: OutputFormat,
+
+    /// Output results as JSON (deprecated, use --format json)
+    #[arg(long, global = true, hide = true)]
     json: bool,
+
+    /// Suppress progress output
+    #[arg(short, long, global = true)]
+    quiet: bool,
 }
 
 #[derive(Subcommand)]
@@ -138,41 +155,56 @@ fn main() -> ExitCode {
         .init();
 
     let cli = Cli::parse();
+    
+    // Handle deprecated --json flag
+    let format = if cli.json {
+        OutputFormat::Json
+    } else {
+        cli.format
+    };
 
-    match run(cli) {
+    match run(cli.command, format, cli.quiet) {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
-            eprintln!("Error: {:#}", e);
-            ExitCode::from(exit_codes::INVALID_ARGS)
+            if format == OutputFormat::Json {
+                let error_json = serde_json::json!({
+                    "error": "CommandFailed",
+                    "message": e.to_string(),
+                });
+                eprintln!("{}", error_json);
+            } else {
+                eprintln!("Error: {:#}", e);
+            }
+            ExitCode::from(exit_codes::ERROR)
         }
     }
 }
 
-fn run(cli: Cli) -> Result<u8> {
-    match cli.command {
+fn run(command: Commands, format: OutputFormat, quiet: bool) -> Result<u8> {
+    match command {
         Commands::Build {
             root,
             extract_types,
-        } => cmd_build(&root, extract_types, cli.json),
-        Commands::Update { root } => cmd_update(&root, cli.json),
-        Commands::Def { symbol, context } => cmd_def(&symbol, context, cli.json),
-        Commands::Refs { file } => cmd_refs(&file, cli.json),
-        Commands::Spider { symbol, depth } => cmd_spider(&symbol, depth, cli.json),
-        Commands::Symbols { pattern } => cmd_symbols(&pattern, cli.json),
-        Commands::Watch { root } => cmd_watch(&root),
+        } => cmd_build(&root, extract_types, format, quiet),
+        Commands::Update { root } => cmd_update(&root, format, quiet),
+        Commands::Def { symbol, context } => cmd_def(&symbol, context, format, quiet),
+        Commands::Refs { file } => cmd_refs(&file, format, quiet),
+        Commands::Spider { symbol, depth } => cmd_spider(&symbol, depth, format, quiet),
+        Commands::Symbols { pattern } => cmd_symbols(&pattern, format, quiet),
+        Commands::Watch { root } => cmd_watch(&root, format, quiet),
         Commands::ExtractTypes {
             project,
             output,
             verbose,
-        } => cmd_extract_types(&project, output.as_deref(), verbose, cli.json),
+        } => cmd_extract_types(&project, output.as_deref(), verbose, format, quiet),
         Commands::TypeInfo { symbol, members_of } => {
-            cmd_type_info(symbol.as_deref(), members_of.as_deref(), cli.json)
+            cmd_type_info(symbol.as_deref(), members_of.as_deref(), format, quiet)
         }
     }
 }
 
 /// Build or rebuild the index using SQLite
-fn cmd_build(root: &Path, extract_types: bool, json: bool) -> Result<u8> {
+fn cmd_build(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool) -> Result<u8> {
     let root = root
         .canonicalize()
         .context("Failed to resolve root directory")?;
@@ -272,7 +304,7 @@ fn cmd_build(root: &Path, extract_types: bool, json: bool) -> Result<u8> {
         }
     }
 
-    if json {
+    if format == OutputFormat::Json {
         let output = serde_json::json!({
             "files": files.len(),
             "symbols": symbol_count,
@@ -282,7 +314,7 @@ fn cmd_build(root: &Path, extract_types: bool, json: bool) -> Result<u8> {
             "database": db_path.display().to_string(),
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
-    } else {
+    } else if !quiet {
         println!("Indexed {} files, {} symbols", files.len(), symbol_count);
         println!("Database: {}", db_path.display());
         if fsproj_count > 0 {
@@ -306,11 +338,11 @@ fn cmd_build(root: &Path, extract_types: bool, json: bool) -> Result<u8> {
     // Optionally run type extraction
     if extract_types {
         for fsproj_path in &fsproj_files {
-            if !json {
+            if !quiet && format != OutputFormat::Json {
                 println!("Extracting types from: {}", fsproj_path.display());
             }
             if let Err(e) = run_type_extraction(fsproj_path, None, false) {
-                if !json {
+                if !quiet && format != OutputFormat::Json {
                     eprintln!(
                         "Warning: Type extraction failed for {}: {}",
                         fsproj_path.display(),
@@ -397,7 +429,8 @@ fn cmd_extract_types(
     project: &PathBuf,
     output: Option<&std::path::Path>,
     verbose: bool,
-    json: bool,
+    format: OutputFormat,
+    _quiet: bool,
 ) -> Result<u8> {
     if !project.exists() {
         anyhow::bail!("Project file not found: {}", project.display());
@@ -405,7 +438,7 @@ fn cmd_extract_types(
 
     run_type_extraction(project, output, verbose)?;
 
-    if json {
+    if format == OutputFormat::Json {
         let output_dir = output.map(PathBuf::from).unwrap_or_else(|| {
             project
                 .parent()
@@ -427,13 +460,13 @@ fn cmd_extract_types(
 }
 
 /// Show type cache information
-fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, json: bool) -> Result<u8> {
+fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, format: OutputFormat, quiet: bool) -> Result<u8> {
     let index = load_sqlite_index()?;
 
     if let Some(sym) = symbol {
         match index.get_symbol_type(sym) {
             Ok(Some(type_sig)) => {
-                if json {
+                if format == OutputFormat::Json {
                     println!(
                         "{}",
                         serde_json::json!({
@@ -441,12 +474,12 @@ fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, json: bool) -> 
                             "type": type_sig,
                         })
                     );
-                } else {
+                } else if !quiet {
                     println!("{} : {}", sym, type_sig);
                 }
             }
             Ok(None) => {
-                if json {
+                if format == OutputFormat::Json {
                     println!(
                         "{}",
                         serde_json::json!({
@@ -457,7 +490,7 @@ fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, json: bool) -> 
                 } else {
                     eprintln!("Symbol not found or has no type info: {}", sym);
                 }
-                return Ok(exit_codes::SYMBOL_NOT_FOUND);
+                return Ok(exit_codes::NOT_FOUND);
             }
             Err(e) => {
                 anyhow::bail!("Failed to query symbol type: {}", e);
@@ -468,7 +501,7 @@ fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, json: bool) -> 
     if let Some(type_name) = members_of {
         match index.get_members(type_name) {
             Ok(members) if !members.is_empty() => {
-                if json {
+                if format == OutputFormat::Json {
                     let member_list: Vec<_> = members
                         .iter()
                         .map(|m| {
@@ -486,7 +519,7 @@ fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, json: bool) -> 
                             "members": member_list,
                         })
                     );
-                } else {
+                } else if !quiet {
                     println!("Members of {}:", type_name);
                     for m in members {
                         println!("  {} : {} ({})", m.member, m.member_type, m.kind);
@@ -494,7 +527,7 @@ fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, json: bool) -> 
                 }
             }
             Ok(_) => {
-                if json {
+                if format == OutputFormat::Json {
                     println!(
                         "{}",
                         serde_json::json!({
@@ -505,7 +538,7 @@ fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, json: bool) -> 
                 } else {
                     eprintln!("Type not found in type cache: {}", type_name);
                 }
-                return Ok(exit_codes::SYMBOL_NOT_FOUND);
+                return Ok(exit_codes::NOT_FOUND);
             }
             Err(e) => {
                 anyhow::bail!("Failed to query type members: {}", e);
@@ -518,7 +551,7 @@ fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, json: bool) -> 
         let symbol_count = index.count_symbols().unwrap_or(0);
         let file_count = index.list_files().map(|f| f.len()).unwrap_or(0);
 
-        if json {
+        if format == OutputFormat::Json {
             println!(
                 "{}",
                 serde_json::json!({
@@ -526,7 +559,7 @@ fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, json: bool) -> 
                     "file_count": file_count,
                 })
             );
-        } else {
+        } else if !quiet {
             println!("Index Info:");
             println!("  Symbols: {}", symbol_count);
             println!("  Files: {}", file_count);
@@ -537,14 +570,14 @@ fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, json: bool) -> 
 }
 
 /// Update the index incrementally
-fn cmd_update(root: &Path, json: bool) -> Result<u8> {
+fn cmd_update(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     let root = root
         .canonicalize()
         .context("Failed to resolve root directory")?;
 
     let db_path = root.join(".fsharp-index").join(DEFAULT_DB_NAME);
     if !db_path.exists() {
-        if json {
+        if format == OutputFormat::Json {
             println!(
                 "{}",
                 serde_json::json!({"error": "Index not found. Run 'build' first."})
@@ -552,7 +585,7 @@ fn cmd_update(root: &Path, json: bool) -> Result<u8> {
         } else {
             eprintln!("Index not found. Run 'fsharp-index build' first.");
         }
-        return Ok(exit_codes::INDEX_NOT_FOUND);
+        return Ok(exit_codes::NOT_FOUND);
     }
 
     let index = SqliteIndex::open(&db_path).context("Failed to open SQLite index")?;
@@ -582,7 +615,7 @@ fn cmd_update(root: &Path, json: bool) -> Result<u8> {
         }
     }
 
-    if json {
+    if format == OutputFormat::Json {
         println!(
             "{}",
             serde_json::json!({
@@ -590,7 +623,7 @@ fn cmd_update(root: &Path, json: bool) -> Result<u8> {
                 "symbols": index.count_symbols().unwrap_or(0),
             })
         );
-    } else {
+    } else if !quiet {
         println!("Updated {} files", updated_count);
     }
 
@@ -598,36 +631,36 @@ fn cmd_update(root: &Path, json: bool) -> Result<u8> {
 }
 
 /// Find the definition of a symbol
-fn cmd_def(symbol: &str, context: bool, json: bool) -> Result<u8> {
+fn cmd_def(symbol: &str, context: bool, format: OutputFormat, quiet: bool) -> Result<u8> {
     let index = load_sqlite_index()?;
 
     // Try exact match first
     if let Ok(Some(sym)) = index.find_by_qualified(symbol) {
-        output_location(&sym, context, json)?;
+        output_location(&sym, context, format, quiet)?;
         return Ok(exit_codes::SUCCESS);
     }
 
     // Try searching for partial matches
     if let Ok(matches) = index.search(symbol, 10) {
         if let Some(sym) = matches.first() {
-            output_location(sym, context, json)?;
+            output_location(sym, context, format, quiet)?;
             return Ok(exit_codes::SUCCESS);
         }
     }
 
-    if json {
+    if format == OutputFormat::Json {
         println!("{}", serde_json::json!({"error": "Symbol not found"}));
     } else {
         eprintln!("Symbol not found: {}", symbol);
     }
 
-    Ok(exit_codes::SYMBOL_NOT_FOUND)
+    Ok(exit_codes::NOT_FOUND)
 }
 
-fn output_location(sym: &fsharp_index::Symbol, context: bool, json: bool) -> Result<()> {
+fn output_location(sym: &fsharp_index::Symbol, context: bool, format: OutputFormat, quiet: bool) -> Result<()> {
     let loc = &sym.location;
 
-    if json {
+    if format == OutputFormat::Json {
         let mut output = serde_json::json!({
             "file": loc.file.display().to_string(),
             "line": loc.line,
@@ -644,7 +677,7 @@ fn output_location(sym: &fsharp_index::Symbol, context: bool, json: bool) -> Res
         }
 
         println!("{}", serde_json::to_string_pretty(&output)?);
-    } else {
+    } else if !quiet {
         println!("{}:{}:{}", loc.file.display(), loc.line, loc.column);
         if context {
             if let Some(line_content) = get_line_content(&loc.file, loc.line as usize) {
@@ -657,7 +690,7 @@ fn output_location(sym: &fsharp_index::Symbol, context: bool, json: bool) -> Res
 }
 
 /// List references in a file
-fn cmd_refs(file: &Path, json: bool) -> Result<u8> {
+fn cmd_refs(file: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     let index = load_sqlite_index()?;
     let file = file.canonicalize().context("Failed to resolve file path")?;
 
@@ -665,7 +698,7 @@ fn cmd_refs(file: &Path, json: bool) -> Result<u8> {
         .references_in_file(&file)
         .context("Failed to get references")?;
 
-    if json {
+    if format == OutputFormat::Json {
         let refs: Vec<_> = references
             .iter()
             .map(|r| {
@@ -677,7 +710,7 @@ fn cmd_refs(file: &Path, json: bool) -> Result<u8> {
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&refs)?);
-    } else {
+    } else if !quiet {
         for reference in references {
             // Try to resolve the reference
             if let Ok(Some(resolved)) = index.find_by_qualified(&reference.name) {
@@ -698,7 +731,7 @@ fn cmd_refs(file: &Path, json: bool) -> Result<u8> {
 }
 
 /// Spider from an entry point
-fn cmd_spider(symbol: &str, depth: usize, json: bool) -> Result<u8> {
+fn cmd_spider(symbol: &str, depth: usize, format: OutputFormat, quiet: bool) -> Result<u8> {
     // Spider still uses CodeIndex for now since it has complex resolution logic
     // TODO: Update spider to use SqliteIndex
     let index = load_code_index()?;
@@ -712,18 +745,18 @@ fn cmd_spider(symbol: &str, depth: usize, json: bool) -> Result<u8> {
         if let Some(first) = matches.first() {
             first.qualified.clone()
         } else {
-            if json {
+            if format == OutputFormat::Json {
                 println!("{}", serde_json::json!({"error": "Entry point not found"}));
             } else {
                 eprintln!("Entry point not found: {}", symbol);
             }
-            return Ok(exit_codes::SYMBOL_NOT_FOUND);
+            return Ok(exit_codes::NOT_FOUND);
         }
     };
 
     let result = spider(&index, &entry_qualified, depth);
 
-    if json {
+    if format == OutputFormat::Json {
         let nodes: Vec<_> = result
             .nodes
             .iter()
@@ -744,7 +777,7 @@ fn cmd_spider(symbol: &str, depth: usize, json: bool) -> Result<u8> {
             "unresolved": result.unresolved,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
-    } else {
+    } else if !quiet {
         print!("{}", format_spider_result(&result));
     }
 
@@ -752,11 +785,11 @@ fn cmd_spider(symbol: &str, depth: usize, json: bool) -> Result<u8> {
 }
 
 /// Search for symbols matching a pattern
-fn cmd_symbols(pattern: &str, json: bool) -> Result<u8> {
+fn cmd_symbols(pattern: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
     let index = load_sqlite_index()?;
     let matches = index.search(pattern, 100)?;
 
-    if json {
+    if format == OutputFormat::Json {
         let symbols: Vec<_> = matches
             .iter()
             .map(|s| {
@@ -771,7 +804,7 @@ fn cmd_symbols(pattern: &str, json: bool) -> Result<u8> {
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&symbols)?);
-    } else {
+    } else if !quiet {
         for sym in matches {
             println!(
                 "{:<40} {}:{}:{:<8} {}",
@@ -788,7 +821,7 @@ fn cmd_symbols(pattern: &str, json: bool) -> Result<u8> {
 }
 
 /// Watch for file changes
-fn cmd_watch(root: &Path) -> Result<u8> {
+fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     use fsharp_index::watch::FileWatcher;
 
     let root = root
@@ -796,8 +829,10 @@ fn cmd_watch(root: &Path) -> Result<u8> {
         .context("Failed to resolve root directory")?;
 
     // First, ensure index exists
-    println!("Building initial index...");
-    cmd_build(&root, false, false)?;
+    if !quiet {
+        println!("Building initial index...");
+    }
+    cmd_build(&root, false, format, quiet)?;
 
     let mut watcher = FileWatcher::new(&root).context("Failed to create file watcher")?;
     watcher.start().context("Failed to start watching")?;

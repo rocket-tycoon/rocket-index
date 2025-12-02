@@ -59,12 +59,18 @@ The binaries will be available at:
 
 ## CLI Usage
 
+All commands output JSON by default for easy integration with AI agents.
+
 ```bash
 # Build/rebuild the index for current directory
 $ fsharp-index build
 
-# Find definition
+# Find definition (JSON output)
 $ fsharp-index def "PaymentService.processPayment"
+# {"file": "src/Services.fs", "line": 42, "column": 5, ...}
+
+# Human-readable output
+$ fsharp-index def "PaymentService.processPayment" --format pretty
 
 # Spider from entry point
 $ fsharp-index spider "Program.main" --depth 5
@@ -72,11 +78,34 @@ $ fsharp-index spider "Program.main" --depth 5
 # List all symbols matching pattern
 $ fsharp-index symbols "Payment*"
 
-# Output as JSON for tooling
-$ fsharp-index def "PaymentService.processPayment" --json
+# Suppress progress output (useful in scripts)
+$ fsharp-index build --quiet
 ```
 
-### SQLite Storage & Type Extraction
+## AI Agent Integration
+
+`fsharp-tools` is designed to be the "SQLite of code indexing" for AI agents. It provides a CLI-first, JSON-native interface that works with any agent (Claude Code, Aider, Cursor, etc.).
+
+### CLI Contract
+
+- **Output**: JSON by default (`--format json`). Use `--format pretty` for human-readable output.
+- **Errors**: Printed to stderr in JSON format when using JSON output.
+- **Exit Codes**:
+    - `0`: Success
+    - `1`: Not found (valid query, no results)
+    - `2`: Error (invalid input, missing file, etc.)
+
+### Claude Code Integration
+
+Drop-in slash commands are available in `integrations/claude-code/`. Copy these to your `.claude/commands/` directory to enable:
+- `/fsharp-def`: Find symbol definition
+- `/fsharp-spider`: Spider dependency graph
+
+### Claude Skills
+
+A template for Claude Skills is available in `integrations/claude-skill/SKILL.md`.
+
+## SQLite Storage & Type Extraction
 
 The `fsharp-index build` command now writes every symbol, reference, and `open` directive into a SQLite database at `.fsharp-index/index.db`. This persistent store is used by both the CLI and the LSP so large workspaces can be loaded without rebuilding an in-memory index each run.
 
