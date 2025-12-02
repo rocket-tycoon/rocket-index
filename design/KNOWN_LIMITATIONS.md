@@ -80,6 +80,8 @@ items |> List.map (fun x -> x + 1)  // we can't resolve this
 - Cannot navigate to correct overload
 - Pipeline operators (`|>`, `>>`) may not resolve correctly
 
+**Workaround:** The optional type extraction pipeline can capture known signatures for hover display, but it does not perform inference. Use fsautocomplete when you need live type reasoning.
+
 ---
 
 ## 6. Limited Overload Resolution

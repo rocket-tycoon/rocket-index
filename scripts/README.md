@@ -37,35 +37,13 @@ dotnet fsi scripts/extract-types.fsx path/to/MyProject.fsproj --verbose
 
 ### Output
 
-The script creates a `cache.json` file in the output directory with the following structure:
+By default the script opens (or creates) `.fsharp-index/index.db` in the target workspace and writes semantic information directly into the SQLite schema used by `fsharp-index` and `fsharp-lsp`. Each run updates:
 
-```json
-{
-  "version": 1,
-  "extracted_at": "2024-12-02T10:30:00Z",
-  "project": "MyProject",
-  "symbols": [
-    {
-      "name": "processUser",
-      "qualified": "MyApp.UserService.processUser",
-      "type": "User -> Async<Result<Response, Error>>",
-      "file": "src/UserService.fs",
-      "line": 15,
-      "parameters": [
-        { "name": "user", "type": "User" }
-      ]
-    }
-  ],
-  "members": [
-    {
-      "type": "User",
-      "member": "Name",
-      "member_type": "string",
-      "kind": "property"
-    }
-  ]
-}
-```
+- `symbols.type_signature` (marking rows as `source = 'semantic'`)
+- `members` entries for properties/methods/events
+- `metadata` timestamps so tooling can detect staleness
+
+If you still need a standalone artifact (for CI inspection or custom tooling), pass `--output <dir>` and a legacy `cache.json` will be emitted alongside the SQLite updates. That JSON matches the schema described in [RFC-001](../design/RFC-001-hybrid-type-architecture.md) and can be re-imported later with the CLI.
 
 ### Integration
 
