@@ -61,6 +61,10 @@ pub struct CodeIndex {
     /// Optional type cache for type-aware resolution (not serialized - loaded separately)
     #[serde(skip)]
     type_cache: Option<TypeCache>,
+
+    /// Optional external index for .NET assembly symbols (not serialized - loaded separately)
+    #[serde(skip)]
+    external_index: Option<crate::external_index::ExternalIndex>,
 }
 
 impl CodeIndex {
@@ -352,6 +356,19 @@ impl CodeIndex {
         }
     }
 
+    /// Get all symbols defined in a specific module.
+    ///
+    /// Returns symbols whose qualified name starts with the given module prefix.
+    #[must_use]
+    pub fn symbols_in_module(&self, module: &str) -> Vec<&Symbol> {
+        let prefix = format!("{}.", module);
+        self.definitions
+            .iter()
+            .filter(|(qualified, _)| qualified.starts_with(&prefix) || *qualified == module)
+            .flat_map(|(_, symbols)| symbols.iter())
+            .collect()
+    }
+
     /// Get the total number of indexed symbols.
     pub fn symbol_count(&self) -> usize {
         self.definitions.values().map(|v| v.len()).sum()
@@ -488,6 +505,40 @@ impl CodeIndex {
     /// Returns `None` if no type cache is loaded, type not found, or member not found.
     pub fn get_type_member(&self, type_name: &str, member_name: &str) -> Option<&TypeMember> {
         self.type_cache.as_ref()?.get_member(type_name, member_name)
+    }
+
+    // =========================================================================
+    // External Index Integration
+    // =========================================================================
+
+    /// Set the external index for .NET assembly symbols.
+    pub fn set_external_index(&mut self, index: crate::external_index::ExternalIndex) {
+        self.external_index = Some(index);
+    }
+
+    /// Check if an external index is loaded.
+    pub fn has_external_index(&self) -> bool {
+        self.external_index.is_some()
+    }
+
+    /// Get a reference to the external index, if loaded.
+    pub fn external_index(&self) -> Option<&crate::external_index::ExternalIndex> {
+        self.external_index.as_ref()
+    }
+
+    /// Find an external symbol by qualified name.
+    pub fn find_external_symbol(
+        &self,
+        qualified_name: &str,
+    ) -> Option<&crate::external_index::ExternalSymbol> {
+        self.external_index.as_ref()?.find_symbol(qualified_name)
+    }
+
+    /// Search for external symbols matching a pattern.
+    pub fn search_external(&self, pattern: &str) -> Vec<&crate::external_index::ExternalSymbol> {
+        self.external_index
+            .as_ref()
+            .map_or(Vec::new(), |idx| idx.search(pattern))
     }
 }
 

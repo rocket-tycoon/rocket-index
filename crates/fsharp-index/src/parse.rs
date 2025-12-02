@@ -8,6 +8,15 @@ use std::path::Path;
 
 use crate::{Location, Reference, Symbol, SymbolKind, Visibility};
 
+/// A syntax error detected during parsing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntaxError {
+    /// Error message describing the issue
+    pub message: String,
+    /// Location in the source file
+    pub location: Location,
+}
+
 /// Result of extracting symbols from a single file.
 #[derive(Debug, Clone, Default)]
 pub struct ParseResult {
@@ -19,6 +28,8 @@ pub struct ParseResult {
     pub opens: Vec<String>,
     /// The module/namespace path for this file
     pub module_path: Option<String>,
+    /// Syntax errors detected during parsing
+    pub errors: Vec<SyntaxError>,
 }
 
 /// Extract symbols and references from F# source code.
@@ -28,7 +39,7 @@ pub struct ParseResult {
 /// * `source` - The F# source code content
 ///
 /// # Returns
-/// A `ParseResult` containing all extracted symbols and references.
+/// A `ParseResult` containing all extracted symbols, references, and syntax errors.
 pub fn extract_symbols(file: &Path, source: &str) -> ParseResult {
     let mut parser = tree_sitter::Parser::new();
 
@@ -49,6 +60,9 @@ pub fn extract_symbols(file: &Path, source: &str) -> ParseResult {
     let mut result = ParseResult::default();
     let root = tree.root_node();
 
+    // Extract syntax errors from the tree
+    extract_syntax_errors(&root, source.as_bytes(), file, &mut result.errors);
+
     extract_recursive(
         &root,
         source.as_bytes(),
@@ -58,6 +72,78 @@ pub fn extract_symbols(file: &Path, source: &str) -> ParseResult {
     );
 
     result
+}
+
+/// Extract syntax errors from the tree-sitter parse tree.
+///
+/// Tree-sitter marks parse errors in two ways:
+/// 1. ERROR nodes - explicit error recovery nodes
+/// 2. MISSING nodes - expected tokens that weren't found
+fn extract_syntax_errors(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    errors: &mut Vec<SyntaxError>,
+) {
+    // Check if this node is an error
+    if node.is_error() {
+        let message = generate_error_message(node, source);
+        errors.push(SyntaxError {
+            message,
+            location: node_to_location(file, node),
+        });
+        // Don't recurse into error nodes - the whole subtree is problematic
+        return;
+    }
+
+    // Check if this node is missing (parser expected something that wasn't there)
+    if node.is_missing() {
+        let expected = node.kind();
+        errors.push(SyntaxError {
+            message: format!("Expected {}", expected),
+            location: node_to_location(file, node),
+        });
+        return;
+    }
+
+    // Recurse into children
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            extract_syntax_errors(&child, source, file, errors);
+        }
+    }
+}
+
+/// Generate a human-readable error message for an ERROR node.
+fn generate_error_message(node: &tree_sitter::Node, source: &[u8]) -> String {
+    // Try to get the text of the error node for context
+    let error_text = node
+        .utf8_text(source)
+        .ok()
+        .map(|s| s.chars().take(30).collect::<String>())
+        .unwrap_or_default();
+
+    // Look at parent context to provide better messages
+    if let Some(parent) = node.parent() {
+        match parent.kind() {
+            "function_or_value_defn" => {
+                return format!("Syntax error in let binding: '{}'", error_text.trim());
+            }
+            "type_definition" => {
+                return format!("Syntax error in type definition: '{}'", error_text.trim());
+            }
+            "module_defn" => {
+                return format!("Syntax error in module definition: '{}'", error_text.trim());
+            }
+            _ => {}
+        }
+    }
+
+    if error_text.trim().is_empty() {
+        "Syntax error".to_string()
+    } else {
+        format!("Syntax error near '{}'", error_text.trim())
+    }
 }
 
 /// Maximum recursion depth to prevent stack overflow on deeply nested files.
@@ -739,5 +825,93 @@ let public main () = ()
         }
 
         assert!(result.symbols.len() > 0, "Should extract symbols from Types.fs");
+    }
+
+    // ============================================================
+    // Syntax Error Extraction Tests (TDD - Phase 1)
+    // ============================================================
+
+    #[test]
+    fn detects_syntax_error_missing_equals() {
+        let source = r#"
+module Test
+
+let x 42
+"#;
+        let result = extract_symbols(Path::new("test.fs"), source);
+
+        assert!(!result.errors.is_empty(), "Should detect syntax error");
+        // The error should be near line 4 where "let x 42" is invalid
+        let error = &result.errors[0];
+        assert!(error.location.line >= 3, "Error should be on or after line 3");
+    }
+
+    #[test]
+    fn detects_syntax_error_unclosed_bracket() {
+        let source = r#"
+module Test
+
+let items = [1; 2; 3
+"#;
+        let result = extract_symbols(Path::new("test.fs"), source);
+
+        assert!(!result.errors.is_empty(), "Should detect unclosed bracket");
+    }
+
+    #[test]
+    fn detects_syntax_error_incomplete_match() {
+        let source = r#"
+module Test
+
+let result = match x with
+    | Some
+"#;
+        let result = extract_symbols(Path::new("test.fs"), source);
+
+        // Incomplete match expression should be an error
+        assert!(!result.errors.is_empty(), "Should detect incomplete match expression");
+    }
+
+    #[test]
+    fn no_errors_for_valid_code() {
+        let source = r#"
+module Test
+
+let add x y = x + y
+
+type Person = { Name: string; Age: int }
+
+let greet person =
+    printfn "Hello %s" person.Name
+"#;
+        let result = extract_symbols(Path::new("test.fs"), source);
+
+        assert!(result.errors.is_empty(), "Valid code should have no errors, but got: {:?}", result.errors);
+    }
+
+    #[test]
+    fn detects_multiple_errors() {
+        let source = r#"
+module Test
+
+let x 42
+let y [1; 2
+"#;
+        let result = extract_symbols(Path::new("test.fs"), source);
+
+        assert!(result.errors.len() >= 1, "Should detect at least one error");
+    }
+
+    #[test]
+    fn error_has_correct_location() {
+        let source = r#"module Test
+
+let x 42"#;
+        let result = extract_symbols(Path::new("test.fs"), source);
+
+        assert!(!result.errors.is_empty(), "Should detect syntax error");
+        let error = &result.errors[0];
+        // Error should be on line 3 (the invalid let binding)
+        assert_eq!(error.location.line, 3, "Error should be on line 3");
     }
 }

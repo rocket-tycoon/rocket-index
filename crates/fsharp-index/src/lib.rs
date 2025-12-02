@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub mod db;
+pub mod external_index;
 pub mod fsproj;
 pub mod index;
 pub mod parse;
@@ -22,7 +23,7 @@ pub mod watch;
 pub use db::SqliteIndex;
 pub use fsproj::{find_fsproj_files, parse_fsproj, FsprojInfo};
 pub use index::{CodeIndex, Reference};
-pub use parse::extract_symbols;
+pub use parse::{extract_symbols, SyntaxError};
 pub use resolve::ResolveResult;
 pub use type_cache::{MemberKind, TypeCache, TypeCacheSchema, TypeMember, TypedSymbol};
 

@@ -15,8 +15,19 @@ pub struct FsprojInfo {
     pub compile_files: Vec<PathBuf>,
     /// Project references (paths to other .fsproj files)
     pub project_references: Vec<PathBuf>,
+    /// NuGet package references
+    pub package_references: Vec<PackageReference>,
     /// The directory containing the .fsproj file
     pub project_dir: PathBuf,
+}
+
+/// A NuGet package reference
+#[derive(Debug, Clone)]
+pub struct PackageReference {
+    /// Package name (e.g., "Newtonsoft.Json")
+    pub name: String,
+    /// Package version (e.g., "13.0.1")
+    pub version: String,
 }
 
 impl FsprojInfo {
@@ -102,6 +113,14 @@ pub fn parse_fsproj_content(content: &str, project_dir: &Path) -> Result<FsprojI
                         if let Some(include) = get_attribute(e, "Include") {
                             let ref_path = project_dir.join(normalize_windows_path(&include));
                             info.project_references.push(ref_path);
+                        }
+                    }
+                    "PackageReference" if in_item_group => {
+                        // Extract Include and Version attributes for package references
+                        if let Some(name) = get_attribute(e, "Include") {
+                            let version = get_attribute(e, "Version").unwrap_or_default();
+                            info.package_references
+                                .push(PackageReference { name, version });
                         }
                     }
                     _ => {}
