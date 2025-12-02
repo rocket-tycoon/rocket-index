@@ -11,7 +11,7 @@
 
 mod document_store;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -40,7 +40,7 @@ struct Backend {
 
 impl Backend {
     /// Get the path to the SQLite database.
-    fn get_db_path(root: &PathBuf) -> PathBuf {
+    fn get_db_path(root: &Path) -> PathBuf {
         root.join(".fsharp-index").join(DEFAULT_DB_NAME)
     }
 

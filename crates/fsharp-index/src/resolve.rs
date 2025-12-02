@@ -367,15 +367,15 @@ fn extract_simple_type(type_sig: &str) -> &str {
     // Handle F# postfix types: "int list", "User option", "string array"
     let postfix_types = [" list", " option", " array", " seq", " ref"];
     for suffix in &postfix_types {
-        if trimmed.ends_with(suffix) {
-            return trimmed[..trimmed.len() - suffix.len()].trim();
+        if let Some(stripped) = trimmed.strip_suffix(suffix) {
+            return stripped.trim();
         }
     }
 
     // Handle generic types: "Async<User>", "Result<User, Error>"
     if let Some(angle_pos) = trimmed.find('<') {
         let inner = &trimmed[angle_pos + 1..];
-        if let Some(end) = inner.find(|c| c == '>' || c == ',') {
+        if let Some(end) = inner.find(['>', ',']) {
             return inner[..end].trim();
         }
         // Fallback: return the type before the angle bracket

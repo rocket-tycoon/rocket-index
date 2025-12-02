@@ -150,7 +150,7 @@ fn extract_recursive_with_depth(
             if let Some(name_node) = module_name_node {
                 if let Ok(name) = name_node.utf8_text(source) {
                     let trimmed = name.trim();
-                    let short_name = trimmed.split('.').last().unwrap_or(trimmed).to_string();
+                    let short_name = trimmed.split('.').next_back().unwrap_or(trimmed).to_string();
                     let qualified = qualified_name(trimmed, current_module);
                     let symbol = Symbol {
                         name: short_name,

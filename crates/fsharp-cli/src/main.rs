@@ -7,7 +7,7 @@
 //! - Traversing dependency graphs (spider)
 //! - Watching for file changes
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
@@ -172,7 +172,7 @@ fn run(cli: Cli) -> Result<u8> {
 }
 
 /// Build or rebuild the index using SQLite
-fn cmd_build(root: &PathBuf, extract_types: bool, json: bool) -> Result<u8> {
+fn cmd_build(root: &Path, extract_types: bool, json: bool) -> Result<u8> {
     let root = root
         .canonicalize()
         .context("Failed to resolve root directory")?;
@@ -537,7 +537,7 @@ fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, json: bool) -> 
 }
 
 /// Update the index incrementally
-fn cmd_update(root: &PathBuf, json: bool) -> Result<u8> {
+fn cmd_update(root: &Path, json: bool) -> Result<u8> {
     let root = root
         .canonicalize()
         .context("Failed to resolve root directory")?;
@@ -657,7 +657,7 @@ fn output_location(sym: &fsharp_index::Symbol, context: bool, json: bool) -> Res
 }
 
 /// List references in a file
-fn cmd_refs(file: &PathBuf, json: bool) -> Result<u8> {
+fn cmd_refs(file: &Path, json: bool) -> Result<u8> {
     let index = load_sqlite_index()?;
     let file = file.canonicalize().context("Failed to resolve file path")?;
 
@@ -788,7 +788,7 @@ fn cmd_symbols(pattern: &str, json: bool) -> Result<u8> {
 }
 
 /// Watch for file changes
-fn cmd_watch(root: &PathBuf) -> Result<u8> {
+fn cmd_watch(root: &Path) -> Result<u8> {
     use fsharp_index::watch::FileWatcher;
 
     let root = root
@@ -901,7 +901,7 @@ fn get_line_content(file: &PathBuf, line: usize) -> Option<String> {
 }
 
 /// Update a single file in the index
-fn update_single_file(root: &PathBuf, file: &PathBuf) -> Result<()> {
+fn update_single_file(root: &Path, file: &Path) -> Result<()> {
     let db_path = root.join(".fsharp-index").join(DEFAULT_DB_NAME);
     let index = SqliteIndex::open(&db_path)?;
 
@@ -924,7 +924,7 @@ fn update_single_file(root: &PathBuf, file: &PathBuf) -> Result<()> {
 }
 
 /// Remove a file from the index
-fn remove_file_from_index(root: &PathBuf, file: &PathBuf) -> Result<()> {
+fn remove_file_from_index(root: &Path, file: &Path) -> Result<()> {
     let db_path = root.join(".fsharp-index").join(DEFAULT_DB_NAME);
     let index = SqliteIndex::open(&db_path)?;
 

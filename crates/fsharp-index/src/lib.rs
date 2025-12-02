@@ -90,17 +90,12 @@ impl std::fmt::Display for SymbolKind {
 }
 
 /// Visibility of a symbol
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Visibility {
+    #[default]
     Public,
     Internal,
     Private,
-}
-
-impl Default for Visibility {
-    fn default() -> Self {
-        Visibility::Public
-    }
 }
 
 /// A symbol extracted from F# source code
