@@ -37,5 +37,11 @@ clap = { version = "4.0", features = ["derive"] }
 # File watching
 notify = "6.0"
 
+# Parallelism
+rayon = "1.10"
+
+# XML parsing for .fsproj files
+quick-xml = "0.37"
+
 # Internal crates
 fsharp-index = { path = "crates/fsharp-index" }

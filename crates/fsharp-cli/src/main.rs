@@ -13,10 +13,12 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use fsharp_index::{
+    find_fsproj_files, parse_fsproj,
     spider::{format_spider_result, spider},
     watch::{find_fsharp_files, is_fsharp_file},
     CodeIndex,
 };
+use rayon::prelude::*;
 
 /// Exit codes for the CLI
 mod exit_codes {
@@ -136,26 +138,60 @@ fn cmd_build(root: &PathBuf, json: bool) -> Result<u8> {
 
     let files = find_fsharp_files(&root).context("Failed to find F# files")?;
 
-    // Create index with workspace root for relative path storage
+    // Try to find and parse .fsproj files for compilation order
+    let fsproj_files = find_fsproj_files(&root);
+    let mut file_order: Vec<PathBuf> = Vec::new();
+    let mut fsproj_count = 0;
+
+    for fsproj_path in &fsproj_files {
+        if let Ok(info) = parse_fsproj(fsproj_path) {
+            // Merge file orders from all .fsproj files
+            // Files from later projects are appended (they can reference earlier ones)
+            for file in info.compile_files {
+                if !file_order.contains(&file) {
+                    file_order.push(file);
+                }
+            }
+            fsproj_count += 1;
+        }
+    }
+
+    // Parse files in parallel using rayon
+    let parse_results: Vec<_> = files
+        .par_iter()
+        .map(|file| match std::fs::read_to_string(file) {
+            Ok(source) => {
+                let result = fsharp_index::extract_symbols(file, &source);
+                Ok((file.clone(), result))
+            }
+            Err(e) => Err(format!("{}: {}", file.display(), e)),
+        })
+        .collect();
+
+    // Merge results into index (sequential - index is not thread-safe)
     let mut index = CodeIndex::with_root(root.clone());
     let mut errors = Vec::new();
 
-    for file in &files {
-        match std::fs::read_to_string(file) {
-            Ok(source) => {
-                let result = fsharp_index::extract_symbols(file, &source);
-                for symbol in result.symbols {
+    // Set file compilation order if we found .fsproj files
+    if !file_order.is_empty() {
+        index.set_file_order(file_order);
+    }
+
+    for result in parse_results {
+        match result {
+            Ok((file, parse_result)) => {
+                for symbol in parse_result.symbols {
                     index.add_symbol(symbol);
                 }
-                for reference in result.references {
+                for reference in parse_result.references {
                     index.add_reference(file.clone(), reference);
                 }
-                for open in result.opens {
+                for open in parse_result.opens {
                     index.add_open(file.clone(), open);
                 }
             }
             Err(e) => {
-                errors.push(format!("{}: {}", file.display(), e));
+                errors.push(e);
             }
         }
     }
@@ -172,6 +208,8 @@ fn cmd_build(root: &PathBuf, json: bool) -> Result<u8> {
         let output = serde_json::json!({
             "files": files.len(),
             "symbols": index.symbol_count(),
+            "fsproj_files": fsproj_count,
+            "file_order_count": index.file_order_count(),
             "errors": errors,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
@@ -181,6 +219,13 @@ fn cmd_build(root: &PathBuf, json: bool) -> Result<u8> {
             files.len(),
             index.symbol_count()
         );
+        if fsproj_count > 0 {
+            println!(
+                "Found {} .fsproj file(s), {} files in compilation order",
+                fsproj_count,
+                index.file_order_count()
+            );
+        }
         if !errors.is_empty() {
             eprintln!("Warnings:");
             for error in errors {
