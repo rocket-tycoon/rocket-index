@@ -32,10 +32,11 @@ pub struct ParseResult {
 pub fn extract_symbols(file: &Path, source: &str) -> ParseResult {
     let mut parser = tree_sitter::Parser::new();
 
-    // Set the F# language
+    // Set the F# language - LANGUAGE_FSHARP is a compile-time constant from tree-sitter-fsharp,
+    // so this can only fail if there's a version mismatch (a build-time issue, not runtime).
     parser
         .set_language(&tree_sitter_fsharp::LANGUAGE_FSHARP.into())
-        .expect("Failed to load F# grammar");
+        .expect("tree-sitter-fsharp grammar incompatible with tree-sitter version");
 
     let tree = match parser.parse(source, None) {
         Some(tree) => tree,

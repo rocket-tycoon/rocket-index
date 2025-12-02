@@ -56,6 +56,7 @@ impl SpiderResult {
 ///
 /// # Returns
 /// A `SpiderResult` containing all reachable symbols in breadth-first order.
+#[must_use]
 pub fn spider(index: &CodeIndex, entry_point: &str, max_depth: usize) -> SpiderResult {
     let mut result = SpiderResult::new();
     let mut visited: HashSet<String> = HashSet::new();
