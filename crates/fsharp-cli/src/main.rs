@@ -13,10 +13,11 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use fsharp_index::{
+    db::DEFAULT_DB_NAME,
     find_fsproj_files, parse_fsproj,
     spider::{format_spider_result, spider},
     watch::{find_fsharp_files, is_fsharp_file},
-    CodeIndex,
+    CodeIndex, SqliteIndex,
 };
 use rayon::prelude::*;
 
@@ -25,6 +26,7 @@ mod exit_codes {
     pub const SUCCESS: u8 = 0;
     pub const SYMBOL_NOT_FOUND: u8 = 1;
     pub const INDEX_NOT_FOUND: u8 = 2;
+    #[allow(dead_code)]
     pub const PARSE_ERROR: u8 = 3;
     pub const INVALID_ARGS: u8 = 4;
 }
@@ -49,6 +51,10 @@ enum Commands {
         /// Root directory to index (defaults to current directory)
         #[arg(short, long, default_value = ".")]
         root: PathBuf,
+
+        /// Also extract type information (requires dotnet fsi)
+        #[arg(long)]
+        extract_types: bool,
     },
 
     /// Incrementally update the index for changed files
@@ -96,6 +102,30 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         root: PathBuf,
     },
+
+    /// Extract type information from a project (requires dotnet fsi)
+    ExtractTypes {
+        /// Path to .fsproj file
+        project: PathBuf,
+
+        /// Output directory for type cache (default: .fsharp-types/ in project dir)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Enable verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
+
+    /// Show type cache information
+    TypeInfo {
+        /// Symbol qualified name to look up
+        symbol: Option<String>,
+
+        /// Type name to show members of
+        #[arg(long)]
+        members_of: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -120,18 +150,29 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<u8> {
     match cli.command {
-        Commands::Build { root } => cmd_build(&root, cli.json),
+        Commands::Build {
+            root,
+            extract_types,
+        } => cmd_build(&root, extract_types, cli.json),
         Commands::Update { root } => cmd_update(&root, cli.json),
         Commands::Def { symbol, context } => cmd_def(&symbol, context, cli.json),
         Commands::Refs { file } => cmd_refs(&file, cli.json),
         Commands::Spider { symbol, depth } => cmd_spider(&symbol, depth, cli.json),
         Commands::Symbols { pattern } => cmd_symbols(&pattern, cli.json),
         Commands::Watch { root } => cmd_watch(&root),
+        Commands::ExtractTypes {
+            project,
+            output,
+            verbose,
+        } => cmd_extract_types(&project, output.as_deref(), verbose, cli.json),
+        Commands::TypeInfo { symbol, members_of } => {
+            cmd_type_info(symbol.as_deref(), members_of.as_deref(), cli.json)
+        }
     }
 }
 
-/// Build or rebuild the index
-fn cmd_build(root: &PathBuf, json: bool) -> Result<u8> {
+/// Build or rebuild the index using SQLite
+fn cmd_build(root: &PathBuf, extract_types: bool, json: bool) -> Result<u8> {
     let root = root
         .canonicalize()
         .context("Failed to resolve root directory")?;
@@ -168,26 +209,61 @@ fn cmd_build(root: &PathBuf, json: bool) -> Result<u8> {
         })
         .collect();
 
-    // Merge results into index (sequential - index is not thread-safe)
-    let mut index = CodeIndex::with_root(root.clone());
-    let mut errors = Vec::new();
+    // Create SQLite index
+    let index_dir = root.join(".fsharp-index");
+    std::fs::create_dir_all(&index_dir).context("Failed to create index directory")?;
 
-    // Set file compilation order if we found .fsproj files
-    if !file_order.is_empty() {
-        index.set_file_order(file_order);
+    let db_path = index_dir.join(DEFAULT_DB_NAME);
+
+    // Remove existing database to rebuild from scratch
+    if db_path.exists() {
+        std::fs::remove_file(&db_path).context("Failed to remove existing index")?;
     }
 
+    let index = SqliteIndex::create(&db_path).context("Failed to create SQLite index")?;
+
+    // Store workspace root in metadata
+    index
+        .set_metadata("workspace_root", &root.to_string_lossy())
+        .context("Failed to set workspace root")?;
+
+    // Store file order if we found .fsproj files
+    if !file_order.is_empty() {
+        let file_order_json = serde_json::to_string(&file_order)?;
+        index
+            .set_metadata("file_order", &file_order_json)
+            .context("Failed to set file order")?;
+    }
+
+    let mut errors = Vec::new();
+    let mut symbol_count = 0;
+
+    // TODO: Use batch insert methods for better performance
+    // Individual inserts are auto-committed by SQLite
     for result in parse_results {
         match result {
             Ok((file, parse_result)) => {
-                for symbol in parse_result.symbols {
-                    index.add_symbol(symbol);
+                // Insert symbols
+                for symbol in &parse_result.symbols {
+                    if let Err(e) = index.insert_symbol(symbol) {
+                        errors.push(format!("Failed to insert symbol {}: {}", symbol.name, e));
+                    } else {
+                        symbol_count += 1;
+                    }
                 }
-                for reference in parse_result.references {
-                    index.add_reference(file.clone(), reference);
+
+                // Insert references
+                for reference in &parse_result.references {
+                    if let Err(e) = index.insert_reference(&file, reference) {
+                        errors.push(format!("Failed to insert reference: {}", e));
+                    }
                 }
-                for open in parse_result.opens {
-                    index.add_open(file.clone(), open);
+
+                // Insert opens
+                for (line, open) in parse_result.opens.iter().enumerate() {
+                    if let Err(e) = index.insert_open(&file, open, line as u32 + 1) {
+                        errors.push(format!("Failed to insert open: {}", e));
+                    }
                 }
             }
             Err(e) => {
@@ -196,41 +272,264 @@ fn cmd_build(root: &PathBuf, json: bool) -> Result<u8> {
         }
     }
 
-    // Save index to disk
-    let index_dir = root.join(".fsharp-index");
-    std::fs::create_dir_all(&index_dir).context("Failed to create index directory")?;
-
-    let index_file = index_dir.join("index.json");
-    let index_json = serde_json::to_string_pretty(&index)?;
-    std::fs::write(&index_file, index_json).context("Failed to write index file")?;
-
     if json {
         let output = serde_json::json!({
             "files": files.len(),
-            "symbols": index.symbol_count(),
+            "symbols": symbol_count,
             "fsproj_files": fsproj_count,
-            "file_order_count": index.file_order_count(),
+            "file_order_count": file_order.len(),
             "errors": errors,
+            "database": db_path.display().to_string(),
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!(
-            "Indexed {} files, {} symbols",
-            files.len(),
-            index.symbol_count()
-        );
+        println!("Indexed {} files, {} symbols", files.len(), symbol_count);
+        println!("Database: {}", db_path.display());
         if fsproj_count > 0 {
             println!(
                 "Found {} .fsproj file(s), {} files in compilation order",
                 fsproj_count,
-                index.file_order_count()
+                file_order.len()
             );
         }
         if !errors.is_empty() {
             eprintln!("Warnings:");
-            for error in errors {
+            for error in &errors[..errors.len().min(10)] {
                 eprintln!("  {}", error);
             }
+            if errors.len() > 10 {
+                eprintln!("  ... and {} more", errors.len() - 10);
+            }
+        }
+    }
+
+    // Optionally run type extraction
+    if extract_types {
+        for fsproj_path in &fsproj_files {
+            if !json {
+                println!("Extracting types from: {}", fsproj_path.display());
+            }
+            if let Err(e) = run_type_extraction(fsproj_path, None, false) {
+                if !json {
+                    eprintln!(
+                        "Warning: Type extraction failed for {}: {}",
+                        fsproj_path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(exit_codes::SUCCESS)
+}
+
+/// Run the F# type extraction script
+fn run_type_extraction(
+    project: &PathBuf,
+    output: Option<&std::path::Path>,
+    verbose: bool,
+) -> Result<()> {
+    use std::process::Command;
+
+    // Find the extract-types.fsx script
+    // Look in several locations:
+    // 1. Same directory as the executable
+    // 2. scripts/ relative to executable
+    // 3. Hardcoded development path
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+
+    let script_paths = [
+        exe_dir.as_ref().map(|d| d.join("extract-types.fsx")),
+        exe_dir
+            .as_ref()
+            .map(|d| d.join("scripts/extract-types.fsx")),
+        exe_dir
+            .as_ref()
+            .map(|d| d.join("../scripts/extract-types.fsx")),
+        Some(PathBuf::from("scripts/extract-types.fsx")),
+    ];
+
+    let script_path = script_paths
+        .iter()
+        .filter_map(|p| p.as_ref())
+        .find(|p| p.exists())
+        .cloned();
+
+    let script = match script_path {
+        Some(p) => p,
+        None => {
+            // Fall back to inline execution hint
+            anyhow::bail!(
+                "extract-types.fsx not found. Please run manually:\n\
+                 dotnet fsi scripts/extract-types.fsx {}",
+                project.display()
+            );
+        }
+    };
+
+    let mut cmd = Command::new("dotnet");
+    cmd.arg("fsi").arg(&script).arg(project);
+
+    if let Some(out) = output {
+        cmd.arg("--output").arg(out);
+    }
+
+    if verbose {
+        cmd.arg("--verbose");
+    }
+
+    let status = cmd
+        .status()
+        .context("Failed to run dotnet fsi - is .NET SDK installed?")?;
+
+    if !status.success() {
+        anyhow::bail!("Type extraction failed with exit code: {:?}", status.code());
+    }
+
+    Ok(())
+}
+
+/// Extract types from a project
+fn cmd_extract_types(
+    project: &PathBuf,
+    output: Option<&std::path::Path>,
+    verbose: bool,
+    json: bool,
+) -> Result<u8> {
+    if !project.exists() {
+        anyhow::bail!("Project file not found: {}", project.display());
+    }
+
+    run_type_extraction(project, output, verbose)?;
+
+    if json {
+        let output_dir = output.map(PathBuf::from).unwrap_or_else(|| {
+            project
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join(".fsharp-types")
+        });
+        let cache_path = output_dir.join("cache.json");
+
+        println!(
+            "{}",
+            serde_json::json!({
+                "success": true,
+                "cache_path": cache_path.display().to_string(),
+            })
+        );
+    }
+
+    Ok(exit_codes::SUCCESS)
+}
+
+/// Show type cache information
+fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, json: bool) -> Result<u8> {
+    let index = load_sqlite_index()?;
+
+    if let Some(sym) = symbol {
+        match index.get_symbol_type(sym) {
+            Ok(Some(type_sig)) => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "symbol": sym,
+                            "type": type_sig,
+                        })
+                    );
+                } else {
+                    println!("{} : {}", sym, type_sig);
+                }
+            }
+            Ok(None) => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "error": "Symbol not found or has no type info",
+                            "symbol": sym,
+                        })
+                    );
+                } else {
+                    eprintln!("Symbol not found or has no type info: {}", sym);
+                }
+                return Ok(exit_codes::SYMBOL_NOT_FOUND);
+            }
+            Err(e) => {
+                anyhow::bail!("Failed to query symbol type: {}", e);
+            }
+        }
+    }
+
+    if let Some(type_name) = members_of {
+        match index.get_members(type_name) {
+            Ok(members) if !members.is_empty() => {
+                if json {
+                    let member_list: Vec<_> = members
+                        .iter()
+                        .map(|m| {
+                            serde_json::json!({
+                                "member": m.member,
+                                "type": m.member_type,
+                                "kind": format!("{}", m.kind),
+                            })
+                        })
+                        .collect();
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "type": type_name,
+                            "members": member_list,
+                        })
+                    );
+                } else {
+                    println!("Members of {}:", type_name);
+                    for m in members {
+                        println!("  {} : {} ({})", m.member, m.member_type, m.kind);
+                    }
+                }
+            }
+            Ok(_) => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "error": "Type not found in type cache",
+                            "type": type_name,
+                        })
+                    );
+                } else {
+                    eprintln!("Type not found in type cache: {}", type_name);
+                }
+                return Ok(exit_codes::SYMBOL_NOT_FOUND);
+            }
+            Err(e) => {
+                anyhow::bail!("Failed to query type members: {}", e);
+            }
+        }
+    }
+
+    if symbol.is_none() && members_of.is_none() {
+        // Show summary
+        let symbol_count = index.count_symbols().unwrap_or(0);
+        let file_count = index.list_files().map(|f| f.len()).unwrap_or(0);
+
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "symbol_count": symbol_count,
+                    "file_count": file_count,
+                })
+            );
+        } else {
+            println!("Index Info:");
+            println!("  Symbols: {}", symbol_count);
+            println!("  Files: {}", file_count);
         }
     }
 
@@ -243,8 +542,8 @@ fn cmd_update(root: &PathBuf, json: bool) -> Result<u8> {
         .canonicalize()
         .context("Failed to resolve root directory")?;
 
-    let index_file = root.join(".fsharp-index/index.json");
-    if !index_file.exists() {
+    let db_path = root.join(".fsharp-index").join(DEFAULT_DB_NAME);
+    if !db_path.exists() {
         if json {
             println!(
                 "{}",
@@ -256,11 +555,7 @@ fn cmd_update(root: &PathBuf, json: bool) -> Result<u8> {
         return Ok(exit_codes::INDEX_NOT_FOUND);
     }
 
-    let index_content = std::fs::read_to_string(&index_file)?;
-    let mut index: CodeIndex = serde_json::from_str(&index_content)?;
-
-    // Set workspace root for path resolution
-    index.set_workspace_root(root.clone());
+    let index = SqliteIndex::open(&db_path).context("Failed to open SQLite index")?;
 
     // Find files that have changed (simplified: just re-index all files for now)
     // TODO: Use file modification times or a proper incremental strategy
@@ -269,31 +564,30 @@ fn cmd_update(root: &PathBuf, json: bool) -> Result<u8> {
 
     for file in &files {
         if let Ok(source) = std::fs::read_to_string(file) {
-            index.clear_file(file);
+            // Clear existing data for this file
+            index.clear_file(file)?;
+
             let result = fsharp_index::extract_symbols(file, &source);
-            for symbol in result.symbols {
-                index.add_symbol(symbol);
+
+            for symbol in &result.symbols {
+                index.insert_symbol(symbol)?;
             }
-            for reference in result.references {
-                index.add_reference(file.clone(), reference);
+            for reference in &result.references {
+                index.insert_reference(file, reference)?;
             }
-            for open in result.opens {
-                index.add_open(file.clone(), open);
+            for (line, open) in result.opens.iter().enumerate() {
+                index.insert_open(file, open, line as u32 + 1)?;
             }
             updated_count += 1;
         }
     }
-
-    // Save updated index
-    let index_json = serde_json::to_string_pretty(&index)?;
-    std::fs::write(&index_file, index_json)?;
 
     if json {
         println!(
             "{}",
             serde_json::json!({
                 "updated": updated_count,
-                "symbols": index.symbol_count(),
+                "symbols": index.count_symbols().unwrap_or(0),
             })
         );
     } else {
@@ -305,19 +599,20 @@ fn cmd_update(root: &PathBuf, json: bool) -> Result<u8> {
 
 /// Find the definition of a symbol
 fn cmd_def(symbol: &str, context: bool, json: bool) -> Result<u8> {
-    let index = load_index()?;
+    let index = load_sqlite_index()?;
 
     // Try exact match first
-    if let Some(sym) = index.get(symbol) {
-        output_location(sym, context, json)?;
+    if let Ok(Some(sym)) = index.find_by_qualified(symbol) {
+        output_location(&sym, context, json)?;
         return Ok(exit_codes::SUCCESS);
     }
 
     // Try searching for partial matches
-    let matches = index.search(symbol);
-    if let Some(sym) = matches.first() {
-        output_location(sym, context, json)?;
-        return Ok(exit_codes::SUCCESS);
+    if let Ok(matches) = index.search(symbol, 10) {
+        if let Some(sym) = matches.first() {
+            output_location(sym, context, json)?;
+            return Ok(exit_codes::SUCCESS);
+        }
     }
 
     if json {
@@ -363,10 +658,12 @@ fn output_location(sym: &fsharp_index::Symbol, context: bool, json: bool) -> Res
 
 /// List references in a file
 fn cmd_refs(file: &PathBuf, json: bool) -> Result<u8> {
-    let index = load_index()?;
+    let index = load_sqlite_index()?;
     let file = file.canonicalize().context("Failed to resolve file path")?;
 
-    let references = index.references_in_file(&file);
+    let references = index
+        .references_in_file(&file)
+        .context("Failed to get references")?;
 
     if json {
         let refs: Vec<_> = references
@@ -383,13 +680,13 @@ fn cmd_refs(file: &PathBuf, json: bool) -> Result<u8> {
     } else {
         for reference in references {
             // Try to resolve the reference
-            if let Some(resolved) = index.resolve(&reference.name, &file) {
+            if let Ok(Some(resolved)) = index.find_by_qualified(&reference.name) {
                 println!(
                     "{:<40} {}:{}:{}",
                     reference.name,
-                    resolved.symbol.location.file.display(),
-                    resolved.symbol.location.line,
-                    resolved.symbol.location.column
+                    resolved.location.file.display(),
+                    resolved.location.line,
+                    resolved.location.column
                 );
             } else {
                 println!("{:<40} <external>", reference.name);
@@ -402,7 +699,9 @@ fn cmd_refs(file: &PathBuf, json: bool) -> Result<u8> {
 
 /// Spider from an entry point
 fn cmd_spider(symbol: &str, depth: usize, json: bool) -> Result<u8> {
-    let index = load_index()?;
+    // Spider still uses CodeIndex for now since it has complex resolution logic
+    // TODO: Update spider to use SqliteIndex
+    let index = load_code_index()?;
 
     // First try to find the entry point
     let entry_qualified = if index.get(symbol).is_some() {
@@ -454,8 +753,8 @@ fn cmd_spider(symbol: &str, depth: usize, json: bool) -> Result<u8> {
 
 /// Search for symbols matching a pattern
 fn cmd_symbols(pattern: &str, json: bool) -> Result<u8> {
-    let index = load_index()?;
-    let matches = index.search(pattern);
+    let index = load_sqlite_index()?;
+    let matches = index.search(pattern, 100)?;
 
     if json {
         let symbols: Vec<_> = matches
@@ -498,7 +797,7 @@ fn cmd_watch(root: &PathBuf) -> Result<u8> {
 
     // First, ensure index exists
     println!("Building initial index...");
-    cmd_build(&root, false)?;
+    cmd_build(&root, false, false)?;
 
     let mut watcher = FileWatcher::new(&root).context("Failed to create file watcher")?;
     watcher.start().context("Failed to start watching")?;
@@ -535,22 +834,64 @@ fn cmd_watch(root: &PathBuf) -> Result<u8> {
     }
 }
 
-/// Load the index from disk
-fn load_index() -> Result<CodeIndex> {
+/// Load the SQLite index from disk
+fn load_sqlite_index() -> Result<SqliteIndex> {
     let cwd = std::env::current_dir()?;
-    let index_file = cwd.join(".fsharp-index/index.json");
+    let db_path = cwd.join(".fsharp-index").join(DEFAULT_DB_NAME);
 
-    if !index_file.exists() {
+    if !db_path.exists() {
         anyhow::bail!("Index not found. Run 'fsharp-index build' first.");
     }
 
-    let content = std::fs::read_to_string(&index_file)?;
-    let mut index: CodeIndex = serde_json::from_str(&content)?;
+    SqliteIndex::open(&db_path).context("Failed to open SQLite index")
+}
 
-    // Set workspace root for absolute path resolution
-    index.set_workspace_root(cwd);
+/// Load the CodeIndex from SQLite (for spider compatibility)
+/// This creates a CodeIndex by reading from the SQLite database
+fn load_code_index() -> Result<CodeIndex> {
+    let cwd = std::env::current_dir()?;
+    let db_path = cwd.join(".fsharp-index").join(DEFAULT_DB_NAME);
 
-    Ok(index)
+    if !db_path.exists() {
+        anyhow::bail!("Index not found. Run 'fsharp-index build' first.");
+    }
+
+    let sqlite_index = SqliteIndex::open(&db_path).context("Failed to open SQLite index")?;
+
+    // Get workspace root from metadata
+    let workspace_root = sqlite_index
+        .get_metadata("workspace_root")?
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cwd.clone());
+
+    let mut code_index = CodeIndex::with_root(workspace_root.clone());
+
+    // Load file order if available
+    if let Ok(Some(file_order_json)) = sqlite_index.get_metadata("file_order") {
+        if let Ok(file_order) = serde_json::from_str::<Vec<PathBuf>>(&file_order_json) {
+            code_index.set_file_order(file_order);
+        }
+    }
+
+    // Load symbols
+    for file in sqlite_index.list_files()? {
+        let symbols = sqlite_index.symbols_in_file(&file)?;
+        for symbol in symbols {
+            code_index.add_symbol(symbol);
+        }
+
+        let references = sqlite_index.references_in_file(&file)?;
+        for reference in references {
+            code_index.add_reference(file.clone(), reference);
+        }
+
+        let opens = sqlite_index.opens_for_file(&file)?;
+        for open in opens {
+            code_index.add_open(file.clone(), open);
+        }
+    }
+
+    Ok(code_index)
 }
 
 /// Get a specific line from a file
@@ -561,47 +902,33 @@ fn get_line_content(file: &PathBuf, line: usize) -> Option<String> {
 
 /// Update a single file in the index
 fn update_single_file(root: &PathBuf, file: &PathBuf) -> Result<()> {
-    let index_file = root.join(".fsharp-index/index.json");
-    let content = std::fs::read_to_string(&index_file)?;
-    let mut index: CodeIndex = serde_json::from_str(&content)?;
+    let db_path = root.join(".fsharp-index").join(DEFAULT_DB_NAME);
+    let index = SqliteIndex::open(&db_path)?;
 
-    // Set workspace root for path resolution
-    index.set_workspace_root(root.clone());
-
-    index.clear_file(file);
+    index.clear_file(file)?;
 
     if let Ok(source) = std::fs::read_to_string(file) {
         let result = fsharp_index::extract_symbols(file, &source);
-        for symbol in result.symbols {
-            index.add_symbol(symbol);
+        for symbol in &result.symbols {
+            index.insert_symbol(symbol)?;
         }
-        for reference in result.references {
-            index.add_reference(file.clone(), reference);
+        for reference in &result.references {
+            index.insert_reference(file, reference)?;
         }
-        for open in result.opens {
-            index.add_open(file.clone(), open);
+        for (line, open) in result.opens.iter().enumerate() {
+            index.insert_open(file, open, line as u32 + 1)?;
         }
     }
-
-    let index_json = serde_json::to_string_pretty(&index)?;
-    std::fs::write(&index_file, index_json)?;
 
     Ok(())
 }
 
 /// Remove a file from the index
 fn remove_file_from_index(root: &PathBuf, file: &PathBuf) -> Result<()> {
-    let index_file = root.join(".fsharp-index/index.json");
-    let content = std::fs::read_to_string(&index_file)?;
-    let mut index: CodeIndex = serde_json::from_str(&content)?;
+    let db_path = root.join(".fsharp-index").join(DEFAULT_DB_NAME);
+    let index = SqliteIndex::open(&db_path)?;
 
-    // Set workspace root for path resolution
-    index.set_workspace_root(root.clone());
-
-    index.clear_file(file);
-
-    let index_json = serde_json::to_string_pretty(&index)?;
-    std::fs::write(&index_file, index_json)?;
+    index.clear_file(file)?;
 
     Ok(())
 }
