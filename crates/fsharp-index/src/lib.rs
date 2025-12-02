@@ -9,18 +9,22 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub mod db;
 pub mod fsproj;
 pub mod index;
 pub mod parse;
 pub mod resolve;
 pub mod spider;
+pub mod type_cache;
 pub mod watch;
 
 // Re-export main types
+pub use db::SqliteIndex;
 pub use fsproj::{find_fsproj_files, parse_fsproj, FsprojInfo};
 pub use index::{CodeIndex, Reference};
 pub use parse::extract_symbols;
 pub use resolve::ResolveResult;
+pub use type_cache::{MemberKind, TypeCache, TypeCacheSchema, TypeMember, TypedSymbol};
 
 /// A location in source code (file, line, column) with start and end positions
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -132,19 +136,6 @@ impl Symbol {
     }
 }
 
-/// Result of extracting symbols from a file
-#[derive(Debug, Clone, Default)]
-pub struct ExtractionResult {
-    /// Symbols defined in this file
-    pub symbols: Vec<Symbol>,
-    /// References to other symbols
-    pub references: Vec<Reference>,
-    /// Open statements (imports)
-    pub opens: Vec<String>,
-    /// Module/namespace declarations
-    pub module: Option<String>,
-}
-
 /// Errors that can occur during indexing
 #[derive(Debug, thiserror::Error)]
 pub enum IndexError {
@@ -162,6 +153,9 @@ pub enum IndexError {
 
     #[error("Symbol not found: {0}")]
     SymbolNotFound(String),
+
+    #[error("Database error: {0}")]
+    DatabaseError(#[from] rusqlite::Error),
 }
 
 pub type Result<T> = std::result::Result<T, IndexError>;

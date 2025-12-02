@@ -43,5 +43,8 @@ rayon = "1.10"
 # XML parsing for .fsproj files
 quick-xml = "0.37"
 
+# SQLite for index storage
+rusqlite = { version = "0.31", features = ["bundled"] }
+
 # Internal crates
 fsharp-index = { path = "crates/fsharp-index" }
