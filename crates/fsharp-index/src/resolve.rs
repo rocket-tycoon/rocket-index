@@ -47,8 +47,8 @@ impl CodeIndex {
     /// # Returns
     /// The resolved symbol if found, None otherwise
     pub fn resolve(&self, name: &str, from_file: &Path) -> Option<ResolveResult<'_>> {
-        // 1. Try exact qualified name match
-        if let Some(symbol) = self.get(name) {
+        // 1. Try exact qualified name match (respecting compilation order)
+        if let Some(symbol) = self.get_visible_from(name, from_file) {
             return Some(ResolveResult {
                 symbol,
                 resolution_path: ResolutionPath::Qualified,
@@ -60,17 +60,33 @@ impl CodeIndex {
             return Some(result);
         }
 
-        // 3. Try symbols via open statements
+        // 3. Try symbols via open statements (respecting compilation order)
         if let Some(result) = self.resolve_via_opens(name, from_file) {
             return Some(result);
         }
 
-        // 4. Try parent module symbols
+        // 4. Try parent module symbols (respecting compilation order)
         if let Some(result) = self.resolve_in_parent_modules(name, from_file) {
             return Some(result);
         }
 
         None
+    }
+
+    /// Get a symbol by qualified name, but only if it's visible from the given file.
+    ///
+    /// This respects F# compilation order: a symbol is only visible if its
+    /// defining file comes before from_file in the compilation order.
+    fn get_visible_from(&self, name: &str, from_file: &Path) -> Option<&Symbol> {
+        let symbol = self.get(name)?;
+
+        // Check if the symbol's file is visible from from_file
+        if self.can_reference(from_file, &symbol.location.file) {
+            Some(symbol)
+        } else {
+            // Symbol exists but is not visible due to compilation order
+            None
+        }
     }
 
     /// Try to resolve a name within the same file.
@@ -104,7 +120,7 @@ impl CodeIndex {
         for open_module in opens {
             // Try: OpenModule.name
             let qualified = format!("{}.{}", open_module, name);
-            if let Some(symbol) = self.get(&qualified) {
+            if let Some(symbol) = self.get_visible_from(&qualified, from_file) {
                 return Some(ResolveResult {
                     symbol,
                     resolution_path: ResolutionPath::ViaOpen(open_module.clone()),
@@ -116,7 +132,7 @@ impl CodeIndex {
                 let parts: Vec<&str> = name.splitn(2, '.').collect();
                 if parts.len() == 2 {
                     let qualified = format!("{}.{}", open_module, name);
-                    if let Some(symbol) = self.get(&qualified) {
+                    if let Some(symbol) = self.get_visible_from(&qualified, from_file) {
                         return Some(ResolveResult {
                             symbol,
                             resolution_path: ResolutionPath::ViaOpen(open_module.clone()),
@@ -141,7 +157,7 @@ impl CodeIndex {
                 let mut current_module = module_path.to_string();
                 loop {
                     let qualified = format!("{}.{}", current_module, name);
-                    if let Some(resolved) = self.get(&qualified) {
+                    if let Some(resolved) = self.get_visible_from(&qualified, from_file) {
                         return Some(ResolveResult {
                             symbol: resolved,
                             resolution_path: ResolutionPath::ParentModule(current_module),
@@ -181,7 +197,7 @@ impl CodeIndex {
                     if open_module.ends_with(module_name) {
                         // The open brings the module into scope
                         let qualified = format!("{}.{}", open_module, member_name);
-                        if let Some(symbol) = self.get(&qualified) {
+                        if let Some(symbol) = self.get_visible_from(&qualified, from_file) {
                             return Some(ResolveResult {
                                 symbol,
                                 resolution_path: ResolutionPath::ViaOpen(open_module.clone()),
@@ -191,7 +207,7 @@ impl CodeIndex {
 
                     // Also try open.module.member pattern
                     let qualified = format!("{}.{}.{}", open_module, module_name, member_name);
-                    if let Some(symbol) = self.get(&qualified) {
+                    if let Some(symbol) = self.get_visible_from(&qualified, from_file) {
                         return Some(ResolveResult {
                             symbol,
                             resolution_path: ResolutionPath::ViaOpen(open_module.clone()),

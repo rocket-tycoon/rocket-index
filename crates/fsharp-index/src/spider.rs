@@ -90,7 +90,9 @@ pub fn spider(index: &CodeIndex, entry_point: &str, max_depth: usize) -> SpiderR
 
                 // Try to resolve each reference and add to queue
                 for reference in references {
-                    if let Some(resolved) = try_resolve_reference(index, &reference.name, opens) {
+                    if let Some(resolved) =
+                        try_resolve_reference(index, &reference.name, opens, &symbol.location.file)
+                    {
                         if !visited.contains(&resolved) {
                             queue.push_back((resolved, depth + 1));
                         }
@@ -118,28 +120,43 @@ pub fn spider(index: &CodeIndex, entry_point: &str, max_depth: usize) -> SpiderR
 /// Try to resolve a reference name to a qualified symbol name.
 ///
 /// This attempts resolution in order:
-/// 1. Direct match (already qualified)
-/// 2. Via open statements
-/// 3. Partial match on the name
-fn try_resolve_reference(index: &CodeIndex, name: &str, opens: &[String]) -> Option<String> {
-    // Try direct match first
-    if index.get(name).is_some() {
-        return Some(name.to_string());
+/// 1. Direct match (already qualified) - respecting compilation order
+/// 2. Via open statements - respecting compilation order
+/// 3. Partial match on the name - respecting compilation order
+///
+/// The `from_file` parameter is used to respect F# compilation order:
+/// a symbol is only visible if its defining file comes before `from_file`.
+fn try_resolve_reference(
+    index: &CodeIndex,
+    name: &str,
+    opens: &[String],
+    from_file: &Path,
+) -> Option<String> {
+    // Try direct match first (respecting compilation order)
+    if let Some(symbol) = index.get(name) {
+        if index.can_reference(from_file, &symbol.location.file) {
+            return Some(name.to_string());
+        }
     }
 
-    // Try with each open statement
+    // Try with each open statement (respecting compilation order)
     for open in opens {
         let qualified = format!("{}.{}", open, name);
-        if index.get(&qualified).is_some() {
-            return Some(qualified);
+        if let Some(symbol) = index.get(&qualified) {
+            if index.can_reference(from_file, &symbol.location.file) {
+                return Some(qualified);
+            }
         }
     }
 
     // Try partial match - look for symbols ending with this name
     // This handles cases like "List.map" where we need to find "Microsoft.FSharp.Collections.List.map"
+    // Filter by compilation order
     let search_results = index.search(name);
-    if let Some(first_match) = search_results.first() {
-        return Some(first_match.qualified.clone());
+    for matched in search_results {
+        if index.can_reference(from_file, &matched.location.file) {
+            return Some(matched.qualified.clone());
+        }
     }
 
     None
