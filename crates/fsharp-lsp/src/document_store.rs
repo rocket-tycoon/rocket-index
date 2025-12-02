@@ -9,9 +9,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::{Position, TextDocumentContentChangeEvent, Url};
 
-#[allow(unused_imports)]
-use tower_lsp::lsp_types::Url as _;
-
 /// A document tracked in memory.
 #[derive(Debug, Clone)]
 pub struct Document {

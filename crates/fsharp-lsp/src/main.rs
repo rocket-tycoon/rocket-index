@@ -5,6 +5,9 @@
 //! - Workspace symbol search
 //! - Incremental file indexing on save
 //! - In-memory document tracking for unsaved changes
+//!
+//! Storage: Uses SQLite database (.fsharp-index/index.db) for persistence,
+//! loaded into memory as CodeIndex for fast resolution.
 
 mod document_store;
 
@@ -13,7 +16,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use document_store::DocumentStore;
-use fsharp_index::{extract_symbols, watch::find_fsharp_files, CodeIndex};
+use fsharp_index::{
+    db::DEFAULT_DB_NAME, extract_symbols, watch::find_fsharp_files, CodeIndex, SqliteIndex,
+};
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::lsp_types::*;
@@ -25,7 +30,7 @@ use tree_sitter::{Parser, Point};
 struct Backend {
     /// LSP client for sending notifications
     client: Client,
-    /// The symbol index
+    /// The symbol index (in-memory for fast resolution)
     index: Arc<RwLock<CodeIndex>>,
     /// Workspace root directory
     workspace_root: Arc<RwLock<Option<PathBuf>>>,
@@ -34,8 +39,89 @@ struct Backend {
 }
 
 impl Backend {
+    /// Get the path to the SQLite database.
+    fn get_db_path(root: &PathBuf) -> PathBuf {
+        root.join(".fsharp-index").join(DEFAULT_DB_NAME)
+    }
+
+    /// Load the index from SQLite database if it exists.
+    async fn load_index_from_sqlite(&self) -> Result<bool> {
+        let root = self.workspace_root.read().await;
+        let root_path = match root.as_ref() {
+            Some(r) => r.clone(),
+            None => {
+                warn!("No workspace root set");
+                return Ok(false);
+            }
+        };
+        drop(root);
+
+        let db_path = Self::get_db_path(&root_path);
+
+        if !db_path.exists() {
+            info!("No SQLite index found at {:?}", db_path);
+            return Ok(false);
+        }
+
+        info!("Loading index from SQLite: {:?}", db_path);
+
+        let sqlite_index = SqliteIndex::open(&db_path)?;
+
+        // Get workspace root from metadata or use current
+        let workspace_root = sqlite_index
+            .get_metadata("workspace_root")?
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root_path.clone());
+
+        let mut code_index = CodeIndex::with_root(workspace_root.clone());
+
+        // Load file order if available
+        if let Ok(Some(file_order_json)) = sqlite_index.get_metadata("file_order") {
+            if let Ok(file_order) = serde_json::from_str::<Vec<PathBuf>>(&file_order_json) {
+                code_index.set_file_order(file_order);
+            }
+        }
+
+        // Load symbols, references, and opens from SQLite
+        let files = sqlite_index.list_files()?;
+        for file in &files {
+            let symbols = sqlite_index.symbols_in_file(file)?;
+            for symbol in symbols {
+                code_index.add_symbol(symbol);
+            }
+
+            let references = sqlite_index.references_in_file(file)?;
+            for reference in references {
+                code_index.add_reference(file.clone(), reference);
+            }
+
+            let opens = sqlite_index.opens_for_file(file)?;
+            for open in opens {
+                code_index.add_open(file.clone(), open);
+            }
+        }
+
+        let mut index = self.index.write().await;
+        *index = code_index;
+
+        info!(
+            "Loaded {} symbols from {} files",
+            index.symbol_count(),
+            files.len()
+        );
+
+        Ok(true)
+    }
+
     /// Build or rebuild the index for the workspace.
+    /// First tries to load from SQLite, falls back to building fresh.
     async fn build_index(&self) -> Result<()> {
+        // Try loading from SQLite first
+        if self.load_index_from_sqlite().await? {
+            return Ok(());
+        }
+
+        // No SQLite index found, build fresh
         let root = self.workspace_root.read().await;
         let root_path = match root.as_ref() {
             Some(r) => r.clone(),
@@ -71,7 +157,7 @@ impl Backend {
         Ok(())
     }
 
-    /// Index a single file.
+    /// Index a single file into the in-memory CodeIndex.
     fn index_file(&self, index: &mut CodeIndex, file: &PathBuf) -> Result<()> {
         let content = std::fs::read_to_string(file)?;
 
@@ -94,6 +180,58 @@ impl Backend {
         // Add opens
         for open in result.opens {
             index.add_open(file.clone(), open);
+        }
+
+        Ok(())
+    }
+
+    /// Update a single file in both the in-memory index and SQLite database.
+    async fn update_file(&self, file: &PathBuf) -> Result<()> {
+        // Update in-memory index
+        {
+            let mut index = self.index.write().await;
+            self.index_file(&mut index, file)?;
+        }
+
+        // Also update SQLite if it exists
+        let root = self.workspace_root.read().await;
+        if let Some(root_path) = root.as_ref() {
+            let db_path = Self::get_db_path(root_path);
+            if db_path.exists() {
+                match SqliteIndex::open(&db_path) {
+                    Ok(sqlite_index) => {
+                        // Clear existing data for this file
+                        if let Err(e) = sqlite_index.clear_file(file) {
+                            warn!("Failed to clear file from SQLite index: {}", e);
+                        }
+
+                        // Re-extract and insert
+                        if let Ok(content) = std::fs::read_to_string(file) {
+                            let result = extract_symbols(file, &content);
+
+                            for symbol in &result.symbols {
+                                if let Err(e) = sqlite_index.insert_symbol(symbol) {
+                                    warn!("Failed to persist symbol {}: {}", symbol.name, e);
+                                }
+                            }
+                            for reference in &result.references {
+                                if let Err(e) = sqlite_index.insert_reference(file, reference) {
+                                    warn!("Failed to persist reference: {}", e);
+                                }
+                            }
+                            for (line, open) in result.opens.iter().enumerate() {
+                                if let Err(e) = sqlite_index.insert_open(file, open, line as u32 + 1)
+                                {
+                                    warn!("Failed to persist open statement: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to open SQLite index for update: {}", e);
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -216,7 +354,7 @@ impl LanguageServer for Backend {
     async fn initialized(&self, _: InitializedParams) {
         info!("F# Language Server initialized");
 
-        // Build initial index
+        // Build initial index (loads from SQLite if available)
         if let Err(e) = self.build_index().await {
             error!("Failed to build index: {}", e);
             self.client
@@ -309,9 +447,15 @@ impl LanguageServer for Backend {
                 .and_then(|f| f.to_str())
                 .unwrap_or("unknown");
 
+            // Try to get type signature from type cache if available
+            let type_info = index
+                .get_symbol_type(&sym.qualified)
+                .map(|t| format!("\n\n**Type:** `{}`", t))
+                .unwrap_or_default();
+
             let content = format!(
-                "**{}** `{}`\n\n---\n\n*Defined in* `{}` *at line {}*\n\n*Qualified:* `{}`",
-                kind_str, sym.name, file_name, sym.location.line, sym.qualified
+                "**{}** `{}`{}\n\n---\n\n*Defined in* `{}` *at line {}*\n\n*Qualified:* `{}`",
+                kind_str, sym.name, type_info, file_name, sym.location.line, sym.qualified
             );
 
             return Ok(Some(Hover {
@@ -436,8 +580,8 @@ impl LanguageServer for Backend {
 
         info!("Reindexing saved file: {:?}", file);
 
-        let mut index = self.index.write().await;
-        if let Err(e) = self.index_file(&mut index, &file) {
+        // Update both in-memory index and SQLite
+        if let Err(e) = self.update_file(&file).await {
             error!("Failed to reindex {:?}: {}", file, e);
             self.client
                 .log_message(MessageType::ERROR, format!("Reindex failed: {}", e))
