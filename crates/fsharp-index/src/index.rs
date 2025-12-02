@@ -51,6 +51,11 @@ pub struct CodeIndex {
 
     /// File (relative path) -> parsed opens/imports
     file_opens: HashMap<PathBuf, Vec<String>>,
+
+    /// File compilation order from .fsproj (relative paths)
+    /// Index 0 = first file compiled, higher = later
+    /// Empty if no .fsproj was found
+    file_order: Vec<PathBuf>,
 }
 
 impl CodeIndex {
@@ -363,6 +368,71 @@ impl CodeIndex {
         let relative_file = self.to_relative(file);
         self.file_symbols.contains_key(&relative_file)
     }
+
+    /// Set the file compilation order from a .fsproj file.
+    ///
+    /// Files are stored in compilation order (index 0 = first compiled).
+    /// Paths are converted to relative paths.
+    pub fn set_file_order(&mut self, files: Vec<PathBuf>) {
+        self.file_order = files.into_iter().map(|f| self.to_relative(&f)).collect();
+    }
+
+    /// Get the compilation order index for a file.
+    ///
+    /// Returns None if the file is not in the compilation order
+    /// (either no .fsproj was loaded or file is not in the project).
+    pub fn compilation_order(&self, file: &Path) -> Option<usize> {
+        let relative_file = self.to_relative(file);
+        self.file_order.iter().position(|f| f == &relative_file)
+    }
+
+    /// Check if file A can reference file B based on compilation order.
+    ///
+    /// In F#, a file can only reference symbols from files that come
+    /// before it in the compilation order.
+    ///
+    /// Returns true if:
+    /// - No compilation order is set (permissive mode)
+    /// - Either file is not in the project
+    /// - to_file comes before from_file in compilation order
+    pub fn can_reference(&self, from_file: &Path, to_file: &Path) -> bool {
+        if self.file_order.is_empty() {
+            return true; // No compilation order set, allow all references
+        }
+
+        match (
+            self.compilation_order(from_file),
+            self.compilation_order(to_file),
+        ) {
+            (Some(from_order), Some(to_order)) => to_order < from_order,
+            _ => true, // If either file is not in order, allow reference
+        }
+    }
+
+    /// Get all files that can be referenced from the given file.
+    ///
+    /// Returns files that come before the given file in compilation order.
+    /// If no compilation order is set, returns all indexed files.
+    pub fn files_visible_from(&self, file: &Path) -> Vec<PathBuf> {
+        if self.file_order.is_empty() {
+            return self.file_symbols.keys().cloned().collect();
+        }
+
+        match self.compilation_order(file) {
+            Some(order) => self.file_order[..order].to_vec(),
+            None => self.file_symbols.keys().cloned().collect(),
+        }
+    }
+
+    /// Check if compilation order information is available.
+    pub fn has_file_order(&self) -> bool {
+        !self.file_order.is_empty()
+    }
+
+    /// Get the number of files in the compilation order.
+    pub fn file_order_count(&self) -> usize {
+        self.file_order.len()
+    }
 }
 
 #[cfg(test)]
@@ -548,5 +618,108 @@ mod tests {
         assert_eq!(index.symbol_count(), 1);
         let remaining = index.get("App.config").unwrap();
         assert_eq!(remaining.location.file, PathBuf::from("src/Override.fs"));
+    }
+
+    #[test]
+    fn test_file_order_basic() {
+        let mut index = CodeIndex::new();
+
+        // Set compilation order: A.fs, B.fs, C.fs
+        index.set_file_order(vec![
+            PathBuf::from("src/A.fs"),
+            PathBuf::from("src/B.fs"),
+            PathBuf::from("src/C.fs"),
+        ]);
+
+        assert!(index.has_file_order());
+        assert_eq!(index.file_order_count(), 3);
+
+        // Check compilation order indices
+        assert_eq!(index.compilation_order(Path::new("src/A.fs")), Some(0));
+        assert_eq!(index.compilation_order(Path::new("src/B.fs")), Some(1));
+        assert_eq!(index.compilation_order(Path::new("src/C.fs")), Some(2));
+        assert_eq!(index.compilation_order(Path::new("src/D.fs")), None);
+    }
+
+    #[test]
+    fn test_can_reference_with_order() {
+        let mut index = CodeIndex::new();
+
+        // Set compilation order: A.fs, B.fs, C.fs
+        index.set_file_order(vec![
+            PathBuf::from("src/A.fs"),
+            PathBuf::from("src/B.fs"),
+            PathBuf::from("src/C.fs"),
+        ]);
+
+        // C can reference A and B (they come before C)
+        assert!(index.can_reference(Path::new("src/C.fs"), Path::new("src/A.fs")));
+        assert!(index.can_reference(Path::new("src/C.fs"), Path::new("src/B.fs")));
+
+        // B can reference A
+        assert!(index.can_reference(Path::new("src/B.fs"), Path::new("src/A.fs")));
+
+        // A cannot reference B or C (they come after A)
+        assert!(!index.can_reference(Path::new("src/A.fs"), Path::new("src/B.fs")));
+        assert!(!index.can_reference(Path::new("src/A.fs"), Path::new("src/C.fs")));
+
+        // B cannot reference C
+        assert!(!index.can_reference(Path::new("src/B.fs"), Path::new("src/C.fs")));
+    }
+
+    #[test]
+    fn test_can_reference_without_order() {
+        let index = CodeIndex::new();
+
+        // Without file order, all references should be allowed
+        assert!(!index.has_file_order());
+        assert!(index.can_reference(Path::new("src/A.fs"), Path::new("src/B.fs")));
+        assert!(index.can_reference(Path::new("src/B.fs"), Path::new("src/A.fs")));
+    }
+
+    #[test]
+    fn test_files_visible_from() {
+        let mut index = CodeIndex::new();
+
+        // Set compilation order: A.fs, B.fs, C.fs
+        index.set_file_order(vec![
+            PathBuf::from("src/A.fs"),
+            PathBuf::from("src/B.fs"),
+            PathBuf::from("src/C.fs"),
+        ]);
+
+        // From A, nothing is visible
+        let visible = index.files_visible_from(Path::new("src/A.fs"));
+        assert!(visible.is_empty());
+
+        // From B, only A is visible
+        let visible = index.files_visible_from(Path::new("src/B.fs"));
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0], PathBuf::from("src/A.fs"));
+
+        // From C, A and B are visible
+        let visible = index.files_visible_from(Path::new("src/C.fs"));
+        assert_eq!(visible.len(), 2);
+    }
+
+    #[test]
+    fn test_file_order_with_workspace_root() {
+        let mut index = CodeIndex::with_root(PathBuf::from("/workspace"));
+
+        // Set file order with absolute paths (should be converted to relative)
+        index.set_file_order(vec![
+            PathBuf::from("/workspace/src/A.fs"),
+            PathBuf::from("/workspace/src/B.fs"),
+        ]);
+
+        // Should be able to look up by relative path
+        assert_eq!(index.compilation_order(Path::new("src/A.fs")), Some(0));
+        assert_eq!(index.compilation_order(Path::new("src/B.fs")), Some(1));
+
+        // Should also work with absolute paths
+        assert_eq!(
+            index.compilation_order(Path::new("/workspace/src/A.fs")),
+            Some(0)
+        );
     }
 }
