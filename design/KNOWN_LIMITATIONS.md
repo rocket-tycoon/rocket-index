@@ -16,7 +16,7 @@ This document describes the architectural limitations of fsharp-tools. These are
 
 **Why:** Type-aware analysis requires the F# compiler or a reimplementation of F#'s complex type inference. This would require either the .NET runtime or massive implementation effort—both against project goals.
 
-**Workaround:** For type-aware features, use the official F# language server (fsautocomplete) alongside fsharp-tools.
+**Workaround:** For type-aware features, use the official F# language server (fsautocomplete) alongside fsharp-tools. Optional type extraction (via `scripts/extract-types.fsx` or `fsharp-index build --extract-types`) can stash known signatures into the SQLite index for richer hover/member hints, but it still cannot infer pipeline types or disambiguate overloads automatically.
 
 ---
 

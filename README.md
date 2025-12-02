@@ -10,6 +10,7 @@ fsharp-tools provides codebase indexing and navigation for F# projects without t
 
 - **Bounded, predictable memory usage** (<50MB for large codebases)
 - **Fast codebase indexing and navigation**
+- **SQLite-backed index** (persistent symbol store with optional type extraction data)
 - **Go-to-definition** across files
 - **Dependency graph traversal** ("spider" from entry point)
 - **Clean CLI** for AI agent tooling
@@ -74,6 +75,12 @@ $ fsharp-index symbols "Payment*"
 # Output as JSON for tooling
 $ fsharp-index def "PaymentService.processPayment" --json
 ```
+
+### SQLite Storage & Type Extraction
+
+The `fsharp-index build` command now writes every symbol, reference, and `open` directive into a SQLite database at `.fsharp-index/index.db`. This persistent store is used by both the CLI and the LSP so large workspaces can be loaded without rebuilding an in-memory index each run.
+
+Optional semantic type data can be added by running the `scripts/extract-types.fsx` helper (automatically triggered by `fsharp-index build --extract-types`). The script uses FSharp.Compiler.Service to record function signatures and type members, which are merged into the same SQLite file for richer hover output and member-resolution heuristics.
 
 ## Development
 
