@@ -1,4 +1,6 @@
-use assert_cmd::prelude::*;
+#![allow(deprecated)]
+
+use assert_cmd::Command;
 use fsharp_index::db::DEFAULT_DB_NAME;
 use predicates::str::contains;
 use std::{
@@ -87,6 +89,188 @@ fn def_command_reads_from_sqlite_index() -> TestResult {
         .assert()
         .success()
         .stdout(contains("App.fs"));
+
+    Ok(())
+}
+
+/// A more realistic multi-file workspace for integration testing
+struct MultiFileWorkspace {
+    dir: TempDir,
+}
+
+impl MultiFileWorkspace {
+    fn new() -> TestResult<Self> {
+        let dir = TempDir::new()?;
+        let root = dir.path();
+
+        // Create directory structure
+        let src = root.join("src");
+        fs::create_dir_all(&src)?;
+
+        // Create Domain.fs - the core types
+        fs::write(
+            src.join("Domain.fs"),
+            r#"module MyApp.Domain
+
+type User = { Id: int; Name: string }
+
+type Order = { OrderId: int; UserId: int; Total: decimal }
+
+let createUser id name = { Id = id; Name = name }
+"#,
+        )?;
+
+        // Create Services.fs - uses Domain types
+        fs::write(
+            src.join("Services.fs"),
+            r#"module MyApp.Services
+
+open MyApp.Domain
+
+let getUserById id = createUser id "Test User"
+
+let processOrder (user: User) amount =
+    { OrderId = 1; UserId = user.Id; Total = amount }
+"#,
+        )?;
+
+        // Create App.fs - the entry point
+        fs::write(
+            src.join("App.fs"),
+            r#"module MyApp.App
+
+open MyApp.Domain
+open MyApp.Services
+
+let main () =
+    let user = getUserById 42
+    let order = processOrder user 99.99M
+    printfn "Created order %d for user %s" order.OrderId user.Name
+"#,
+        )?;
+
+        Ok(Self { dir })
+    }
+
+    fn root(&self) -> &Path {
+        self.dir.path()
+    }
+}
+
+#[test]
+fn multi_file_project_indexes_all_symbols() -> TestResult {
+    let workspace = MultiFileWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("fsharp-index")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", "."])
+        .assert()
+        .success()
+        .stdout(contains("3 files"))
+        .stdout(contains("symbols"));
+
+    Ok(())
+}
+
+#[test]
+fn symbol_search_finds_types_and_functions() -> TestResult {
+    let workspace = MultiFileWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("fsharp-index")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", "."])
+        .assert()
+        .success();
+
+    // Search for User type
+    Command::cargo_bin("fsharp-index")?
+        .current_dir(workspace.root())
+        .args(["symbols", "*User*"])
+        .assert()
+        .success()
+        .stdout(contains("MyApp.Domain.User"))
+        .stdout(contains("Record"));
+
+    // Search for functions
+    Command::cargo_bin("fsharp-index")?
+        .current_dir(workspace.root())
+        .args(["symbols", "*process*"])
+        .assert()
+        .success()
+        .stdout(contains("MyApp.Services.processOrder"));
+
+    Ok(())
+}
+
+#[test]
+fn def_resolves_across_modules() -> TestResult {
+    let workspace = MultiFileWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("fsharp-index")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", "."])
+        .assert()
+        .success();
+
+    // Look up a function in Services that uses Domain
+    Command::cargo_bin("fsharp-index")?
+        .current_dir(workspace.root())
+        .args(["def", "MyApp.Services.processOrder", "--context"])
+        .assert()
+        .success()
+        .stdout(contains("Services.fs"))
+        .stdout(contains("processOrder"));
+
+    Ok(())
+}
+
+#[test]
+fn spider_traverses_dependencies() -> TestResult {
+    let workspace = MultiFileWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("fsharp-index")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", "."])
+        .assert()
+        .success();
+
+    // Spider from main should find dependencies
+    Command::cargo_bin("fsharp-index")?
+        .current_dir(workspace.root())
+        .args(["spider", "MyApp.App.main", "--depth", "2"])
+        .assert()
+        .success()
+        // Should find the user and order references
+        .stdout(contains("MyApp.App.main"));
+
+    Ok(())
+}
+
+#[test]
+fn json_output_format_works() -> TestResult {
+    let workspace = MultiFileWorkspace::new()?;
+
+    // Build with JSON output
+    Command::cargo_bin("fsharp-index")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", ".", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("\"files\""))
+        .stdout(contains("\"symbols\""));
+
+    // Symbols with JSON output
+    Command::cargo_bin("fsharp-index")?
+        .current_dir(workspace.root())
+        .args(["symbols", "*User*", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("\"name\""))
+        .stdout(contains("\"qualified\""));
 
     Ok(())
 }
