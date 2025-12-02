@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::type_cache::{TypeCache, TypeMember};
 use crate::{Location, Symbol};
 
 /// A reference to a symbol (an identifier usage, not a definition).
@@ -56,6 +57,10 @@ pub struct CodeIndex {
     /// Index 0 = first file compiled, higher = later
     /// Empty if no .fsproj was found
     file_order: Vec<PathBuf>,
+
+    /// Optional type cache for type-aware resolution (not serialized - loaded separately)
+    #[serde(skip)]
+    type_cache: Option<TypeCache>,
 }
 
 impl CodeIndex {
@@ -285,6 +290,7 @@ impl CodeIndex {
     }
 
     /// Search for symbols matching a pattern (simple prefix/contains match).
+    #[must_use]
     pub fn search(&self, query: &str) -> Vec<&Symbol> {
         let query_lower = query.to_lowercase();
         let is_glob = query.contains('*');
@@ -433,11 +439,62 @@ impl CodeIndex {
     pub fn file_order_count(&self) -> usize {
         self.file_order.len()
     }
+
+    // =========================================================================
+    // Type Cache Integration (RFC-001)
+    // =========================================================================
+
+    /// Load a type cache from a JSON file and attach it to this index.
+    ///
+    /// The type cache provides type information extracted at build time,
+    /// enabling type-aware symbol resolution.
+    pub fn load_type_cache(&mut self, path: &Path) -> crate::Result<()> {
+        let cache = TypeCache::load(path)?;
+        self.type_cache = Some(cache);
+        Ok(())
+    }
+
+    /// Attach an already-loaded type cache to this index.
+    pub fn set_type_cache(&mut self, cache: TypeCache) {
+        self.type_cache = Some(cache);
+    }
+
+    /// Check if a type cache is loaded.
+    pub fn has_type_cache(&self) -> bool {
+        self.type_cache.is_some()
+    }
+
+    /// Get a reference to the type cache, if loaded.
+    pub fn type_cache(&self) -> Option<&TypeCache> {
+        self.type_cache.as_ref()
+    }
+
+    /// Get the type signature of a symbol by its qualified name.
+    ///
+    /// Returns `None` if no type cache is loaded or the symbol is not found.
+    pub fn get_symbol_type(&self, qualified_name: &str) -> Option<&str> {
+        self.type_cache.as_ref()?.get_type(qualified_name)
+    }
+
+    /// Get all members of a type.
+    ///
+    /// Returns `None` if no type cache is loaded or the type is not found.
+    pub fn get_type_members(&self, type_name: &str) -> Option<&[TypeMember]> {
+        self.type_cache.as_ref()?.get_members(type_name)
+    }
+
+    /// Get a specific member of a type.
+    ///
+    /// Returns `None` if no type cache is loaded, type not found, or member not found.
+    pub fn get_type_member(&self, type_name: &str, member_name: &str) -> Option<&TypeMember> {
+        self.type_cache.as_ref()?.get_member(type_name, member_name)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::type_cache::{MemberKind, TypeCacheSchema, TypeMember, TypedSymbol};
     use crate::{Location, SymbolKind, Visibility};
 
     fn make_symbol(name: &str, qualified: &str, file: &str) -> Symbol {
@@ -721,5 +778,154 @@ mod tests {
             index.compilation_order(Path::new("/workspace/src/A.fs")),
             Some(0)
         );
+    }
+
+    // =========================================================================
+    // Type Cache Integration Tests (RFC-001)
+    // =========================================================================
+
+    fn make_type_cache() -> TypeCache {
+        let schema = TypeCacheSchema {
+            version: 1,
+            extracted_at: "2024-12-02T10:30:00Z".to_string(),
+            project: "TestProject".to_string(),
+            symbols: vec![
+                TypedSymbol {
+                    name: "myString".to_string(),
+                    qualified: "MyModule.myString".to_string(),
+                    type_signature: "string".to_string(),
+                    file: "src/MyModule.fs".to_string(),
+                    line: 42,
+                    parameters: vec![],
+                },
+                TypedSymbol {
+                    name: "processUser".to_string(),
+                    qualified: "UserService.processUser".to_string(),
+                    type_signature: "User -> Async<Result<Response, Error>>".to_string(),
+                    file: "src/UserService.fs".to_string(),
+                    line: 15,
+                    parameters: vec![],
+                },
+            ],
+            members: vec![
+                TypeMember {
+                    type_name: "User".to_string(),
+                    member: "Name".to_string(),
+                    member_type: "string".to_string(),
+                    kind: MemberKind::Property,
+                },
+                TypeMember {
+                    type_name: "User".to_string(),
+                    member: "Save".to_string(),
+                    member_type: "unit -> Async<unit>".to_string(),
+                    kind: MemberKind::Method,
+                },
+            ],
+        };
+        TypeCache::from_schema(schema)
+    }
+
+    #[test]
+    fn test_index_without_type_cache() {
+        let index = CodeIndex::new();
+        assert!(!index.has_type_cache());
+        assert!(index.type_cache().is_none());
+        assert!(index.get_symbol_type("MyModule.myString").is_none());
+        assert!(index.get_type_members("User").is_none());
+    }
+
+    #[test]
+    fn test_set_type_cache() {
+        let mut index = CodeIndex::new();
+        let cache = make_type_cache();
+
+        index.set_type_cache(cache);
+
+        assert!(index.has_type_cache());
+        assert!(index.type_cache().is_some());
+    }
+
+    #[test]
+    fn test_get_symbol_type_with_cache() {
+        let mut index = CodeIndex::new();
+        index.set_type_cache(make_type_cache());
+
+        assert_eq!(index.get_symbol_type("MyModule.myString"), Some("string"));
+        assert_eq!(
+            index.get_symbol_type("UserService.processUser"),
+            Some("User -> Async<Result<Response, Error>>")
+        );
+        assert!(index.get_symbol_type("NonExistent.symbol").is_none());
+    }
+
+    #[test]
+    fn test_get_type_members_with_cache() {
+        let mut index = CodeIndex::new();
+        index.set_type_cache(make_type_cache());
+
+        let members = index.get_type_members("User").unwrap();
+        assert_eq!(members.len(), 2);
+
+        let member_names: Vec<&str> = members.iter().map(|m| m.member.as_str()).collect();
+        assert!(member_names.contains(&"Name"));
+        assert!(member_names.contains(&"Save"));
+
+        assert!(index.get_type_members("NonExistentType").is_none());
+    }
+
+    #[test]
+    fn test_get_type_member_with_cache() {
+        let mut index = CodeIndex::new();
+        index.set_type_cache(make_type_cache());
+
+        let name_prop = index.get_type_member("User", "Name").unwrap();
+        assert_eq!(name_prop.member_type, "string");
+        assert_eq!(name_prop.kind, MemberKind::Property);
+
+        let save_method = index.get_type_member("User", "Save").unwrap();
+        assert_eq!(save_method.kind, MemberKind::Method);
+
+        assert!(index.get_type_member("User", "NonExistent").is_none());
+        assert!(index.get_type_member("NonExistent", "Name").is_none());
+    }
+
+    #[test]
+    fn test_load_type_cache_missing_file() {
+        let mut index = CodeIndex::new();
+        let result = index.load_type_cache(Path::new("/nonexistent/cache.json"));
+        assert!(result.is_err());
+        assert!(!index.has_type_cache());
+    }
+
+    #[test]
+    fn test_load_type_cache_from_file() {
+        use std::io::Write;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache_path = temp_dir.path().join("cache.json");
+
+        let json = r#"{
+            "version": 1,
+            "extracted_at": "2024-12-02T10:30:00Z",
+            "project": "TestProject",
+            "symbols": [
+                {
+                    "name": "foo",
+                    "qualified": "Test.foo",
+                    "type": "int",
+                    "file": "src/Test.fs",
+                    "line": 1
+                }
+            ],
+            "members": []
+        }"#;
+
+        let mut file = std::fs::File::create(&cache_path).unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+
+        let mut index = CodeIndex::new();
+        index.load_type_cache(&cache_path).unwrap();
+
+        assert!(index.has_type_cache());
+        assert_eq!(index.get_symbol_type("Test.foo"), Some("int"));
     }
 }

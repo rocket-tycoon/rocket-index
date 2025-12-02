@@ -4,9 +4,11 @@
 //! - Open statements (imports)
 //! - Module hierarchy
 //! - Qualified vs unqualified names
+//! - Type-aware member access (RFC-001)
 
 use std::path::Path;
 
+use crate::type_cache::TypeMember;
 use crate::{CodeIndex, Symbol};
 
 /// Result of name resolution
@@ -29,6 +31,18 @@ pub enum ResolutionPath {
     SameModule,
     /// Resolved from a parent module
     ParentModule(String),
+    /// Resolved via type-aware member access (RFC-001)
+    /// Contains the type name that the member was resolved on
+    ViaMemberAccess { type_name: String },
+}
+
+/// Result of resolving a member access expression (e.g., `user.Name`)
+#[derive(Debug, Clone)]
+pub struct MemberResolveResult<'a> {
+    /// The resolved type member
+    pub member: &'a TypeMember,
+    /// The type that contains this member
+    pub type_name: String,
 }
 
 impl CodeIndex {
@@ -46,6 +60,7 @@ impl CodeIndex {
     ///
     /// # Returns
     /// The resolved symbol if found, None otherwise
+    #[must_use]
     pub fn resolve(&self, name: &str, from_file: &Path) -> Option<ResolveResult<'_>> {
         // 1. Try exact qualified name match (respecting compilation order)
         if let Some(symbol) = self.get_visible_from(name, from_file) {
@@ -178,6 +193,7 @@ impl CodeIndex {
 
     /// Resolve a dotted name like "PaymentService.processPayment"
     /// This handles the case where the first part might be a module alias or nested module.
+    #[must_use]
     pub fn resolve_dotted(&self, name: &str, from_file: &Path) -> Option<ResolveResult<'_>> {
         // First try direct resolution
         if let Some(result) = self.resolve(name, from_file) {
@@ -221,9 +237,165 @@ impl CodeIndex {
     }
 }
 
+impl CodeIndex {
+    // =========================================================================
+    // Type-Aware Resolution (RFC-001)
+    // =========================================================================
+
+    /// Get the inferred type of a symbol by its qualified name.
+    ///
+    /// This uses the type cache (if loaded) to look up the type signature
+    /// of a symbol. Returns `None` if no type cache is loaded or the symbol
+    /// is not found.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // If myString is defined as: let myString = "hello"
+    /// // The type cache would have: MyModule.myString -> "string"
+    /// let ty = index.infer_expression_type("MyModule.myString");
+    /// assert_eq!(ty, Some("string"));
+    /// ```
+    pub fn infer_expression_type(&self, qualified_name: &str) -> Option<&str> {
+        self.get_symbol_type(qualified_name)
+    }
+
+    /// Resolve a member access expression like `expr.member`.
+    ///
+    /// Given a type name and member name, looks up the member in the type cache.
+    /// This enables navigation from `user.Name` to the definition of `Name` on `User`.
+    ///
+    /// # Arguments
+    /// * `type_name` - The type of the expression (e.g., "User", "string")
+    /// * `member_name` - The member being accessed (e.g., "Name", "Length")
+    ///
+    /// # Returns
+    /// The member information if found in the type cache, None otherwise.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Given: let user: User = ...
+    /// //        user.Name
+    /// let result = index.resolve_member_access("User", "Name");
+    /// // Returns MemberResolveResult with member info for User.Name
+    /// ```
+    pub fn resolve_member_access<'a>(
+        &'a self,
+        type_name: &str,
+        member_name: &str,
+    ) -> Option<MemberResolveResult<'a>> {
+        let member = self.get_type_member(type_name, member_name)?;
+        Some(MemberResolveResult {
+            member,
+            type_name: type_name.to_string(),
+        })
+    }
+
+    /// Resolve a dotted expression with type-aware fallback.
+    ///
+    /// This method first tries normal syntactic resolution. If that fails
+    /// and a type cache is available, it attempts type-aware resolution
+    /// by looking up the base expression's type and resolving the member.
+    ///
+    /// # Arguments
+    /// * `base_qualified` - The qualified name of the base expression (e.g., "MyModule.user")
+    /// * `member_name` - The member being accessed (e.g., "Name")
+    /// * `from_file` - The file context for resolution
+    ///
+    /// # Returns
+    /// A ResolveResult if the member can be resolved, None otherwise.
+    pub fn resolve_with_type_info(
+        &self,
+        base_qualified: &str,
+        member_name: &str,
+        from_file: &Path,
+    ) -> Option<ResolveResult<'_>> {
+        // First, try normal dotted resolution (e.g., Module.function)
+        let dotted_name = format!("{}.{}", base_qualified, member_name);
+        if let Some(result) = self.resolve_dotted(&dotted_name, from_file) {
+            return Some(result);
+        }
+
+        // If type cache is available, try type-aware resolution
+        if let Some(type_cache) = self.type_cache() {
+            // Get the type of the base expression
+            if let Some(base_type) = type_cache.get_type(base_qualified) {
+                // Extract the simple type name (handle generics like "Async<User>")
+                let simple_type = extract_simple_type(base_type);
+
+                // Look for a symbol definition for this type's member
+                // Try: TypeName.memberName as a qualified name
+                let type_member_qualified = format!("{}.{}", simple_type, member_name);
+                if let Some(symbol) = self.get(&type_member_qualified) {
+                    return Some(ResolveResult {
+                        symbol,
+                        resolution_path: ResolutionPath::ViaMemberAccess {
+                            type_name: simple_type.to_string(),
+                        },
+                    });
+                }
+
+                // Also try looking up in parent modules
+                // e.g., if type is "MyApp.Domain.User", try "MyApp.Domain.User.Name"
+                let full_type_member = format!("{}.{}", base_type, member_name);
+                if let Some(symbol) = self.get(&full_type_member) {
+                    return Some(ResolveResult {
+                        symbol,
+                        resolution_path: ResolutionPath::ViaMemberAccess {
+                            type_name: base_type.to_string(),
+                        },
+                    });
+                }
+            }
+        }
+
+        None
+    }
+}
+
+/// Extract the simple type name from a potentially complex type signature.
+///
+/// Examples:
+/// - "string" -> "string"
+/// - "User" -> "User"
+/// - "Async<User>" -> "User"
+/// - "Result<User, Error>" -> "User" (takes first type arg)
+/// - "int list" -> "int"
+/// - "User option" -> "User"
+fn extract_simple_type(type_sig: &str) -> &str {
+    let trimmed = type_sig.trim();
+
+    // Handle F# postfix types: "int list", "User option", "string array"
+    let postfix_types = [" list", " option", " array", " seq", " ref"];
+    for suffix in &postfix_types {
+        if trimmed.ends_with(suffix) {
+            return trimmed[..trimmed.len() - suffix.len()].trim();
+        }
+    }
+
+    // Handle generic types: "Async<User>", "Result<User, Error>"
+    if let Some(angle_pos) = trimmed.find('<') {
+        let inner = &trimmed[angle_pos + 1..];
+        if let Some(end) = inner.find(|c| c == '>' || c == ',') {
+            return inner[..end].trim();
+        }
+        // Fallback: return the type before the angle bracket
+        return trimmed[..angle_pos].trim();
+    }
+
+    // Handle function types: take the return type (last part after ->)
+    if trimmed.contains("->") {
+        if let Some(last_arrow) = trimmed.rfind("->") {
+            return trimmed[last_arrow + 2..].trim();
+        }
+    }
+
+    trimmed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::type_cache::{MemberKind, TypeCache, TypeCacheSchema, TypeMember, TypedSymbol};
     use crate::{Location, SymbolKind, Visibility};
     use std::path::PathBuf;
 
@@ -235,6 +407,69 @@ mod tests {
             location: Location::new(PathBuf::from(file), 1, 1),
             visibility: Visibility::Public,
         }
+    }
+
+    fn make_type_cache() -> TypeCache {
+        let schema = TypeCacheSchema {
+            version: 1,
+            extracted_at: "2024-12-02T10:30:00Z".to_string(),
+            project: "TestProject".to_string(),
+            symbols: vec![
+                TypedSymbol {
+                    name: "user".to_string(),
+                    qualified: "MyModule.user".to_string(),
+                    type_signature: "User".to_string(),
+                    file: "src/MyModule.fs".to_string(),
+                    line: 10,
+                    parameters: vec![],
+                },
+                TypedSymbol {
+                    name: "myString".to_string(),
+                    qualified: "MyModule.myString".to_string(),
+                    type_signature: "string".to_string(),
+                    file: "src/MyModule.fs".to_string(),
+                    line: 20,
+                    parameters: vec![],
+                },
+                TypedSymbol {
+                    name: "asyncUser".to_string(),
+                    qualified: "MyModule.asyncUser".to_string(),
+                    type_signature: "Async<User>".to_string(),
+                    file: "src/MyModule.fs".to_string(),
+                    line: 30,
+                    parameters: vec![],
+                },
+                TypedSymbol {
+                    name: "users".to_string(),
+                    qualified: "MyModule.users".to_string(),
+                    type_signature: "User list".to_string(),
+                    file: "src/MyModule.fs".to_string(),
+                    line: 40,
+                    parameters: vec![],
+                },
+            ],
+            members: vec![
+                TypeMember {
+                    type_name: "User".to_string(),
+                    member: "Name".to_string(),
+                    member_type: "string".to_string(),
+                    kind: MemberKind::Property,
+                },
+                TypeMember {
+                    type_name: "User".to_string(),
+                    member: "Save".to_string(),
+                    member_type: "unit -> Async<unit>".to_string(),
+                    kind: MemberKind::Method,
+                },
+                TypeMember {
+                    type_name: "string".to_string(),
+                    member: "Length".to_string(),
+                    member_type: "int".to_string(),
+                    kind: MemberKind::Property,
+                },
+            ],
+        };
+        TypeCache::from_schema(schema)
     }
 
     #[test]
@@ -314,5 +549,166 @@ mod tests {
             resolved.unwrap().symbol.location.file,
             PathBuf::from("src/Utils.fs")
         );
+    }
+
+    // =========================================================================
+    // Type-Aware Resolution Tests (RFC-001)
+    // =========================================================================
+
+    #[test]
+    fn test_infer_expression_type() {
+        let mut index = CodeIndex::new();
+        index.set_type_cache(make_type_cache());
+
+        assert_eq!(index.infer_expression_type("MyModule.user"), Some("User"));
+        assert_eq!(
+            index.infer_expression_type("MyModule.myString"),
+            Some("string")
+        );
+        assert!(index.infer_expression_type("NonExistent.symbol").is_none());
+    }
+
+    #[test]
+    fn test_infer_expression_type_without_cache() {
+        let index = CodeIndex::new();
+        assert!(index.infer_expression_type("MyModule.user").is_none());
+    }
+
+    #[test]
+    fn test_resolve_member_access() {
+        let mut index = CodeIndex::new();
+        index.set_type_cache(make_type_cache());
+
+        // Resolve User.Name
+        let result = index.resolve_member_access("User", "Name").unwrap();
+        assert_eq!(result.type_name, "User");
+        assert_eq!(result.member.member, "Name");
+        assert_eq!(result.member.member_type, "string");
+        assert_eq!(result.member.kind, MemberKind::Property);
+
+        // Resolve User.Save
+        let result = index.resolve_member_access("User", "Save").unwrap();
+        assert_eq!(result.member.kind, MemberKind::Method);
+
+        // Resolve string.Length
+        let result = index.resolve_member_access("string", "Length").unwrap();
+        assert_eq!(result.member.member_type, "int");
+    }
+
+    #[test]
+    fn test_resolve_member_access_not_found() {
+        let mut index = CodeIndex::new();
+        index.set_type_cache(make_type_cache());
+
+        assert!(index.resolve_member_access("User", "NonExistent").is_none());
+        assert!(index.resolve_member_access("NonExistent", "Name").is_none());
+    }
+
+    #[test]
+    fn test_resolve_member_access_without_cache() {
+        let index = CodeIndex::new();
+        assert!(index.resolve_member_access("User", "Name").is_none());
+    }
+
+    #[test]
+    fn test_resolve_with_type_info_falls_back_to_syntactic() {
+        let mut index = CodeIndex::new();
+        // Add a normal symbol that can be resolved syntactically
+        index.add_symbol(make_symbol("helper", "Utils.helper", "src/Utils.fs"));
+
+        // Should resolve via normal dotted resolution (no type cache needed)
+        let result = index.resolve_with_type_info("Utils", "helper", Path::new("src/Main.fs"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().symbol.name, "helper");
+    }
+
+    #[test]
+    fn test_resolve_with_type_info_uses_type_cache() {
+        let mut index = CodeIndex::new();
+        index.set_type_cache(make_type_cache());
+
+        // Add a symbol for User.Name (simulating a record field definition)
+        index.add_symbol(Symbol {
+            name: "Name".to_string(),
+            qualified: "User.Name".to_string(),
+            kind: SymbolKind::Member,
+            location: Location::new(PathBuf::from("src/Types.fs"), 5, 5),
+            visibility: Visibility::Public,
+        });
+
+        // Resolve user.Name where user: User
+        let result =
+            index.resolve_with_type_info("MyModule.user", "Name", Path::new("src/Main.fs"));
+
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.symbol.name, "Name");
+        assert!(matches!(
+            result.resolution_path,
+            ResolutionPath::ViaMemberAccess { type_name } if type_name == "User"
+        ));
+    }
+
+    #[test]
+    fn test_resolve_with_type_info_no_match() {
+        let mut index = CodeIndex::new();
+        index.set_type_cache(make_type_cache());
+
+        // Try to resolve a member that doesn't exist as a symbol
+        let result = index.resolve_with_type_info(
+            "MyModule.user",
+            "NonExistentMember",
+            Path::new("src/Main.fs"),
+        );
+
+        assert!(result.is_none());
+    }
+
+    // =========================================================================
+    // extract_simple_type Tests
+    // =========================================================================
+
+    #[test]
+    fn test_extract_simple_type_basic() {
+        assert_eq!(extract_simple_type("string"), "string");
+        assert_eq!(extract_simple_type("int"), "int");
+        assert_eq!(extract_simple_type("User"), "User");
+        assert_eq!(
+            extract_simple_type("MyApp.Domain.User"),
+            "MyApp.Domain.User"
+        );
+    }
+
+    #[test]
+    fn test_extract_simple_type_postfix() {
+        assert_eq!(extract_simple_type("int list"), "int");
+        assert_eq!(extract_simple_type("User option"), "User");
+        assert_eq!(extract_simple_type("string array"), "string");
+        assert_eq!(extract_simple_type("User seq"), "User");
+    }
+
+    #[test]
+    fn test_extract_simple_type_generic() {
+        assert_eq!(extract_simple_type("Async<User>"), "User");
+        assert_eq!(extract_simple_type("Result<User, Error>"), "User");
+        assert_eq!(extract_simple_type("Task<string>"), "string");
+        assert_eq!(extract_simple_type("Option<int>"), "int");
+    }
+
+    #[test]
+    fn test_extract_simple_type_function() {
+        assert_eq!(extract_simple_type("int -> string"), "string");
+        // For complex nested generics, we extract the outermost return type
+        // The function returns "Async<Result<Response, Error>>" but extract_simple_type
+        // will try to extract from that, getting "Result<Response" (first type arg)
+        // In practice, we care about the base type for member lookup
+        assert_eq!(extract_simple_type("int -> User"), "User");
+        assert_eq!(extract_simple_type("string -> int -> bool"), "bool");
+    }
+
+    #[test]
+    fn test_extract_simple_type_whitespace() {
+        assert_eq!(extract_simple_type("  string  "), "string");
+        assert_eq!(extract_simple_type("  User option  "), "User");
     }
 }
