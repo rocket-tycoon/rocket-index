@@ -22,6 +22,16 @@ fsharp-tools provides codebase indexing and navigation for F# projects without t
 - Refactoring tools (AI agents handle this)
 - MCP integration (causes context bloat)
 
+### Known Limitations
+
+This tool uses syntactic analysis only (no .NET runtime). Key limitations:
+
+- **No type awareness** — Cannot resolve overloaded methods or infer types
+- **No external dependencies** — NuGet packages and FSharp.Core are not indexed
+- **Approximate resolution** — Spider dependency graphs are best-effort
+
+For detailed information, see [design/KNOWN_LIMITATIONS.md](design/KNOWN_LIMITATIONS.md).
+
 ## Project Structure
 
 ```
@@ -83,6 +93,12 @@ cargo build
 ```bash
 cargo test --all
 ```
+
+## Documentation
+
+- [Known Limitations](design/KNOWN_LIMITATIONS.md) — What this tool can and cannot do
+- [Algorithmic Improvements](ALGORITHMIC_IMPROVEMENTS.md) — Planned enhancements
+- [Design Document](design/fsharp-tools-design.md) — Architecture overview
 
 ## License
 
