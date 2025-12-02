@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub mod fsproj;
 pub mod index;
 pub mod parse;
 pub mod resolve;
@@ -16,6 +17,7 @@ pub mod spider;
 pub mod watch;
 
 // Re-export main types
+pub use fsproj::{find_fsproj_files, parse_fsproj, FsprojInfo};
 pub use index::{CodeIndex, Reference};
 pub use parse::extract_symbols;
 pub use resolve::ResolveResult;
