@@ -11,7 +11,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-authors = ["Dawson Design Ltd."]
+authors = ["Alastair Dawson"]
 repository = "https://github.com/rocket-tycoon/rocket-index"
 
 [workspace.dependencies]
