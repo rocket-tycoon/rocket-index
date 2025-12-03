@@ -4,7 +4,7 @@ version = "0.1.0"
 schema_version = 1
 description = "Rocket-fast F# language support powered by RocketIndex"
 repository = "https://github.com/rocket-tycoon/rocket-index"
-authors = ["Dawson Design Ltd."]
+authors = ["Alastair Dawson"]
 languages = ["languages/fsharp"]
 
 [lib]
