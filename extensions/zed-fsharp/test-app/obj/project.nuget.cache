@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "820eHwJ5S/A=",
+  "success": true,
+  "projectFilePath": "/Users/alastair/Documents/work/rocket-tycoon/fsharp-tools/extensions/zed-fsharp/test-app/TestApp.fsproj",
+  "expectedPackageFiles": [
+    "/Users/alastair/.nuget/packages/fsharp.core/9.0.303/fsharp.core.9.0.303.nupkg.sha512"
+  ],
+  "logs": []
+}
