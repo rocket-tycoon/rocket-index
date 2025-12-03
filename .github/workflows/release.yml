@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/rocketindex dist/
+          cp target/${{ matrix.target }}/release/rocketindex-lsp dist/
+          cp README.md LICENSE dist/ 2>/dev/null || cp README.md dist/
+          cd dist
+          tar -czvf ../rocketindex-${{ github.ref_name }}-${{ matrix.target }}.tar.gz *
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item target/${{ matrix.target }}/release/rocketindex.exe dist/
+          Copy-Item target/${{ matrix.target }}/release/rocketindex-lsp.exe dist/
+          Copy-Item README.md dist/
+          if (Test-Path LICENSE) { Copy-Item LICENSE dist/ }
+          Compress-Archive -Path dist/* -DestinationPath rocketindex-${{ github.ref_name }}-${{ matrix.target }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rocketindex-${{ matrix.target }}
+          path: rocketindex-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
