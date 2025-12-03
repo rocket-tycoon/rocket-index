@@ -1,8 +1,8 @@
 #![allow(deprecated)]
 
 use assert_cmd::Command;
-use rocketindex::db::DEFAULT_DB_NAME;
 use predicates::str::contains;
+use rocketindex::db::DEFAULT_DB_NAME;
 use std::{
     error::Error,
     fs,
@@ -218,7 +218,13 @@ fn def_resolves_across_modules() -> TestResult {
     // Look up a function in Services that uses Domain
     Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
-        .args(["def", "MyApp.Services.processOrder", "--context", "--format", "text"])
+        .args([
+            "def",
+            "MyApp.Services.processOrder",
+            "--context",
+            "--format",
+            "text",
+        ])
         .assert()
         .success()
         .stdout(contains("Services.fs"))
@@ -241,7 +247,14 @@ fn spider_traverses_dependencies() -> TestResult {
     // Spider from main should find dependencies
     Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
-        .args(["spider", "MyApp.App.main", "--depth", "2", "--format", "text"])
+        .args([
+            "spider",
+            "MyApp.App.main",
+            "--depth",
+            "2",
+            "--format",
+            "text",
+        ])
         .assert()
         .success()
         // Should find the user and order references

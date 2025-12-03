@@ -130,4 +130,4 @@ cargo test --all
 
 ## License
 
-MIT - Copyright (c) 2024 Dawson Design Ltd.
+MIT - Copyright (c) 2025 Dawson Design Ltd.
