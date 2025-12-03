@@ -67,23 +67,30 @@ impl FSharpExtension {
         self.download_binary()
     }
 
-    /// Check for a local binary via FSHARP_LSP_PATH environment variable.
+    /// Check for a local binary via FSHARP_LSP_PATH environment variable or known locations.
     fn check_local_binary(&self, worktree: &zed::Worktree) -> Option<String> {
         let env = worktree.shell_env();
 
-        // Check FSHARP_LSP_PATH environment variable
+        // Check FSHARP_LSP_PATH environment variable first
         for (key, value) in &env {
             if key == "FSHARP_LSP_PATH" && !value.is_empty() {
-                // Verify the binary exists
-                if fs::metadata(value).is_ok() {
-                    eprintln!("fsharp-lsp: using local binary at {}", value);
-                    return Some(value.clone());
-                } else {
-                    eprintln!(
-                        "fsharp-lsp: FSHARP_LSP_PATH set to '{}' but binary not found",
-                        value
-                    );
-                }
+                eprintln!("fsharp-lsp: using FSHARP_LSP_PATH={}", value);
+                return Some(value.clone());
+            }
+        }
+
+        // Check if we're in the fsharp-tools project and construct path to binary
+        let worktree_root = worktree.root_path();
+        eprintln!("fsharp-lsp: worktree root is {}", worktree_root);
+
+        // For development: look for binary in fsharp-tools/target/release
+        if worktree_root.contains("fsharp-tools") {
+            // Find the fsharp-tools root by looking for it in the path
+            if let Some(idx) = worktree_root.find("fsharp-tools") {
+                let fsharp_tools_root = &worktree_root[..idx + "fsharp-tools".len()];
+                let binary_path = format!("{}/target/release/fsharp-lsp", fsharp_tools_root);
+                eprintln!("fsharp-lsp: trying development path {}", binary_path);
+                return Some(binary_path);
             }
         }
 
