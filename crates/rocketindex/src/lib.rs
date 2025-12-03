@@ -1,4 +1,4 @@
-//! fsharp-index: Core library for F# symbol extraction, indexing, and name resolution
+//! rocketindex: Rocket-fast F# symbol extraction, indexing, and name resolution
 //!
 //! This crate provides the fundamental building blocks for a minimal F# language server:
 //! - Symbol extraction from F# source files using tree-sitter
@@ -141,7 +141,7 @@ pub enum IndexError {
     #[error("Failed to parse file: {path}")]
     ParseError { path: PathBuf },
 
-    #[error("Index not found. Run 'fsharp-index build' first.")]
+    #[error("Index not found. Run 'rocketindex build' first.")]
     IndexNotFound,
 
     #[error("Failed to serialize index: {0}")]

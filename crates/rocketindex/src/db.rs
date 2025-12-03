@@ -1,4 +1,4 @@
-//! SQLite-based index storage for fsharp-tools (RFC-001).
+//! SQLite-based index storage for RocketIndex.
 //!
 //! This module provides persistent storage for the F# symbol index using SQLite.
 //! Benefits over the previous JSON approach:
@@ -17,9 +17,9 @@ use crate::type_cache::{MemberKind, TypeMember};
 use crate::{IndexError, Location, Result, Symbol, SymbolKind, Visibility};
 
 /// Current schema version. Increment when making breaking changes.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
-/// Default database filename within .fsharp-index/
+/// Default database filename within .rocketindex/
 pub const DEFAULT_DB_NAME: &str = "index.db";
 
 /// SQLite-based index for F# symbols.
@@ -256,6 +256,78 @@ impl SqliteIndex {
 
         let symbols = stmt
             .query_map(params![sql_pattern, limit as i64], row_to_symbol)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(symbols)
+    }
+
+    /// Search for symbols using FTS5 full-text search.
+    ///
+    /// This is faster than LIKE for prefix and word-based searches.
+    /// Supports FTS5 query syntax:
+    /// - `word` - exact word match
+    /// - `word*` - prefix match
+    /// - `word1 word2` - both words must appear
+    /// - `"word1 word2"` - exact phrase
+    ///
+    /// Falls back to LIKE search for patterns that FTS5 can't handle well
+    /// (e.g., suffix matches like `*Service` or complex wildcards).
+    #[must_use = "search results should not be ignored"]
+    pub fn search_fts(&self, pattern: &str, limit: usize) -> Result<Vec<Symbol>> {
+        // Check if this is a pattern FTS5 can handle well
+        let trimmed = pattern.trim();
+
+        // FTS5 works well for:
+        // - Exact words: "Service"
+        // - Prefix: "Service*" or "Serv*"
+        // - Multiple words: "Service Handler"
+        //
+        // FTS5 does NOT work well for:
+        // - Suffix: "*Service"
+        // - Contains: "*Serv*"
+        // - Complex patterns: "*a*b*"
+
+        let is_fts_suitable = !trimmed.starts_with('*') && !trimmed.contains("**");
+
+        if is_fts_suitable {
+            // Convert to FTS5 query
+            let fts_query = if trimmed.ends_with('*') {
+                // Already a prefix query, keep as-is
+                trimmed.to_string()
+            } else if trimmed.contains('*') {
+                // Has wildcards in middle - not suitable for FTS
+                return self.search(pattern, limit);
+            } else {
+                // Exact word - add prefix wildcard for partial matching
+                format!("{}*", trimmed)
+            };
+
+            let result = self.search_fts_raw(&fts_query, limit);
+
+            // If FTS fails (e.g., syntax error), fall back to LIKE
+            match result {
+                Ok(symbols) => return Ok(symbols),
+                Err(_) => return self.search(pattern, limit),
+            }
+        }
+
+        // Fall back to LIKE for patterns FTS can't handle
+        self.search(pattern, limit)
+    }
+
+    /// Raw FTS5 search - directly executes an FTS5 query.
+    fn search_fts_raw(&self, fts_query: &str, limit: usize) -> Result<Vec<Symbol>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.name, s.qualified, s.kind, s.file, s.line, s.column, s.end_line, s.end_column, s.visibility
+             FROM symbols s
+             JOIN symbols_fts fts ON s.id = fts.rowid
+             WHERE symbols_fts MATCH ?1
+             ORDER BY rank
+             LIMIT ?2",
+        )?;
+
+        let symbols = stmt
+            .query_map(params![fts_query, limit as i64], row_to_symbol)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(symbols)
@@ -575,6 +647,30 @@ CREATE INDEX IF NOT EXISTS idx_symbols_qualified ON symbols(qualified);
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
+
+-- FTS5 virtual table for fast full-text search on symbol names
+-- Uses content= to make it an "external content" table linked to symbols
+CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+    name,
+    qualified,
+    content='symbols',
+    content_rowid='id',
+    tokenize='unicode61 tokenchars _'
+);
+
+-- Triggers to keep FTS index in sync with symbols table
+CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
+    INSERT INTO symbols_fts(rowid, name, qualified) VALUES (new.id, new.name, new.qualified);
+END;
+
+CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
+    INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified) VALUES('delete', old.id, old.name, old.qualified);
+END;
+
+CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
+    INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified) VALUES('delete', old.id, old.name, old.qualified);
+    INSERT INTO symbols_fts(rowid, name, qualified) VALUES (new.id, new.name, new.qualified);
+END;
 
 -- Type members (properties, methods) for member access resolution
 CREATE TABLE IF NOT EXISTS members (
@@ -1176,5 +1272,97 @@ mod tests {
                 .len(),
             0
         );
+    }
+
+    // =========================================================================
+    // FTS5 Search Tests
+    // =========================================================================
+
+    #[test]
+    fn test_search_fts_prefix() {
+        let index = SqliteIndex::in_memory().unwrap();
+
+        index
+            .insert_symbol(&make_symbol(
+                "PaymentService",
+                "App.PaymentService",
+                "a.fs",
+                1,
+            ))
+            .unwrap();
+        index
+            .insert_symbol(&make_symbol(
+                "PaymentRequest",
+                "App.PaymentRequest",
+                "a.fs",
+                2,
+            ))
+            .unwrap();
+        index
+            .insert_symbol(&make_symbol("OrderService", "App.OrderService", "b.fs", 1))
+            .unwrap();
+
+        // FTS5 prefix search
+        let results = index.search_fts("Payment*", 100).unwrap();
+        assert_eq!(results.len(), 2);
+
+        // FTS5 exact word (becomes prefix)
+        let results = index.search_fts("Order", 100).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_fts_falls_back_for_suffix() {
+        let index = SqliteIndex::in_memory().unwrap();
+
+        index
+            .insert_symbol(&make_symbol(
+                "PaymentService",
+                "App.PaymentService",
+                "a.fs",
+                1,
+            ))
+            .unwrap();
+        index
+            .insert_symbol(&make_symbol("OrderService", "App.OrderService", "b.fs", 1))
+            .unwrap();
+        index
+            .insert_symbol(&make_symbol("OrderHandler", "App.OrderHandler", "b.fs", 2))
+            .unwrap();
+
+        // Suffix search falls back to LIKE
+        let results = index.search_fts("*Service", 100).unwrap();
+        assert_eq!(results.len(), 2);
+
+        // Contains search falls back to LIKE
+        let results = index.search_fts("*Order*", 100).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_fts_sync_on_delete() {
+        let index = SqliteIndex::in_memory().unwrap();
+
+        index
+            .insert_symbol(&make_symbol("foo", "M.foo", "src/a.fs", 1))
+            .unwrap();
+        index
+            .insert_symbol(&make_symbol("bar", "M.bar", "src/b.fs", 1))
+            .unwrap();
+
+        // Should find foo
+        let results = index.search_fts("foo", 100).unwrap();
+        assert_eq!(results.len(), 1);
+
+        // Delete file with foo
+        index.delete_symbols_in_file(Path::new("src/a.fs")).unwrap();
+
+        // FTS index should be updated - no more foo
+        let results = index.search_fts("foo", 100).unwrap();
+        assert_eq!(results.len(), 0);
+
+        // bar should still be there
+        let results = index.search_fts("bar", 100).unwrap();
+        assert_eq!(results.len(), 1);
     }
 }

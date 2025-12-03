@@ -1,17 +1,17 @@
 [package]
-name = "fsharp-cli"
+name = "rocketindex-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Command-line tool for F# codebase indexing and navigation"
+description = "Rocket-fast CLI for F# codebase indexing and navigation"
 
 [[bin]]
-name = "fsharp-index"
+name = "rocketindex"
 path = "src/main.rs"
 
 [dependencies]
-fsharp-index.workspace = true
+rocketindex.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

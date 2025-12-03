@@ -1,6 +1,6 @@
-//! fsharp-index: Command-line tool for F# codebase indexing and navigation.
+//! rocketindex: Rocket-fast CLI for F# codebase indexing and navigation.
 //!
-//! This CLI provides access to fsharp-index functionality for:
+//! This CLI provides access to rocketindex functionality for:
 //! - Building and updating the symbol index
 //! - Finding symbol definitions
 //! - Searching for symbols by name
@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use fsharp_index::{
+use rocketindex::{
     db::DEFAULT_DB_NAME,
     find_fsproj_files, parse_fsproj,
     spider::{format_spider_result, spider},
@@ -40,9 +40,9 @@ enum OutputFormat {
     Text,
 }
 
-/// F# codebase indexing and navigation tool
+/// Rocket-fast F# codebase indexing and navigation tool
 #[derive(Parser)]
-#[command(name = "fsharp-index")]
+#[command(name = "rocketindex")]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -234,7 +234,7 @@ fn cmd_build(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
         .par_iter()
         .map(|file| match std::fs::read_to_string(file) {
             Ok(source) => {
-                let result = fsharp_index::extract_symbols(file, &source);
+                let result = rocketindex::extract_symbols(file, &source);
                 Ok((file.clone(), result))
             }
             Err(e) => Err(format!("{}: {}", file.display(), e)),
@@ -242,7 +242,7 @@ fn cmd_build(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
         .collect();
 
     // Create SQLite index
-    let index_dir = root.join(".fsharp-index");
+    let index_dir = root.join(".rocketindex");
     std::fs::create_dir_all(&index_dir).context("Failed to create index directory")?;
 
     let db_path = index_dir.join(DEFAULT_DB_NAME);
@@ -575,7 +575,7 @@ fn cmd_update(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
         .canonicalize()
         .context("Failed to resolve root directory")?;
 
-    let db_path = root.join(".fsharp-index").join(DEFAULT_DB_NAME);
+    let db_path = root.join(".rocketindex").join(DEFAULT_DB_NAME);
     if !db_path.exists() {
         if format == OutputFormat::Json {
             println!(
@@ -583,7 +583,7 @@ fn cmd_update(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
                 serde_json::json!({"error": "Index not found. Run 'build' first."})
             );
         } else {
-            eprintln!("Index not found. Run 'fsharp-index build' first.");
+            eprintln!("Index not found. Run 'rocketindex build' first.");
         }
         return Ok(exit_codes::NOT_FOUND);
     }
@@ -600,7 +600,7 @@ fn cmd_update(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
             // Clear existing data for this file
             index.clear_file(file)?;
 
-            let result = fsharp_index::extract_symbols(file, &source);
+            let result = rocketindex::extract_symbols(file, &source);
 
             for symbol in &result.symbols {
                 index.insert_symbol(symbol)?;
@@ -657,7 +657,7 @@ fn cmd_def(symbol: &str, context: bool, format: OutputFormat, quiet: bool) -> Re
     Ok(exit_codes::NOT_FOUND)
 }
 
-fn output_location(sym: &fsharp_index::Symbol, context: bool, format: OutputFormat, quiet: bool) -> Result<()> {
+fn output_location(sym: &rocketindex::Symbol, context: bool, format: OutputFormat, quiet: bool) -> Result<()> {
     let loc = &sym.location;
 
     if format == OutputFormat::Json {
@@ -822,7 +822,7 @@ fn cmd_symbols(pattern: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
 
 /// Watch for file changes
 fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
-    use fsharp_index::watch::FileWatcher;
+    use rocketindex::watch::FileWatcher;
 
     let root = root
         .canonicalize()
@@ -842,20 +842,20 @@ fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     loop {
         if let Some(event) = watcher.wait() {
             match event {
-                fsharp_index::watch::WatchEvent::Created(path)
-                | fsharp_index::watch::WatchEvent::Modified(path) => {
+                rocketindex::watch::WatchEvent::Created(path)
+                | rocketindex::watch::WatchEvent::Modified(path) => {
                     if is_fsharp_file(&path) {
                         println!("Updated: {}", path.display());
                         update_single_file(&root, &path)?;
                     }
                 }
-                fsharp_index::watch::WatchEvent::Deleted(path) => {
+                rocketindex::watch::WatchEvent::Deleted(path) => {
                     if is_fsharp_file(&path) {
                         println!("Deleted: {}", path.display());
                         remove_file_from_index(&root, &path)?;
                     }
                 }
-                fsharp_index::watch::WatchEvent::Renamed(old, new) => {
+                rocketindex::watch::WatchEvent::Renamed(old, new) => {
                     if is_fsharp_file(&old) || is_fsharp_file(&new) {
                         println!("Renamed: {} -> {}", old.display(), new.display());
                         remove_file_from_index(&root, &old)?;
@@ -872,10 +872,10 @@ fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
 /// Load the SQLite index from disk
 fn load_sqlite_index() -> Result<SqliteIndex> {
     let cwd = std::env::current_dir()?;
-    let db_path = cwd.join(".fsharp-index").join(DEFAULT_DB_NAME);
+    let db_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
 
     if !db_path.exists() {
-        anyhow::bail!("Index not found. Run 'fsharp-index build' first.");
+        anyhow::bail!("Index not found. Run 'rocketindex build' first.");
     }
 
     SqliteIndex::open(&db_path).context("Failed to open SQLite index")
@@ -885,10 +885,10 @@ fn load_sqlite_index() -> Result<SqliteIndex> {
 /// This creates a CodeIndex by reading from the SQLite database
 fn load_code_index() -> Result<CodeIndex> {
     let cwd = std::env::current_dir()?;
-    let db_path = cwd.join(".fsharp-index").join(DEFAULT_DB_NAME);
+    let db_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
 
     if !db_path.exists() {
-        anyhow::bail!("Index not found. Run 'fsharp-index build' first.");
+        anyhow::bail!("Index not found. Run 'rocketindex build' first.");
     }
 
     let sqlite_index = SqliteIndex::open(&db_path).context("Failed to open SQLite index")?;
@@ -937,13 +937,13 @@ fn get_line_content(file: &PathBuf, line: usize) -> Option<String> {
 
 /// Update a single file in the index
 fn update_single_file(root: &Path, file: &Path) -> Result<()> {
-    let db_path = root.join(".fsharp-index").join(DEFAULT_DB_NAME);
+    let db_path = root.join(".rocketindex").join(DEFAULT_DB_NAME);
     let index = SqliteIndex::open(&db_path)?;
 
     index.clear_file(file)?;
 
     if let Ok(source) = std::fs::read_to_string(file) {
-        let result = fsharp_index::extract_symbols(file, &source);
+        let result = rocketindex::extract_symbols(file, &source);
         for symbol in &result.symbols {
             index.insert_symbol(symbol)?;
         }
@@ -960,7 +960,7 @@ fn update_single_file(root: &Path, file: &Path) -> Result<()> {
 
 /// Remove a file from the index
 fn remove_file_from_index(root: &Path, file: &Path) -> Result<()> {
-    let db_path = root.join(".fsharp-index").join(DEFAULT_DB_NAME);
+    let db_path = root.join(".rocketindex").join(DEFAULT_DB_NAME);
     let index = SqliteIndex::open(&db_path)?;
 
     index.clear_file(file)?;

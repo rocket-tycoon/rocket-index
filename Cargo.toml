@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/fsharp-index",
-    "crates/fsharp-cli",
-    "crates/fsharp-lsp",
+    "crates/rocketindex",
+    "crates/rocketindex-cli",
+    "crates/rocketindex-lsp",
 ]
 # Note: zed-fsharp extension is built separately with its own toolchain
 
@@ -11,8 +11,8 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-authors = ["Alastair"]
-repository = "https://github.com/yourname/fsharp-tools"
+authors = ["Dawson Design Ltd."]
+repository = "https://github.com/rocket-tycoon/rocket-index"
 
 [workspace.dependencies]
 # Shared dependencies across crates
@@ -47,4 +47,4 @@ quick-xml = "0.37"
 rusqlite = { version = "0.31", features = ["bundled"] }
 
 # Internal crates
-fsharp-index = { path = "crates/fsharp-index" }
+rocketindex = { path = "crates/rocketindex" }

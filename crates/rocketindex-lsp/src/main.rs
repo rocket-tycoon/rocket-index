@@ -1,4 +1,4 @@
-//! fsharp-lsp: A minimal F# language server for Zed
+//! rocketindex-lsp: Rocket-fast F# language server
 //!
 //! This server provides:
 //! - Go-to-definition
@@ -8,7 +8,7 @@
 //! - Syntax error diagnostics
 //! - Keyword and symbol completion
 //!
-//! Storage: Uses SQLite database (.fsharp-index/index.db) for persistence,
+//! Storage: Uses SQLite database (.rocketindex/index.db) for persistence,
 //! loaded into memory as CodeIndex for fast resolution.
 
 mod completion;
@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use document_store::DocumentStore;
-use fsharp_index::{
+use rocketindex::{
     db::DEFAULT_DB_NAME, extract_symbols, watch::find_fsharp_files, CodeIndex, SqliteIndex,
     SyntaxError,
 };
@@ -45,7 +45,7 @@ struct Backend {
 impl Backend {
     /// Get the path to the SQLite database.
     fn get_db_path(root: &Path) -> PathBuf {
-        root.join(".fsharp-index").join(DEFAULT_DB_NAME)
+        root.join(".rocketindex").join(DEFAULT_DB_NAME)
     }
 
     /// Load the index from SQLite database if it exists.
@@ -166,8 +166,8 @@ impl Backend {
 
     /// Index external assemblies based on .fsproj package references.
     async fn index_external_assemblies(&self, index: &mut CodeIndex, root_path: &Path) {
-        use fsharp_index::external_index::index_external_assemblies;
-        use fsharp_index::fsproj::{find_fsproj_files, parse_fsproj};
+        use rocketindex::external_index::index_external_assemblies;
+        use rocketindex::fsproj::{find_fsproj_files, parse_fsproj};
 
         let fsproj_files = find_fsproj_files(root_path);
 
@@ -287,7 +287,7 @@ impl Backend {
                     },
                 },
                 severity: Some(DiagnosticSeverity::ERROR),
-                source: Some("fsharp-lsp".to_string()),
+                source: Some("rocketindex-lsp".to_string()),
                 message: error.message,
                 ..Default::default()
             })
@@ -357,17 +357,17 @@ impl Backend {
 }
 
 /// Convert our SymbolKind to LSP SymbolKind.
-fn to_lsp_symbol_kind(kind: fsharp_index::SymbolKind) -> SymbolKind {
+fn to_lsp_symbol_kind(kind: rocketindex::SymbolKind) -> SymbolKind {
     match kind {
-        fsharp_index::SymbolKind::Module => SymbolKind::MODULE,
-        fsharp_index::SymbolKind::Function => SymbolKind::FUNCTION,
-        fsharp_index::SymbolKind::Value => SymbolKind::VARIABLE,
-        fsharp_index::SymbolKind::Type => SymbolKind::TYPE_PARAMETER,
-        fsharp_index::SymbolKind::Record => SymbolKind::STRUCT,
-        fsharp_index::SymbolKind::Union => SymbolKind::ENUM,
-        fsharp_index::SymbolKind::Interface => SymbolKind::INTERFACE,
-        fsharp_index::SymbolKind::Class => SymbolKind::CLASS,
-        fsharp_index::SymbolKind::Member => SymbolKind::METHOD,
+        rocketindex::SymbolKind::Module => SymbolKind::MODULE,
+        rocketindex::SymbolKind::Function => SymbolKind::FUNCTION,
+        rocketindex::SymbolKind::Value => SymbolKind::VARIABLE,
+        rocketindex::SymbolKind::Type => SymbolKind::TYPE_PARAMETER,
+        rocketindex::SymbolKind::Record => SymbolKind::STRUCT,
+        rocketindex::SymbolKind::Union => SymbolKind::ENUM,
+        rocketindex::SymbolKind::Interface => SymbolKind::INTERFACE,
+        rocketindex::SymbolKind::Class => SymbolKind::CLASS,
+        rocketindex::SymbolKind::Member => SymbolKind::METHOD,
     }
 }
 
@@ -450,11 +450,11 @@ fn compute_organize_opens(content: &str) -> Option<(String, Range)> {
 /// Scans the file for identifiers that cannot be resolved and suggests
 /// modules that define them.
 fn find_missing_opens(
-    index: &fsharp_index::CodeIndex,
+    index: &rocketindex::CodeIndex,
     file: &Path,
     content: &str,
 ) -> Vec<String> {
-    use fsharp_index::extract_symbols;
+    use rocketindex::extract_symbols;
 
     let result = extract_symbols(file, content);
     let mut unresolved = Vec::new();
@@ -607,7 +607,7 @@ fn get_word_at_position(content: &str, pos: Position) -> Option<String> {
 /// 1. Direct type names: "String", "Console" -> return as-is if type cache has members
 /// 2. Variable names: "user" -> resolve to qualified name, look up type in cache
 /// 3. Qualified names: "MyModule.user" -> look up type directly
-fn resolve_expression_type(index: &fsharp_index::CodeIndex, expr: &str, from_file: &Path) -> Option<String> {
+fn resolve_expression_type(index: &rocketindex::CodeIndex, expr: &str, from_file: &Path) -> Option<String> {
     // First, check if the expression is directly a type name with members
     if index.get_type_members(expr).is_some() {
         return Some(expr.to_string());
@@ -688,7 +688,7 @@ fn extract_simple_type_name(type_sig: &str) -> &str {
 }
 
 /// Convert our Location to LSP Location.
-fn to_lsp_location(loc: &fsharp_index::Location) -> Location {
+fn to_lsp_location(loc: &rocketindex::Location) -> Location {
     Location {
         uri: Url::from_file_path(&loc.file)
             .unwrap_or_else(|_| Url::parse("file:///unknown").unwrap()),
@@ -740,7 +740,7 @@ impl LanguageServer for Backend {
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
-                name: "fsharp-lsp".to_string(),
+                name: "rocketindex-lsp".to_string(),
                 version: Some(env!("CARGO_PKG_VERSION").to_string()),
             }),
         })
@@ -984,14 +984,14 @@ impl LanguageServer for Backend {
                                 items.push(CompletionItem {
                                     label: member.member.clone(),
                                     kind: Some(match member.kind {
-                                        fsharp_index::MemberKind::Property => {
+                                        rocketindex::MemberKind::Property => {
                                             CompletionItemKind::PROPERTY
                                         }
-                                        fsharp_index::MemberKind::Method => {
+                                        rocketindex::MemberKind::Method => {
                                             CompletionItemKind::METHOD
                                         }
-                                        fsharp_index::MemberKind::Field => CompletionItemKind::FIELD,
-                                        fsharp_index::MemberKind::Event => CompletionItemKind::EVENT,
+                                        rocketindex::MemberKind::Field => CompletionItemKind::FIELD,
+                                        rocketindex::MemberKind::Event => CompletionItemKind::EVENT,
                                     }),
                                     detail: Some(format!(
                                         "{} ({})",
@@ -1527,9 +1527,9 @@ let x = 1"#;
 
     #[test]
     fn test_resolve_expression_type_direct_type() {
-        use fsharp_index::type_cache::{MemberKind, TypeCache, TypeCacheSchema, TypeMember};
+        use rocketindex::type_cache::{MemberKind, TypeCache, TypeCacheSchema, TypeMember};
 
-        let mut index = fsharp_index::CodeIndex::new();
+        let mut index = rocketindex::CodeIndex::new();
 
         // Set up type cache with User type members
         let schema = TypeCacheSchema {
@@ -1553,12 +1553,12 @@ let x = 1"#;
 
     #[test]
     fn test_resolve_expression_type_via_symbol() {
-        use fsharp_index::type_cache::{
+        use rocketindex::type_cache::{
             MemberKind, TypeCache, TypeCacheSchema, TypeMember, TypedSymbol,
         };
-        use fsharp_index::{Location, Symbol, SymbolKind, Visibility};
+        use rocketindex::{Location, Symbol, SymbolKind, Visibility};
 
-        let mut index = fsharp_index::CodeIndex::new();
+        let mut index = rocketindex::CodeIndex::new();
 
         // Add a symbol 'user' with type 'User'
         index.add_symbol(Symbol::new(
@@ -1598,7 +1598,7 @@ let x = 1"#;
 
     #[test]
     fn test_resolve_expression_type_not_found() {
-        let index = fsharp_index::CodeIndex::new();
+        let index = rocketindex::CodeIndex::new();
 
         let result = resolve_expression_type(&index, "unknown", Path::new("test.fs"));
         assert_eq!(result, None);
@@ -1610,9 +1610,9 @@ let x = 1"#;
 
     #[test]
     fn test_find_missing_opens_suggests_module() {
-        use fsharp_index::{Location, Symbol, SymbolKind, Visibility};
+        use rocketindex::{Location, Symbol, SymbolKind, Visibility};
 
-        let mut index = fsharp_index::CodeIndex::new();
+        let mut index = rocketindex::CodeIndex::new();
 
         // Add a symbol in Utils module
         index.add_symbol(Symbol::new(
@@ -1640,9 +1640,9 @@ let x = helper 42
 
     #[test]
     fn test_find_missing_opens_no_suggestion_when_already_open() {
-        use fsharp_index::{Location, Symbol, SymbolKind, Visibility};
+        use rocketindex::{Location, Symbol, SymbolKind, Visibility};
 
-        let mut index = fsharp_index::CodeIndex::new();
+        let mut index = rocketindex::CodeIndex::new();
 
         // Add a symbol
         index.add_symbol(Symbol::new(

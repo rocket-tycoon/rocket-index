@@ -1,17 +1,17 @@
 [package]
-name = "fsharp-lsp"
+name = "rocketindex-lsp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "A minimal F# language server for Zed"
+description = "Rocket-fast F# language server"
 
 [[bin]]
-name = "fsharp-lsp"
+name = "rocketindex-lsp"
 path = "src/main.rs"
 
 [dependencies]
-fsharp-index.workspace = true
+rocketindex.workspace = true
 
 # LSP
 tower-lsp.workspace = true

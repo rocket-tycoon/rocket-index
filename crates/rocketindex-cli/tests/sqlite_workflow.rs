@@ -1,7 +1,7 @@
 #![allow(deprecated)]
 
 use assert_cmd::Command;
-use fsharp_index::db::DEFAULT_DB_NAME;
+use rocketindex::db::DEFAULT_DB_NAME;
 use predicates::str::contains;
 use std::{
     error::Error,
@@ -33,7 +33,7 @@ impl SampleWorkspace {
     }
 
     fn sqlite_db_path(&self) -> PathBuf {
-        self.root().join(".fsharp-index").join(DEFAULT_DB_NAME)
+        self.root().join(".rocketindex").join(DEFAULT_DB_NAME)
     }
 
     /// Writes a simple module with a single function so the indexer has work to do.
@@ -55,7 +55,7 @@ fn build_creates_sqlite_index_with_metadata() -> TestResult {
     let workspace = SampleWorkspace::new("BuildSmoke")?;
     workspace.write_entry_file()?;
 
-    Command::cargo_bin("fsharp-index")?
+    Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
@@ -77,13 +77,13 @@ fn def_command_reads_from_sqlite_index() -> TestResult {
     let workspace = SampleWorkspace::new("DefinitionSmoke")?;
     workspace.write_entry_file()?;
 
-    Command::cargo_bin("fsharp-index")?
+    Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
-    Command::cargo_bin("fsharp-index")?
+    Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["def", "DefinitionSmoke.hello", "--format", "text"])
         .assert()
@@ -162,7 +162,7 @@ fn multi_file_project_indexes_all_symbols() -> TestResult {
     let workspace = MultiFileWorkspace::new()?;
 
     // Build the index
-    Command::cargo_bin("fsharp-index")?
+    Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
@@ -178,14 +178,14 @@ fn symbol_search_finds_types_and_functions() -> TestResult {
     let workspace = MultiFileWorkspace::new()?;
 
     // Build the index
-    Command::cargo_bin("fsharp-index")?
+    Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
     // Search for User type
-    Command::cargo_bin("fsharp-index")?
+    Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["symbols", "*User*", "--format", "text"])
         .assert()
@@ -194,7 +194,7 @@ fn symbol_search_finds_types_and_functions() -> TestResult {
         .stdout(contains("Record"));
 
     // Search for functions
-    Command::cargo_bin("fsharp-index")?
+    Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["symbols", "*process*", "--format", "text"])
         .assert()
@@ -209,14 +209,14 @@ fn def_resolves_across_modules() -> TestResult {
     let workspace = MultiFileWorkspace::new()?;
 
     // Build the index
-    Command::cargo_bin("fsharp-index")?
+    Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
     // Look up a function in Services that uses Domain
-    Command::cargo_bin("fsharp-index")?
+    Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["def", "MyApp.Services.processOrder", "--context", "--format", "text"])
         .assert()
@@ -232,14 +232,14 @@ fn spider_traverses_dependencies() -> TestResult {
     let workspace = MultiFileWorkspace::new()?;
 
     // Build the index
-    Command::cargo_bin("fsharp-index")?
+    Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
     // Spider from main should find dependencies
-    Command::cargo_bin("fsharp-index")?
+    Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["spider", "MyApp.App.main", "--depth", "2", "--format", "text"])
         .assert()
@@ -255,7 +255,7 @@ fn json_output_format_works() -> TestResult {
     let workspace = MultiFileWorkspace::new()?;
 
     // Build with JSON output
-    Command::cargo_bin("fsharp-index")?
+    Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--json"])
         .assert()
@@ -264,7 +264,7 @@ fn json_output_format_works() -> TestResult {
         .stdout(contains("\"symbols\""));
 
     // Symbols with JSON output
-    Command::cargo_bin("fsharp-index")?
+    Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["symbols", "*User*", "--json"])
         .assert()

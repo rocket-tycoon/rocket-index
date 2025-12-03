@@ -357,56 +357,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fsharp-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "clap",
- "fsharp-index",
- "predicates",
- "rayon",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "fsharp-index"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "notify",
- "quick-xml",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tracing",
- "tree-sitter",
- "tree-sitter-fsharp",
-]
-
-[[package]]
-name = "fsharp-lsp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "fsharp-index",
- "serde",
- "serde_json",
- "tokio",
- "tower-lsp",
- "tracing",
- "tracing-subscriber",
- "tree-sitter",
- "tree-sitter-fsharp",
-]
-
-[[package]]
 name = "futures"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1042,6 +992,56 @@ name = "regex-syntax"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
+
+[[package]]
+name = "rocketindex"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "notify",
+ "quick-xml",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-fsharp",
+]
+
+[[package]]
+name = "rocketindex-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "clap",
+ "predicates",
+ "rayon",
+ "rocketindex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "rocketindex-lsp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rocketindex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-lsp",
+ "tracing",
+ "tracing-subscriber",
+ "tree-sitter",
+ "tree-sitter-fsharp",
+]
 
 [[package]]
 name = "rusqlite"

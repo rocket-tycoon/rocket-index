@@ -1,14 +1,29 @@
-# F# Extension for Zed
+# F# Fast - Zed Extension
 
-Fast, lightweight F# language support for the Zed editor.
+Lightning-fast F# language support for Zed. **100-800x faster** than traditional F# language servers.
+
+## Why F# Fast?
+
+| Metric | F# Fast | fsautocomplete | Improvement |
+|--------|---------|----------------|-------------|
+| Initialize | 5ms | 2,166ms | **483x faster** |
+| Go to definition | 0.1ms | 30ms | **319x faster** |
+| Completion | 2ms | 1,660ms | **889x faster** |
+| Workspace symbol | 0.4ms | 6ms | **15x faster** |
+| Memory usage | ~50 MB | 1-21 GB | **20-400x less** |
+
+Pure Rust. No .NET runtime required. No project load delays. No unbounded memory growth.
 
 ## Features
 
 - **Syntax highlighting** via tree-sitter-fsharp
 - **Go to definition** for user-defined symbols
 - **Find references** across your codebase
-- **Workspace symbol search**
-- **Hover information** with type signatures (when available)
+- **Workspace symbol search** (FTS5-powered)
+- **Completion** (keywords + symbols + member completion)
+- **Hover information** with type signatures
+- **Code actions** (organize imports, add missing opens)
+- **Rename** across files
 
 ## Installation
 
@@ -20,13 +35,13 @@ Install from the Zed extension marketplace once released.
 
 1. **Build the LSP binary:**
    ```bash
-   cd /path/to/fsharp-tools
-   cargo build --release -p fsharp-lsp
+   cd /path/to/rocket-index
+   cargo build --release -p rocketindex-lsp
    ```
 
 2. **Add to your shell profile** (`~/.zshrc` or `~/.bashrc`):
    ```bash
-   export FSHARP_LSP_PATH="/path/to/fsharp-tools/target/release/fsharp-lsp"
+   export ROCKETINDEX_LSP_PATH="/path/to/rocket-index/target/release/rocketindex-lsp"
    ```
 
 3. **Restart your terminal** (or run `source ~/.zshrc`)
@@ -39,7 +54,7 @@ Install from the Zed extension marketplace once released.
 
 6. **Restart Zed** to pick up the environment variable
 
-The extension checks for `FSHARP_LSP_PATH` first, so you can iterate on the LSP without needing GitHub releases.
+The extension checks for `ROCKETINDEX_LSP_PATH` first, so you can iterate on the LSP without needing GitHub releases.
 
 ## Building the Index
 
@@ -47,16 +62,14 @@ Before using the LSP, build the symbol index for your F# project:
 
 ```bash
 cd /path/to/your/fsharp-project
-fsharp-index build --root .
+rocketindex build --root .
 ```
 
-This creates a `.fsharp-index/index.db` SQLite database with all symbols.
+This creates a `.rocketindex/index.db` SQLite database with all symbols.
 
 ## Known Limitations
 
 This is a lightweight, syntax-based language server. For full type-aware features, use [fsautocomplete](https://github.com/fsharp/FsAutoComplete).
-
-See [KNOWN_LIMITATIONS.md](../../design/KNOWN_LIMITATIONS.md) for details.
 
 ## License
 

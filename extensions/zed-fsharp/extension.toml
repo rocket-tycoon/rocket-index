@@ -1,10 +1,10 @@
-id = "fsharp"
-name = "F#"
+id = "fsharp-fast"
+name = "F# Fast"
 version = "0.1.0"
 schema_version = 1
-description = "F# language support with fast, stable indexing"
-repository = "https://github.com/yourname/fsharp-tools"
-authors = ["Alastair"]
+description = "Rocket-fast F# language support powered by RocketIndex"
+repository = "https://github.com/rocket-tycoon/rocket-index"
+authors = ["Dawson Design Ltd."]
 languages = ["languages/fsharp"]
 
 [lib]
@@ -16,5 +16,5 @@ repository = "https://github.com/ionide/tree-sitter-fsharp"
 rev = "main"
 path = "fsharp"
 
-[language_servers.fsharp-lsp]
+[language_servers.rocketindex-lsp]
 language = "FSharp"

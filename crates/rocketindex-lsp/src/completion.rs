@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use fsharp_index::{CodeIndex, Symbol, SymbolKind};
+use rocketindex::{CodeIndex, Symbol, SymbolKind};
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind};
 
 /// F# keywords for completion.
@@ -241,7 +241,7 @@ fn is_symbol_in_scope(qualified: &str, current_file: &Path, opens: &[String]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fsharp_index::{Location, Visibility};
+    use rocketindex::{Location, Visibility};
     use std::path::PathBuf;
 
     #[test]

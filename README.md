@@ -1,10 +1,10 @@
-# fsharp-tools
+# RocketIndex
 
-A minimal, lightweight F# language server optimized for AI-assisted coding workflows.
+Rocket-fast F# language server and code indexer. Pure Rust, ~50MB RAM, no .NET required.
 
 ## Overview
 
-fsharp-tools provides codebase indexing and navigation for F# projects without the unbounded memory growth that plagues fsautocomplete. Written entirely in Rust using tree-sitter for parsing—no .NET runtime required.
+RocketIndex provides codebase indexing and navigation for F# projects without the unbounded memory growth that plagues fsautocomplete. Written entirely in Rust using tree-sitter for parsing—no .NET runtime required.
 
 ### Features
 
@@ -14,7 +14,7 @@ fsharp-tools provides codebase indexing and navigation for F# projects without t
 - **Go-to-definition** across files
 - **Dependency graph traversal** ("spider" from entry point)
 - **Clean CLI** for AI agent tooling
-- **Zed extension** with syntax highlighting
+- **Zed extension** ("F# Fast") with syntax highlighting
 
 ### Non-Goals
 
@@ -31,18 +31,16 @@ This tool uses syntactic analysis only (no .NET runtime). Key limitations:
 - **No external dependencies** — NuGet packages and FSharp.Core are not indexed
 - **Approximate resolution** — Spider dependency graphs are best-effort
 
-For detailed information, see [design/KNOWN_LIMITATIONS.md](design/KNOWN_LIMITATIONS.md).
-
 ## Project Structure
 
 ```
-fsharp-tools/
+rocket-index/
 ├── crates/
-│   ├── fsharp-index/    # Core library for symbol extraction and indexing
-│   ├── fsharp-cli/      # Command-line tool
-│   └── fsharp-lsp/      # Language server protocol implementation
+│   ├── rocketindex/        # Core library for symbol extraction and indexing
+│   ├── rocketindex-cli/    # Command-line tool
+│   └── rocketindex-lsp/    # Language server protocol implementation
 └── extensions/
-    └── zed-fsharp/      # Zed editor extension
+    └── zed-fsharp/         # Zed editor extension (F# Fast)
 ```
 
 ## Installation
@@ -54,8 +52,8 @@ cargo build --release
 ```
 
 The binaries will be available at:
-- `target/release/fsharp-cli`
-- `target/release/fsharp-lsp`
+- `target/release/rocketindex`
+- `target/release/rocketindex-lsp`
 
 ## CLI Usage
 
@@ -63,28 +61,28 @@ All commands output JSON by default for easy integration with AI agents.
 
 ```bash
 # Build/rebuild the index for current directory
-$ fsharp-index build
+$ rocketindex build
 
 # Find definition (JSON output)
-$ fsharp-index def "PaymentService.processPayment"
+$ rocketindex def "PaymentService.processPayment"
 # {"file": "src/Services.fs", "line": 42, "column": 5, ...}
 
 # Human-readable output
-$ fsharp-index def "PaymentService.processPayment" --format pretty
+$ rocketindex def "PaymentService.processPayment" --format pretty
 
 # Spider from entry point
-$ fsharp-index spider "Program.main" --depth 5
+$ rocketindex spider "Program.main" --depth 5
 
 # List all symbols matching pattern
-$ fsharp-index symbols "Payment*"
+$ rocketindex symbols "Payment*"
 
 # Suppress progress output (useful in scripts)
-$ fsharp-index build --quiet
+$ rocketindex build --quiet
 ```
 
 ## AI Agent Integration
 
-`fsharp-tools` is designed to be the "SQLite of code indexing" for AI agents. It provides a CLI-first, JSON-native interface that works with any agent (Claude Code, Aider, Cursor, etc.).
+RocketIndex is designed to be the "SQLite of code indexing" for AI agents. It provides a CLI-first, JSON-native interface that works with any agent (Claude Code, Aider, Cursor, etc.).
 
 ### CLI Contract
 
@@ -98,8 +96,8 @@ $ fsharp-index build --quiet
 ### Claude Code Integration
 
 Drop-in slash commands are available in `integrations/claude-code/`. Copy these to your `.claude/commands/` directory to enable:
-- `/fsharp-def`: Find symbol definition
-- `/fsharp-spider`: Spider dependency graph
+- `/rocketindex-def`: Find symbol definition
+- `/rocketindex-spider`: Spider dependency graph
 
 ### Claude Skills
 
@@ -107,9 +105,9 @@ A template for Claude Skills is available in `integrations/claude-skill/SKILL.md
 
 ## SQLite Storage & Type Extraction
 
-The `fsharp-index build` command now writes every symbol, reference, and `open` directive into a SQLite database at `.fsharp-index/index.db`. This persistent store is used by both the CLI and the LSP so large workspaces can be loaded without rebuilding an in-memory index each run.
+The `rocketindex build` command writes every symbol, reference, and `open` directive into a SQLite database at `.rocketindex/index.db`. This persistent store is used by both the CLI and the LSP so large workspaces can be loaded without rebuilding an in-memory index each run.
 
-Optional semantic type data can be added by running the `scripts/extract-types.fsx` helper (automatically triggered by `fsharp-index build --extract-types`). The script uses FSharp.Compiler.Service to record function signatures and type members, which are merged into the same SQLite file for richer hover output and member-resolution heuristics.
+Optional semantic type data can be added by running the `scripts/extract-types.fsx` helper (automatically triggered by `rocketindex build --extract-types`). The script uses FSharp.Compiler.Service to record function signatures and type members, which are merged into the same SQLite file for richer hover output and member-resolution heuristics.
 
 ## Development
 
@@ -130,12 +128,6 @@ cargo build
 cargo test --all
 ```
 
-## Documentation
-
-- [Known Limitations](design/KNOWN_LIMITATIONS.md) — What this tool can and cannot do
-- [Algorithmic Improvements](ALGORITHMIC_IMPROVEMENTS.md) — Planned enhancements
-- [Design Document](design/fsharp-tools-design.md) — Architecture overview
-
 ## License
 
-MIT
+MIT - Copyright (c) 2024 Dawson Design Ltd.

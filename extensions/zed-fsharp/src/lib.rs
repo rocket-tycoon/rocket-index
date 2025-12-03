@@ -1,14 +1,14 @@
-//! Zed extension for F# language support.
+//! F# Fast - Zed extension for F# language support.
 //!
 //! This extension provides:
 //! - Syntax highlighting via tree-sitter-fsharp
-//! - Language server integration via fsharp-lsp
+//! - Language server integration via rocketindex-lsp
 //!
 //! ## Local Development
 //!
-//! Set the `FSHARP_LSP_PATH` environment variable to use a local binary:
+//! Set the `ROCKETINDEX_LSP_PATH` environment variable to use a local binary:
 //! ```bash
-//! export FSHARP_LSP_PATH="/path/to/fsharp-tools/target/release/fsharp-lsp"
+//! export ROCKETINDEX_LSP_PATH="/path/to/rocket-index/target/release/rocketindex-lsp"
 //! ```
 //!
 //! Then restart Zed. The extension will use your local binary instead of
@@ -44,10 +44,10 @@ impl zed::Extension for FSharpExtension {
 }
 
 impl FSharpExtension {
-    /// Ensure the fsharp-lsp binary is available.
+    /// Ensure the rocketindex-lsp binary is available.
     ///
     /// Resolution order:
-    /// 1. FSHARP_LSP_PATH environment variable (for local development)
+    /// 1. ROCKETINDEX_LSP_PATH environment variable (for local development)
     /// 2. Download from GitHub releases (for production)
     fn ensure_binary(&mut self, worktree: &zed::Worktree) -> Result<String> {
         // Return cached path if available and valid
@@ -67,29 +67,29 @@ impl FSharpExtension {
         self.download_binary()
     }
 
-    /// Check for a local binary via FSHARP_LSP_PATH environment variable or known locations.
+    /// Check for a local binary via ROCKETINDEX_LSP_PATH environment variable or known locations.
     fn check_local_binary(&self, worktree: &zed::Worktree) -> Option<String> {
         let env = worktree.shell_env();
 
-        // Check FSHARP_LSP_PATH environment variable first
+        // Check ROCKETINDEX_LSP_PATH environment variable first
         for (key, value) in &env {
-            if key == "FSHARP_LSP_PATH" && !value.is_empty() {
-                eprintln!("fsharp-lsp: using FSHARP_LSP_PATH={}", value);
+            if key == "ROCKETINDEX_LSP_PATH" && !value.is_empty() {
+                eprintln!("rocketindex-lsp: using ROCKETINDEX_LSP_PATH={}", value);
                 return Some(value.clone());
             }
         }
 
-        // Check if we're in the fsharp-tools project and construct path to binary
+        // Check if we're in the rocket-index project and construct path to binary
         let worktree_root = worktree.root_path();
-        eprintln!("fsharp-lsp: worktree root is {}", worktree_root);
+        eprintln!("rocketindex-lsp: worktree root is {}", worktree_root);
 
-        // For development: look for binary in fsharp-tools/target/release
-        if worktree_root.contains("fsharp-tools") {
-            // Find the fsharp-tools root by looking for it in the path
-            if let Some(idx) = worktree_root.find("fsharp-tools") {
-                let fsharp_tools_root = &worktree_root[..idx + "fsharp-tools".len()];
-                let binary_path = format!("{}/target/release/fsharp-lsp", fsharp_tools_root);
-                eprintln!("fsharp-lsp: trying development path {}", binary_path);
+        // For development: look for binary in rocket-index/target/release
+        if worktree_root.contains("rocket-index") {
+            // Find the rocket-index root by looking for it in the path
+            if let Some(idx) = worktree_root.find("rocket-index") {
+                let rocket_index_root = &worktree_root[..idx + "rocket-index".len()];
+                let binary_path = format!("{}/target/release/rocketindex-lsp", rocket_index_root);
+                eprintln!("rocketindex-lsp: trying development path {}", binary_path);
                 return Some(binary_path);
             }
         }
@@ -97,7 +97,7 @@ impl FSharpExtension {
         None
     }
 
-    /// Download the fsharp-lsp binary from GitHub releases.
+    /// Download the rocketindex-lsp binary from GitHub releases.
     fn download_binary(&mut self) -> Result<String> {
         // Determine platform and architecture
         let (platform, arch) = zed::current_platform();
@@ -116,7 +116,7 @@ impl FSharpExtension {
 
         // Get the latest release from GitHub
         let release = zed::latest_github_release(
-            "yourname/fsharp-tools",
+            "rocket-tycoon/rocket-index",
             zed::GithubReleaseOptions {
                 require_assets: true,
                 pre_release: false,
@@ -124,7 +124,7 @@ impl FSharpExtension {
         )?;
 
         // Find the appropriate asset for this platform
-        let asset_name = format!("fsharp-lsp-{}-{}.tar.gz", arch_str, platform_str);
+        let asset_name = format!("rocketindex-{}-{}.tar.gz", arch_str, platform_str);
         let asset = release
             .assets
             .iter()
@@ -132,8 +132,8 @@ impl FSharpExtension {
             .ok_or_else(|| format!("No binary available for {}-{}", arch_str, platform_str))?;
 
         // Set up paths
-        let version_dir = format!("fsharp-lsp-{}", release.version);
-        let binary_path = format!("{}/fsharp-lsp", version_dir);
+        let version_dir = format!("rocketindex-{}", release.version);
+        let binary_path = format!("{}/rocketindex-lsp", version_dir);
 
         // Check if we need to download
         if fs::metadata(&binary_path).is_err() {
@@ -143,7 +143,7 @@ impl FSharpExtension {
                 &version_dir,
                 zed::DownloadedFileType::GzipTar,
             )
-            .map_err(|e| format!("Failed to download fsharp-lsp: {}", e))?;
+            .map_err(|e| format!("Failed to download rocketindex-lsp: {}", e))?;
 
             // Make the binary executable
             zed::make_file_executable(&binary_path)
