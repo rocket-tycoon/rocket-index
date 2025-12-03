@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use rayon::prelude::*;
 use rocketindex::{
     db::DEFAULT_DB_NAME,
     find_fsproj_files, parse_fsproj,
@@ -19,7 +20,6 @@ use rocketindex::{
     watch::{find_fsharp_files, is_fsharp_file},
     CodeIndex, SqliteIndex,
 };
-use rayon::prelude::*;
 
 /// Exit codes for the CLI
 ///
@@ -155,7 +155,7 @@ fn main() -> ExitCode {
         .init();
 
     let cli = Cli::parse();
-    
+
     // Handle deprecated --json flag
     let format = if cli.json {
         OutputFormat::Json
@@ -460,7 +460,12 @@ fn cmd_extract_types(
 }
 
 /// Show type cache information
-fn cmd_type_info(symbol: Option<&str>, members_of: Option<&str>, format: OutputFormat, quiet: bool) -> Result<u8> {
+fn cmd_type_info(
+    symbol: Option<&str>,
+    members_of: Option<&str>,
+    format: OutputFormat,
+    quiet: bool,
+) -> Result<u8> {
     let index = load_sqlite_index()?;
 
     if let Some(sym) = symbol {
@@ -657,7 +662,12 @@ fn cmd_def(symbol: &str, context: bool, format: OutputFormat, quiet: bool) -> Re
     Ok(exit_codes::NOT_FOUND)
 }
 
-fn output_location(sym: &rocketindex::Symbol, context: bool, format: OutputFormat, quiet: bool) -> Result<()> {
+fn output_location(
+    sym: &rocketindex::Symbol,
+    context: bool,
+    format: OutputFormat,
+    quiet: bool,
+) -> Result<()> {
     let loc = &sym.location;
 
     if format == OutputFormat::Json {

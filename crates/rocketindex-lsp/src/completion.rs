@@ -402,7 +402,11 @@ mod tests {
             "Detail should include kind"
         );
         assert!(
-            helper.detail.as_ref().unwrap().contains("MyApp.Utils.helper"),
+            helper
+                .detail
+                .as_ref()
+                .unwrap()
+                .contains("MyApp.Utils.helper"),
             "Detail should include qualified name"
         );
     }
