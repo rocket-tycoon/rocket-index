@@ -236,7 +236,11 @@ fn extract_recursive_with_depth(
             if let Some(name_node) = module_name_node {
                 if let Ok(name) = name_node.utf8_text(source) {
                     let trimmed = name.trim();
-                    let short_name = trimmed.split('.').next_back().unwrap_or(trimmed).to_string();
+                    let short_name = trimmed
+                        .split('.')
+                        .next_back()
+                        .unwrap_or(trimmed)
+                        .to_string();
                     let qualified = qualified_name(trimmed, current_module);
                     let symbol = Symbol {
                         name: short_name,
@@ -748,7 +752,10 @@ module TestMetadata =
 
         // Debug: print all symbols
         for s in &result.symbols {
-            eprintln!("Found: {} ({:?}) at {}:{}", s.name, s.kind, s.qualified, s.location.line);
+            eprintln!(
+                "Found: {} ({:?}) at {}:{}",
+                s.name, s.kind, s.qualified, s.location.line
+            );
         }
 
         // Should find TestResult (union)
@@ -757,11 +764,17 @@ module TestMetadata =
         assert_eq!(test_result.unwrap().kind, SymbolKind::Union);
 
         // Should find TestMetadata (record)
-        let test_meta = result.symbols.iter().find(|s| s.name == "TestMetadata" && s.kind == SymbolKind::Record);
+        let test_meta = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "TestMetadata" && s.kind == SymbolKind::Record);
         assert!(test_meta.is_some(), "Should find TestMetadata record");
 
         // Should find TestMetadata module - may use module_defn node type
-        let test_meta_mod = result.symbols.iter().find(|s| s.name == "TestMetadata" && s.kind == SymbolKind::Module);
+        let test_meta_mod = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "TestMetadata" && s.kind == SymbolKind::Module);
         assert!(test_meta_mod.is_some(), "Should find TestMetadata module");
 
         // Should find functions in module
@@ -796,7 +809,10 @@ let public main () = ()
     #[test]
     #[ignore]
     fn test_real_types_fs() {
-        let source = std::fs::read_to_string("/Users/alastair/work/rocket-tycoon/RocketSpec/src/RocketSpec.Core/Types.fs").unwrap();
+        let source = std::fs::read_to_string(
+            "/Users/alastair/work/rocket-tycoon/RocketSpec/src/RocketSpec.Core/Types.fs",
+        )
+        .unwrap();
 
         // Check for parse errors first
         let mut parser = tree_sitter::Parser::new();
@@ -813,7 +829,12 @@ let public main () = ()
         // Print first few children
         for i in 0..std::cmp::min(5, root.child_count()) {
             if let Some(child) = root.child(i) {
-                println!("Child {}: {} (error: {})", i, child.kind(), child.is_error());
+                println!(
+                    "Child {}: {} (error: {})",
+                    i,
+                    child.kind(),
+                    child.is_error()
+                );
             }
         }
 
@@ -821,10 +842,16 @@ let public main () = ()
 
         println!("Found {} symbols:", result.symbols.len());
         for s in &result.symbols {
-            println!("  {} ({:?}) at {}:{}", s.name, s.kind, s.qualified, s.location.line);
+            println!(
+                "  {} ({:?}) at {}:{}",
+                s.name, s.kind, s.qualified, s.location.line
+            );
         }
 
-        assert!(result.symbols.len() > 0, "Should extract symbols from Types.fs");
+        assert!(
+            result.symbols.len() > 0,
+            "Should extract symbols from Types.fs"
+        );
     }
 
     // ============================================================
@@ -843,7 +870,10 @@ let x 42
         assert!(!result.errors.is_empty(), "Should detect syntax error");
         // The error should be near line 4 where "let x 42" is invalid
         let error = &result.errors[0];
-        assert!(error.location.line >= 3, "Error should be on or after line 3");
+        assert!(
+            error.location.line >= 3,
+            "Error should be on or after line 3"
+        );
     }
 
     #[test]
@@ -869,7 +899,10 @@ let result = match x with
         let result = extract_symbols(Path::new("test.fs"), source);
 
         // Incomplete match expression should be an error
-        assert!(!result.errors.is_empty(), "Should detect incomplete match expression");
+        assert!(
+            !result.errors.is_empty(),
+            "Should detect incomplete match expression"
+        );
     }
 
     #[test]
@@ -886,7 +919,11 @@ let greet person =
 "#;
         let result = extract_symbols(Path::new("test.fs"), source);
 
-        assert!(result.errors.is_empty(), "Valid code should have no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Valid code should have no errors, but got: {:?}",
+            result.errors
+        );
     }
 
     #[test]

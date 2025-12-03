@@ -124,11 +124,26 @@ impl ExternalIndex {
         // =========================================================
 
         self.add_type("System.Collections.Generic.List`1", "System.Collections");
-        self.add_method("System.Collections.Generic.List`1.Add", "System.Collections");
-        self.add_method("System.Collections.Generic.List`1.Remove", "System.Collections");
-        self.add_method("System.Collections.Generic.List`1.Clear", "System.Collections");
-        self.add_method("System.Collections.Generic.List`1.Contains", "System.Collections");
-        self.add_property("System.Collections.Generic.List`1.Count", "System.Collections");
+        self.add_method(
+            "System.Collections.Generic.List`1.Add",
+            "System.Collections",
+        );
+        self.add_method(
+            "System.Collections.Generic.List`1.Remove",
+            "System.Collections",
+        );
+        self.add_method(
+            "System.Collections.Generic.List`1.Clear",
+            "System.Collections",
+        );
+        self.add_method(
+            "System.Collections.Generic.List`1.Contains",
+            "System.Collections",
+        );
+        self.add_property(
+            "System.Collections.Generic.List`1.Count",
+            "System.Collections",
+        );
 
         self.add_type(
             "System.Collections.Generic.Dictionary`2",
@@ -205,11 +220,26 @@ impl ExternalIndex {
         self.add_method("System.Text.StringBuilder.Clear", "System.Runtime");
         self.add_method("System.Text.StringBuilder.ToString", "System.Runtime");
 
-        self.add_type("System.Text.RegularExpressions.Regex", "System.Text.RegularExpressions");
-        self.add_method("System.Text.RegularExpressions.Regex.Match", "System.Text.RegularExpressions");
-        self.add_method("System.Text.RegularExpressions.Regex.Matches", "System.Text.RegularExpressions");
-        self.add_method("System.Text.RegularExpressions.Regex.Replace", "System.Text.RegularExpressions");
-        self.add_method("System.Text.RegularExpressions.Regex.IsMatch", "System.Text.RegularExpressions");
+        self.add_type(
+            "System.Text.RegularExpressions.Regex",
+            "System.Text.RegularExpressions",
+        );
+        self.add_method(
+            "System.Text.RegularExpressions.Regex.Match",
+            "System.Text.RegularExpressions",
+        );
+        self.add_method(
+            "System.Text.RegularExpressions.Regex.Matches",
+            "System.Text.RegularExpressions",
+        );
+        self.add_method(
+            "System.Text.RegularExpressions.Regex.Replace",
+            "System.Text.RegularExpressions",
+        );
+        self.add_method(
+            "System.Text.RegularExpressions.Regex.IsMatch",
+            "System.Text.RegularExpressions",
+        );
 
         // =========================================================
         // System.Threading.Tasks
@@ -236,17 +266,29 @@ impl ExternalIndex {
 
     /// Add a type symbol
     fn add_type(&mut self, qualified_name: &str, assembly: &str) {
-        self.add_symbol(qualified_name.to_string(), SymbolKind::Class, assembly.to_string());
+        self.add_symbol(
+            qualified_name.to_string(),
+            SymbolKind::Class,
+            assembly.to_string(),
+        );
     }
 
     /// Add a method symbol
     fn add_method(&mut self, qualified_name: &str, assembly: &str) {
-        self.add_symbol(qualified_name.to_string(), SymbolKind::Function, assembly.to_string());
+        self.add_symbol(
+            qualified_name.to_string(),
+            SymbolKind::Function,
+            assembly.to_string(),
+        );
     }
 
     /// Add a property symbol
     fn add_property(&mut self, qualified_name: &str, assembly: &str) {
-        self.add_symbol(qualified_name.to_string(), SymbolKind::Value, assembly.to_string());
+        self.add_symbol(
+            qualified_name.to_string(),
+            SymbolKind::Value,
+            assembly.to_string(),
+        );
     }
 
     /// Add a symbol to the index

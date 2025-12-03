@@ -449,11 +449,7 @@ fn compute_organize_opens(content: &str) -> Option<(String, Range)> {
 ///
 /// Scans the file for identifiers that cannot be resolved and suggests
 /// modules that define them.
-fn find_missing_opens(
-    index: &rocketindex::CodeIndex,
-    file: &Path,
-    content: &str,
-) -> Vec<String> {
+fn find_missing_opens(index: &rocketindex::CodeIndex, file: &Path, content: &str) -> Vec<String> {
     use rocketindex::extract_symbols;
 
     let result = extract_symbols(file, content);
@@ -607,7 +603,11 @@ fn get_word_at_position(content: &str, pos: Position) -> Option<String> {
 /// 1. Direct type names: "String", "Console" -> return as-is if type cache has members
 /// 2. Variable names: "user" -> resolve to qualified name, look up type in cache
 /// 3. Qualified names: "MyModule.user" -> look up type directly
-fn resolve_expression_type(index: &rocketindex::CodeIndex, expr: &str, from_file: &Path) -> Option<String> {
+fn resolve_expression_type(
+    index: &rocketindex::CodeIndex,
+    expr: &str,
+    from_file: &Path,
+) -> Option<String> {
     // First, check if the expression is directly a type name with members
     if index.get_type_members(expr).is_some() {
         return Some(expr.to_string());
