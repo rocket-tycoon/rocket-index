@@ -1,129 +1,250 @@
-; Keywords
+; ----------------------------------------------------------------------------
+; Literals and comments
+
 [
-  "let"
-  "rec"
-  "and"
-  "in"
-  "if"
-  "then"
-  "else"
-  "elif"
-  "match"
-  "with"
-  "when"
-  "for"
-  "to"
-  "downto"
-  "do"
-  "done"
-  "while"
-  "try"
-  "finally"
-  "raise"
-  "fun"
-  "function"
-  "type"
-  "of"
-  "as"
-  "module"
-  "namespace"
-  "open"
-  "val"
-  "mutable"
-  "inline"
-  "static"
-  "member"
-  "override"
-  "abstract"
-  "default"
-  "public"
-  "private"
-  "internal"
-  "new"
-  "inherit"
-  "interface"
-  "class"
-  "struct"
-  "enum"
-  "delegate"
-  "async"
-  "lazy"
-  "yield"
-  "yield!"
-  "return"
-  "return!"
-  "use"
-  "use!"
-  "begin"
-  "end"
-  "extern"
-  "void"
-  "upcast"
-  "downcast"
-  "not"
-  "or"
-  "mod"
-] @keyword
+  (line_comment)
+  (block_comment)
+] @comment
 
-; Boolean literals
+; XML doc comments (///) - handled via line_comment matching
+((line_comment) @comment.documentation
+ (#match? @comment.documentation "^///"))
+
+(const) @constant
+
+; Unit constant
+(const
+  (unit) @constant.builtin)
+
+; General identifier fallback
+(identifier) @variable
+
+; ----------------------------------------------------------------------------
+; Types
+
+(type_name type_name: (_) @type.definition)
+(exception_definition exception_name: (_) @type.definition)
+
 [
-  "true"
-  "false"
-] @boolean
+  (_type)
+  (atomic_type)
+] @type
 
-; Null literal
-"null" @constant.builtin
+(union_type_case) @type
 
+; ----------------------------------------------------------------------------
+; Modules and namespaces
+
+(fsi_directive_decl . (string) @module)
+(import_decl . (_) @module)
+(named_module name: (_) @module)
+(namespace name: (_) @module)
+(module_defn . (_) @module)
+
+; Long identifiers - prefix parts are modules
+(long_identifier
+  ((identifier)* @module)
+  .
+  ((identifier)))
+
+; ----------------------------------------------------------------------------
+; Functions and members
+
+(function_declaration_left
+  . (_) @function
+  [
+    (argument_patterns)
+    (argument_patterns (long_identifier (identifier)))
+  ] @variable.parameter)
+
+(member_defn
+  (method_or_prop_defn
+    [
+      (property_or_ident) @function
+      (property_or_ident
+        instance: (identifier) @variable.parameter.builtin
+        method: (identifier) @function.method)
+    ]
+    args: (_)? @variable.parameter))
+
+(member_signature
+  .
+  (identifier) @function.member
+  (curried_spec
+    (arguments_spec
+      "*"* @operator
+      (argument_spec
+        (argument_name_spec
+          "?"? @character.special
+          name: (_) @variable.parameter)
+        (_) @type))))
+
+; Function calls
+(application_expression
+  .
+  [
+    (_) @function.call
+    (long_identifier_or_op (long_identifier (identifier) (identifier) @function.call))
+    (typed_expression . (long_identifier_or_op (long_identifier (identifier)* . (identifier) @function.call)))
+  ]
+  .
+  (_)? @variable)
+
+; Method calls on objects
+(application_expression
+  .
+  [
+    (dot_expression base: (_) @variable.member field: (_) @function.call)
+    (_ (dot_expression base: (_) @variable.member field: (_) @function.call))
+    (_ (_ (dot_expression base: (_) @variable.member field: (_) @function.call)))
+    (_ (_ (_ (dot_expression base: (_) @variable.member field: (_) @function.call))))
+  ])
+
+; ----------------------------------------------------------------------------
+; Variables and parameters
+
+(value_declaration_left . (_) @variable)
+(primary_constr_args (_) @variable.parameter)
+(argument_patterns) @variable.parameter
+(typed_pattern
+  (_pattern) @variable.parameter
+  (_type) @type)
+(class_as_reference (_) @variable.parameter.builtin)
+
+; Underscore-prefixed identifiers are special
+((argument_patterns (long_identifier (identifier) @character.special))
+ (#match? @character.special "^\_.*"))
+
+(wildcard_pattern) @character.special
+
+; ----------------------------------------------------------------------------
+; Fields and properties
+
+(field_initializer field: (_) @property)
+(record_fields
+  (record_field . (identifier) @property))
+(dot_expression
+  base: (_) @variable
+  field: (_) @variable.member)
+
+; ----------------------------------------------------------------------------
+; Computation expressions
+
+(ce_expression . (_) @constant.macro)
+
+; ----------------------------------------------------------------------------
+; Patterns
+
+(rules
+  (rule
+    pattern: (_) @constant
+    block: (_)))
+
+(identifier_pattern
+  . (_) @constant
+  . (_) @variable)
+
+(optional_pattern "?" @character.special)
+
+; ----------------------------------------------------------------------------
+; Literals
+
+[
+  (xint)
+  (int)
+  (int16)
+  (uint16)
+  (int32)
+  (uint32)
+  (int64)
+  (uint64)
+  (nativeint)
+  (unativeint)
+] @number
+
+[
+  (ieee32)
+  (ieee64)
+  (float)
+  (decimal)
+] @number.float
+
+(bool) @boolean
+
+[
+  (string)
+  (triple_quoted_string)
+  (verbatim_string)
+  (char)
+] @string
+
+; ----------------------------------------------------------------------------
 ; Operators
+
 [
-  "|>"
-  "<|"
-  ">>"
-  "<<"
-  "||"
-  "&&"
-  "="
-  "<>"
-  "<"
-  ">"
-  "<="
-  ">="
-  "+"
-  "-"
-  "*"
-  "/"
-  "%"
-  "**"
-  "::"
-  "@"
-  "^"
   "|"
-  "&"
-  "~~~"
-  ">>>"
-  "<<<"
+  "="
+  ">"
+  "<"
+  "-"
+  "~"
   "->"
   "<-"
+  "&"
+  "&&"
+  "||"
   ":>"
   ":?>"
-  ":?"
+  ".."
+  (infix_op)
+  (prefix_op)
 ] @operator
 
-; Punctuation - Brackets
+; Pipe operators with function call highlighting
+((infix_expression
+  . (_)
+  . (infix_op) @operator
+  . (_) @function.call)
+ (#eq? @operator "|>"))
+
+((infix_expression
+  . (_) @function.call
+  . (infix_op) @operator
+  . (_))
+ (#eq? @operator "<|"))
+
+; Type casts
+(typecast_expression
+  . (_) @variable
+  . (_) @type)
+
+; ----------------------------------------------------------------------------
+; Punctuation
+
 [
   "("
   ")"
-  "["
-  "]"
   "{"
   "}"
+  "["
+  "]"
   "[|"
   "|]"
-  "[<"
-  ">]"
+  "{|"
+  "|}"
 ] @punctuation.bracket
 
-; Punctuation - Delimiters
+[
+  "[<"
+  ">]"
+] @punctuation.special
+
+(format_string_eval
+  [
+    "{"
+    "}"
+  ] @punctuation.special)
+
 [
   ","
   ";"
@@ -131,138 +252,178 @@
   "."
 ] @punctuation.delimiter
 
-; Pipe in pattern matching
-"|" @punctuation.delimiter
+(generic_type
+  [
+    "<"
+    ">"
+  ] @punctuation.bracket)
 
-; Type annotations
-(type_name) @type
-(type_argument) @type
+; ----------------------------------------------------------------------------
+; Keywords
 
-; Generic type parameters
-(type_argument_defn) @type
+[
+  "if"
+  "then"
+  "else"
+  "elif"
+  "when"
+  "match"
+  "match!"
+] @keyword.conditional
 
-; Function definitions
-(function_or_value_defn
-  (function_declaration_left
-    (identifier) @function))
+[
+  "and"
+  "or"
+  "not"
+  "upcast"
+  "downcast"
+] @keyword.operator
 
-; Value bindings (non-function let bindings)
-(function_or_value_defn
-  (value_declaration_left
-    (identifier_pattern
-      (long_identifier
-        (identifier) @variable))))
+[
+  "return"
+  "return!"
+  "yield"
+  "yield!"
+] @keyword.return
 
-; Function calls
-(application_expression
-  (long_identifier_or_op
-    (long_identifier) @function.call))
+[
+  "for"
+  "while"
+  "downto"
+  "to"
+] @keyword.repeat
 
-; Method calls
-(dot_expression
-  (long_identifier_or_op
-    (long_identifier) @function.method))
+[
+  "open"
+  "#r"
+  "#load"
+] @keyword.import
 
-; Parameters in function definitions
-(argument_patterns
-  (long_identifier
-    (identifier) @variable.parameter))
+[
+  "abstract"
+  "delegate"
+  "static"
+  "inline"
+  "mutable"
+  "override"
+  "rec"
+  "global"
+  (access_modifier)
+] @keyword.modifier
 
-; Simple pattern parameter
-(argument_patterns
-  (identifier_pattern
-    (long_identifier
-      (identifier) @variable.parameter)))
+[
+  "let"
+  "let!"
+  "use"
+  "use!"
+  "member"
+] @keyword.function
 
-; Record field definitions
-(record_field
-  (identifier) @property)
+[
+  "try"
+  "with"
+  "finally"
+] @keyword.exception
 
-; Record field access
-(field_expression
-  (long_identifier
-    (identifier) @property))
+[
+  "as"
+  "assert"
+  "begin"
+  "end"
+  "done"
+  "default"
+  "in"
+  "do"
+  "do!"
+  "fun"
+  "function"
+  "get"
+  "set"
+  "lazy"
+  "new"
+  "null"
+  "of"
+  "struct"
+  "val"
+  "module"
+  "namespace"
+  "enum"
+  "type"
+  "exception"
+  "inherit"
+  "interface"
+  "class"
+] @keyword
 
-; Union case definitions
-(union_type_case
-  (identifier) @constructor)
+; Exception functions
+((identifier) @keyword.exception
+ (#any-of? @keyword.exception "failwith" "failwithf" "raise" "reraise"))
 
-; Union case usage in patterns
-(identifier_pattern
-  (long_identifier
-    (identifier) @constructor))
+(match_expression "with" @keyword.conditional)
 
-; Module definitions
-(module_defn
-  (long_identifier) @namespace)
+(try_expression
+  [
+    "try"
+    "with"
+    "finally"
+  ] @keyword.exception)
 
-; Namespace definitions
-(namespace
-  (long_identifier) @namespace)
+; ----------------------------------------------------------------------------
+; Built-in types
 
-; Open statements (imports)
-(open_statement
-  (long_identifier) @namespace)
+((_type
+  (long_identifier (identifier) @type.builtin))
+ (#any-of? @type.builtin "bool" "byte" "sbyte" "int16" "uint16" "int" "uint"
+   "int64" "uint64" "nativeint" "unativeint" "decimal" "float" "double"
+   "float32" "single" "char" "string" "unit"))
 
-; Identifiers (general)
-(identifier) @variable
-(long_identifier) @variable
+; ----------------------------------------------------------------------------
+; Built-in modules
 
-; Literals - Strings
-(string) @string
-(verbatim_string) @string
-(triple_quoted_string) @string
-(interpolated_string) @string
+((identifier) @module.builtin
+ (#any-of? @module.builtin "Array" "Async" "Directory" "File" "List" "Option"
+   "Path" "Map" "Set" "Lazy" "Seq" "Task" "String" "Result"))
 
-; Literals - Characters
-(char) @character
+; ----------------------------------------------------------------------------
+; Preprocessor
 
-; Literals - Numbers
-(int) @number
-(int16) @number
-(int32) @number
-(int64) @number
-(uint16) @number
-(uint32) @number
-(uint64) @number
-(float) @number
-(decimal) @number
+(compiler_directive_decl) @keyword.directive
 
-; Comments
-(comment) @comment
-(block_comment) @comment
+(preproc_line "#line" @keyword.directive)
 
-; XML documentation comments
-(xml_doc) @comment.documentation
+(preproc_if
+  [
+    "#if" @keyword.directive
+    "#endif" @keyword.directive
+  ]
+  condition: (_)? @keyword.directive)
 
+(preproc_else "#else" @keyword.directive)
+
+; ----------------------------------------------------------------------------
 ; Attributes
+
 (attribute) @attribute
-(attribute_set) @attribute
 
-; Compiler directives
-(preproc_if) @keyword.directive
-(preproc_else) @keyword.directive
-(preproc_endif) @keyword.directive
-(preproc_line) @keyword.directive
+(attribute
+  target: (identifier)? @keyword
+  (_type) @attribute)
 
-; Active patterns
-(active_pattern_op) @function.special
+; Literal attribute marks constants
+((value_declaration
+   (attributes
+     (attribute
+       (_type
+         (long_identifier
+           (identifier) @attribute))))
+   (function_or_value_defn
+     (value_declaration_left
+       .
+       (_) @constant)))
+ (#eq? @attribute "Literal"))
 
-; Computation expressions
-(ce_expression
-  (identifier) @function.builtin)
+; ----------------------------------------------------------------------------
+; Operators in identifiers
 
-; Special identifiers
-((identifier) @variable.builtin
-  (#match? @variable.builtin "^(this|base|self)$"))
-
-; Exception handling
-"try" @keyword.exception
-"with" @keyword.exception
-"finally" @keyword.exception
-"raise" @keyword.exception
-"failwith" @function.builtin
-"failwithf" @function.builtin
-
-; Measure types
-(measure_type) @type.qualifier
+(long_identifier_or_op
+  (op_identifier) @operator)
