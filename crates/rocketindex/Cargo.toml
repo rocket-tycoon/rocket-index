@@ -26,5 +26,8 @@ quick-xml = { workspace = true }
 # SQLite for index storage (RFC-001)
 rusqlite = { workspace = true }
 
+# TOML parsing for config files
+toml = "0.8"
+
 [dev-dependencies]
 tempfile = "3.0"

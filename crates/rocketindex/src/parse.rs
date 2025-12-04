@@ -17,6 +17,15 @@ pub struct SyntaxError {
     pub location: Location,
 }
 
+/// A warning generated during parsing (non-fatal issues).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseWarning {
+    /// Warning message describing the issue
+    pub message: String,
+    /// Optional location in the source file
+    pub location: Option<Location>,
+}
+
 /// Result of extracting symbols from a single file.
 #[derive(Debug, Clone, Default)]
 pub struct ParseResult {
@@ -30,6 +39,8 @@ pub struct ParseResult {
     pub module_path: Option<String>,
     /// Syntax errors detected during parsing
     pub errors: Vec<SyntaxError>,
+    /// Warnings generated during parsing (non-fatal issues like depth limits)
+    pub warnings: Vec<ParseWarning>,
 }
 
 /// Extract symbols and references from F# source code.
@@ -37,10 +48,11 @@ pub struct ParseResult {
 /// # Arguments
 /// * `file` - Path to the source file (for location tracking)
 /// * `source` - The F# source code content
+/// * `max_depth` - Maximum recursion depth for parsing
 ///
 /// # Returns
 /// A `ParseResult` containing all extracted symbols, references, and syntax errors.
-pub fn extract_symbols(file: &Path, source: &str) -> ParseResult {
+pub fn extract_symbols(file: &Path, source: &str, max_depth: usize) -> ParseResult {
     let mut parser = tree_sitter::Parser::new();
 
     // Set the F# language - LANGUAGE_FSHARP is a compile-time constant from tree-sitter-fsharp,
@@ -69,6 +81,7 @@ pub fn extract_symbols(file: &Path, source: &str) -> ParseResult {
         file,
         &mut result,
         None, // No parent module yet
+        max_depth,
     );
 
     result
@@ -85,6 +98,21 @@ fn extract_syntax_errors(
     file: &Path,
     errors: &mut Vec<SyntaxError>,
 ) {
+    extract_syntax_errors_with_depth(node, source, file, errors, 0);
+}
+
+fn extract_syntax_errors_with_depth(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    errors: &mut Vec<SyntaxError>,
+    depth: usize,
+) {
+    // Prevent stack overflow on deeply nested error trees
+    if depth > MAX_HELPER_DEPTH {
+        return;
+    }
+
     // Check if this node is an error
     if node.is_error() {
         let message = generate_error_message(node, source);
@@ -109,7 +137,7 @@ fn extract_syntax_errors(
     // Recurse into children
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            extract_syntax_errors(&child, source, file, errors);
+            extract_syntax_errors_with_depth(&child, source, file, errors, depth + 1);
         }
     }
 }
@@ -146,8 +174,8 @@ fn generate_error_message(node: &tree_sitter::Node, source: &[u8]) -> String {
     }
 }
 
-/// Maximum recursion depth to prevent stack overflow on deeply nested files.
-const MAX_RECURSION_DEPTH: usize = 100;
+/// Maximum recursion depth for helper functions (more conservative).
+const MAX_HELPER_DEPTH: usize = 200;
 
 /// Recursively extract symbols from a tree-sitter node.
 ///
@@ -159,8 +187,9 @@ fn extract_recursive(
     file: &Path,
     result: &mut ParseResult,
     current_module: Option<&str>,
+    max_depth: usize,
 ) {
-    extract_recursive_with_depth(node, source, file, result, current_module, 0);
+    extract_recursive_with_depth(node, source, file, result, current_module, 0, max_depth);
 }
 
 /// Inner recursive function with depth tracking.
@@ -171,13 +200,28 @@ fn extract_recursive_with_depth(
     result: &mut ParseResult,
     current_module: Option<&str>,
     depth: usize,
+    max_depth: usize,
 ) {
-    if depth > MAX_RECURSION_DEPTH {
-        tracing::warn!(
-            "Max recursion depth ({}) reached in {:?}, skipping deeper nodes",
-            MAX_RECURSION_DEPTH,
-            file
-        );
+    if depth > max_depth {
+        // Only add one warning per file (check if we already have a depth warning)
+        let has_depth_warning = result
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("recursion depth"));
+        if !has_depth_warning {
+            result.warnings.push(ParseWarning {
+                message: format!(
+                    "Maximum recursion depth ({}) reached, some deeply nested code may not be indexed",
+                    max_depth
+                ),
+                location: Some(node_to_location(file, node)),
+            });
+            tracing::warn!(
+                "Max recursion depth ({}) reached in {:?}, skipping deeper nodes",
+                max_depth,
+                file
+            );
+        }
         return;
     }
 
@@ -215,6 +259,7 @@ fn extract_recursive_with_depth(
                                     result,
                                     Some(&qualified),
                                     depth + 1,
+                                    max_depth,
                                 );
                             }
                         }
@@ -264,6 +309,7 @@ fn extract_recursive_with_depth(
                                     result,
                                     Some(&qualified),
                                     depth + 1,
+                                    max_depth,
                                 );
                             }
                         }
@@ -313,7 +359,15 @@ fn extract_recursive_with_depth(
     // Recurse into children - no cloning needed since current_module is &str
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            extract_recursive_with_depth(&child, source, file, result, current_module, depth + 1);
+            extract_recursive_with_depth(
+                &child,
+                source,
+                file,
+                result,
+                current_module,
+                depth + 1,
+                max_depth,
+            );
         }
     }
 }
@@ -358,7 +412,7 @@ fn extract_type_defn(
             result.symbols.push(symbol);
 
             if matches!(kind, SymbolKind::Class | SymbolKind::Interface) {
-                extract_members(node, source, file, result, current_module);
+                extract_members(node, source, file, result, current_module, 0);
             }
             return;
         }
@@ -382,7 +436,7 @@ fn extract_type_defn(
     }
 
     if matches!(kind, SymbolKind::Class | SymbolKind::Interface) {
-        extract_members(node, source, file, result, current_module);
+        extract_members(node, source, file, result, current_module, 0);
     }
 }
 
@@ -392,7 +446,13 @@ fn extract_members(
     file: &Path,
     result: &mut ParseResult,
     current_module: Option<&str>,
+    depth: usize,
 ) {
+    // Prevent stack overflow on deeply nested class hierarchies
+    if depth > MAX_HELPER_DEPTH {
+        return;
+    }
+
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if child.kind() == "member_defn" {
@@ -410,7 +470,7 @@ fn extract_members(
                     }
                 }
             }
-            extract_members(&child, source, file, result, current_module);
+            extract_members(&child, source, file, result, current_module, depth + 1);
         }
     }
 }
@@ -477,12 +537,24 @@ fn handle_function_or_value_defn(
 /// Recursively find the first identifier node within a subtree.
 /// Useful for extracting the name from nested patterns.
 fn find_first_identifier<'a>(node: &tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+    find_first_identifier_with_depth(node, 0)
+}
+
+fn find_first_identifier_with_depth<'a>(
+    node: &tree_sitter::Node<'a>,
+    depth: usize,
+) -> Option<tree_sitter::Node<'a>> {
+    // Prevent stack overflow on deeply nested patterns
+    if depth > MAX_HELPER_DEPTH {
+        return None;
+    }
+
     if node.kind() == "identifier" {
         return Some(*node);
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            if let Some(id) = find_first_identifier(&child) {
+            if let Some(id) = find_first_identifier_with_depth(&child, depth + 1) {
                 return Some(id);
             }
         }
@@ -511,6 +583,15 @@ fn qualified_name(name: &str, current_module: Option<&str>) -> String {
 
 /// Check if a node is in a reference context (as opposed to a definition).
 fn is_reference_context(node: &tree_sitter::Node) -> bool {
+    is_reference_context_with_depth(node, 0)
+}
+
+fn is_reference_context_with_depth(node: &tree_sitter::Node, depth: usize) -> bool {
+    // Prevent stack overflow on deeply nested parent chains
+    if depth > MAX_HELPER_DEPTH {
+        return false; // Conservative: treat unknown deep context as definition
+    }
+
     if let Some(parent) = node.parent() {
         match parent.kind() {
             // These are definition contexts, not references
@@ -528,7 +609,7 @@ fn is_reference_context(node: &tree_sitter::Node) -> bool {
             "application_expression" | "infix_expression" | "prefix_expression" => true,
 
             // Check parent's parent for more context
-            _ => is_reference_context(&parent),
+            _ => is_reference_context_with_depth(&parent, depth + 1),
         }
     } else {
         false
@@ -617,13 +698,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_parse_result_default() {
+        let result = ParseResult::default();
+        assert!(result.symbols.is_empty());
+        assert!(result.references.is_empty());
+        assert!(result.opens.is_empty());
+        assert!(result.module_path.is_none());
+        assert!(result.errors.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
     fn extracts_let_binding() {
         let source = r#"
 module Test
 
 let add x y = x + y
 "#;
-        let result = extract_symbols(Path::new("test.fs"), source);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         assert!(result.symbols.len() >= 2); // module + function
         let func = result.symbols.iter().find(|s| s.name == "add");
@@ -636,7 +728,7 @@ let add x y = x + y
         let source = r#"
 type Person = { Name: string; Age: int }
 "#;
-        let result = extract_symbols(Path::new("test.fs"), source);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         let type_sym = result.symbols.iter().find(|s| s.name == "Person");
         assert!(type_sym.is_some());
@@ -650,7 +742,7 @@ module MyApp.Services.Payment
 
 let process () = ()
 "#;
-        let result = extract_symbols(Path::new("Payment.fs"), source);
+        let result = extract_symbols(Path::new("Payment.fs"), source, 500);
 
         let module = result.symbols.iter().find(|s| s.name == "Payment");
         assert!(module.is_some());
@@ -667,7 +759,7 @@ open System.Collections.Generic
 
 let x = 1
 "#;
-        let result = extract_symbols(Path::new("test.fs"), source);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         assert!(result.opens.contains(&"System".to_string()));
         assert!(result
@@ -685,7 +777,7 @@ let internal process x = x * 2
 let public main () = ()
 let defaultFn () = ()
 "#;
-        let result = extract_symbols(Path::new("test.fs"), source);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         let helper = result.symbols.iter().find(|s| s.name == "helper");
         assert!(helper.is_some());
@@ -748,7 +840,7 @@ module TestMetadata =
     let addTag tag metadata =
         { metadata with Tags = tag :: metadata.Tags }
 "#;
-        let result = extract_symbols(Path::new("Types.fs"), source);
+        let result = extract_symbols(Path::new("Types.fs"), source, 500);
 
         // Debug: print all symbols
         for s in &result.symbols {
@@ -838,7 +930,7 @@ let public main () = ()
             }
         }
 
-        let result = extract_symbols(std::path::Path::new("Types.fs"), &source);
+        let result = extract_symbols(std::path::Path::new("Types.fs"), &source, 500);
 
         println!("Found {} symbols:", result.symbols.len());
         for s in &result.symbols {
@@ -849,7 +941,7 @@ let public main () = ()
         }
 
         assert!(
-            result.symbols.len() > 0,
+            !result.symbols.is_empty(),
             "Should extract symbols from Types.fs"
         );
     }
@@ -865,7 +957,7 @@ module Test
 
 let x 42
 "#;
-        let result = extract_symbols(Path::new("test.fs"), source);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         assert!(!result.errors.is_empty(), "Should detect syntax error");
         // The error should be near line 4 where "let x 42" is invalid
@@ -883,7 +975,7 @@ module Test
 
 let items = [1; 2; 3
 "#;
-        let result = extract_symbols(Path::new("test.fs"), source);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         assert!(!result.errors.is_empty(), "Should detect unclosed bracket");
     }
@@ -896,7 +988,7 @@ module Test
 let result = match x with
     | Some
 "#;
-        let result = extract_symbols(Path::new("test.fs"), source);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         // Incomplete match expression should be an error
         assert!(
@@ -917,7 +1009,7 @@ type Person = { Name: string; Age: int }
 let greet person =
     printfn "Hello %s" person.Name
 "#;
-        let result = extract_symbols(Path::new("test.fs"), source);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         assert!(
             result.errors.is_empty(),
@@ -934,9 +1026,12 @@ module Test
 let x 42
 let y [1; 2
 "#;
-        let result = extract_symbols(Path::new("test.fs"), source);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
-        assert!(result.errors.len() >= 1, "Should detect at least one error");
+        assert!(
+            !result.errors.is_empty(),
+            "Should detect at least one error"
+        );
     }
 
     #[test]
@@ -944,7 +1039,7 @@ let y [1; 2
         let source = r#"module Test
 
 let x 42"#;
-        let result = extract_symbols(Path::new("test.fs"), source);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         assert!(!result.errors.is_empty(), "Should detect syntax error");
         let error = &result.errors[0];

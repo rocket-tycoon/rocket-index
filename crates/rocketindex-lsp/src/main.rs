@@ -20,8 +20,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use document_store::DocumentStore;
 use rocketindex::{
-    db::DEFAULT_DB_NAME, extract_symbols, watch::find_fsharp_files, CodeIndex, SqliteIndex,
-    SyntaxError,
+    config::Config, db::DEFAULT_DB_NAME, extract_symbols, watch::find_fsharp_files, CodeIndex,
+    SqliteIndex, SyntaxError,
 };
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result as LspResult;
@@ -40,6 +40,8 @@ struct Backend {
     workspace_root: Arc<RwLock<Option<PathBuf>>>,
     /// In-memory document store for open files
     documents: DocumentStore,
+    /// Maximum recursion depth for parsing (from config)
+    max_recursion_depth: Arc<RwLock<usize>>,
 }
 
 impl Backend {
@@ -141,6 +143,7 @@ impl Backend {
         let files = find_fsharp_files(&root_path)?;
         info!("Found {} F# files", files.len());
 
+        let max_depth = *self.max_recursion_depth.read().await;
         let mut index = self.index.write().await;
 
         // Set workspace root for relative path storage
@@ -150,7 +153,7 @@ impl Backend {
         self.index_external_assemblies(&mut index, &root_path).await;
 
         for file in files {
-            if let Err(e) = self.index_file(&mut index, &file) {
+            if let Err(e) = self.index_file(&mut index, &file, max_depth) {
                 warn!("Failed to index {:?}: {}", file, e);
             }
         }
@@ -191,14 +194,14 @@ impl Backend {
     }
 
     /// Index a single file into the in-memory CodeIndex.
-    fn index_file(&self, index: &mut CodeIndex, file: &PathBuf) -> Result<()> {
+    fn index_file(&self, index: &mut CodeIndex, file: &PathBuf, max_depth: usize) -> Result<()> {
         let content = std::fs::read_to_string(file)?;
 
         // Clear existing data for this file
         index.clear_file(file);
 
         // Extract symbols
-        let result = extract_symbols(file, &content);
+        let result = extract_symbols(file, &content, max_depth);
 
         // Add symbols to index
         for symbol in result.symbols {
@@ -220,10 +223,12 @@ impl Backend {
 
     /// Update a single file in both the in-memory index and SQLite database.
     async fn update_file(&self, file: &PathBuf) -> Result<()> {
+        let max_depth = *self.max_recursion_depth.read().await;
+
         // Update in-memory index
         {
             let mut index = self.index.write().await;
-            self.index_file(&mut index, file)?;
+            self.index_file(&mut index, file, max_depth)?;
         }
 
         // Also update SQLite if it exists
@@ -240,7 +245,7 @@ impl Backend {
 
                         // Re-extract and insert
                         if let Ok(content) = std::fs::read_to_string(file) {
-                            let result = extract_symbols(file, &content);
+                            let result = extract_symbols(file, &content, max_depth);
 
                             for symbol in &result.symbols {
                                 if let Err(e) = sqlite_index.insert_symbol(symbol) {
@@ -305,7 +310,8 @@ impl Backend {
             Err(_) => return,
         };
 
-        let result = extract_symbols(&file, content);
+        let max_depth = *self.max_recursion_depth.read().await;
+        let result = extract_symbols(&file, content, max_depth);
         self.publish_diagnostics(uri, result.errors).await;
     }
 
@@ -449,10 +455,15 @@ fn compute_organize_opens(content: &str) -> Option<(String, Range)> {
 ///
 /// Scans the file for identifiers that cannot be resolved and suggests
 /// modules that define them.
-fn find_missing_opens(index: &rocketindex::CodeIndex, file: &Path, content: &str) -> Vec<String> {
+fn find_missing_opens(
+    index: &rocketindex::CodeIndex,
+    file: &Path,
+    content: &str,
+    max_depth: usize,
+) -> Vec<String> {
     use rocketindex::extract_symbols;
 
-    let result = extract_symbols(file, content);
+    let result = extract_symbols(file, content, max_depth);
     let mut unresolved = Vec::new();
 
     // Check all references
@@ -748,6 +759,16 @@ impl LanguageServer for Backend {
 
     async fn initialized(&self, _: InitializedParams) {
         info!("F# Language Server initialized");
+
+        // Load config from workspace root
+        if let Some(root) = self.workspace_root.read().await.as_ref() {
+            let config = Config::load(root);
+            *self.max_recursion_depth.write().await = config.max_recursion_depth;
+            info!(
+                "Loaded config: max_recursion_depth={}",
+                config.max_recursion_depth
+            );
+        }
 
         // Build initial index (loads from SQLite if available)
         if let Err(e) = self.build_index().await {
@@ -1066,7 +1087,8 @@ impl LanguageServer for Backend {
         // Check for missing open suggestions
         {
             let index = self.index.read().await;
-            let missing_opens = find_missing_opens(&index, &file, &content);
+            let max_depth = *self.max_recursion_depth.read().await;
+            let missing_opens = find_missing_opens(&index, &file, &content, max_depth);
 
             for module_name in missing_opens {
                 // Find a good place to insert the open (after existing opens or at top)
@@ -1307,6 +1329,7 @@ async fn main() {
         index: Arc::new(RwLock::new(CodeIndex::new())),
         workspace_root: Arc::new(RwLock::new(None)),
         documents: DocumentStore::new(),
+        max_recursion_depth: Arc::new(RwLock::new(500)), // Default, updated on init
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
@@ -1629,7 +1652,8 @@ let x = 1"#;
 let x = helper 42
 "#;
 
-        let missing = find_missing_opens(&index, &std::path::PathBuf::from("Test.fs"), content);
+        let missing =
+            find_missing_opens(&index, &std::path::PathBuf::from("Test.fs"), content, 500);
 
         assert!(
             missing.contains(&"MyApp.Utils".to_string()),
@@ -1661,7 +1685,8 @@ open MyApp.Utils
 let x = helper 42
 "#;
 
-        let missing = find_missing_opens(&index, &std::path::PathBuf::from("Test.fs"), content);
+        let missing =
+            find_missing_opens(&index, &std::path::PathBuf::from("Test.fs"), content, 500);
 
         assert!(
             !missing.contains(&"MyApp.Utils".to_string()),

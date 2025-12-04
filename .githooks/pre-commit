@@ -1,0 +1,21 @@
+#!/bin/sh
+# Pre-commit hook for RocketIndex
+# Checks formatting and runs clippy
+
+set -e
+
+echo "Running cargo fmt check..."
+cargo fmt --check
+if [ $? -ne 0 ]; then
+    echo "❌ Formatting check failed. Run 'cargo fmt' to fix."
+    exit 1
+fi
+
+echo "Running cargo clippy..."
+cargo clippy --all-targets --all-features -- -D warnings
+if [ $? -ne 0 ]; then
+    echo "❌ Clippy check failed. Fix the warnings above."
+    exit 1
+fi
+
+echo "✅ Pre-commit checks passed"

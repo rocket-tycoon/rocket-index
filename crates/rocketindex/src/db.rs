@@ -51,6 +51,13 @@ impl SqliteIndex {
         }
 
         let conn = Connection::open(path)?;
+
+        // Enable WAL mode and normal sync for performance
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;",
+        )?;
+
         let index = Self { conn };
 
         // Verify schema version
@@ -91,6 +98,11 @@ impl SqliteIndex {
 
     /// Initialize the database schema.
     fn init_schema(&self) -> Result<()> {
+        // Enable WAL mode for better concurrency and performance
+        self.conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;",
+        )?;
         self.conn.execute_batch(SCHEMA_SQL)?;
         self.set_metadata("schema_version", &SCHEMA_VERSION.to_string())?;
         Ok(())
@@ -423,6 +435,27 @@ impl SqliteIndex {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Insert multiple references in a transaction for efficiency.
+    pub fn insert_references(&self, refs: &[(&Path, &Reference)]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt =
+                tx.prepare("INSERT INTO refs (name, file, line, column) VALUES (?1, ?2, ?3, ?4)")?;
+
+            for (file, reference) in refs {
+                let file_str = file.to_string_lossy();
+                stmt.execute(params![
+                    reference.name,
+                    file_str.as_ref(),
+                    reference.location.line,
+                    reference.location.column,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Find all references to a name (short or qualified).
     pub fn find_references(&self, name: &str) -> Result<Vec<Reference>> {
         let mut stmt = self.conn.prepare(
@@ -491,6 +524,22 @@ impl SqliteIndex {
             params![file_str.as_ref(), module_path, line],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Insert multiple open statements in a transaction for efficiency.
+    pub fn insert_opens(&self, opens: &[(&Path, &str, u32)]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt =
+                tx.prepare("INSERT INTO opens (file, module_path, line) VALUES (?1, ?2, ?3)")?;
+
+            for (file, module_path, line) in opens {
+                let file_str = file.to_string_lossy();
+                stmt.execute(params![file_str.as_ref(), *module_path, *line])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Get all opens for a file.
