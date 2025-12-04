@@ -137,14 +137,26 @@ pub fn is_fsharp_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Find all F# source files in a directory tree.
+/// Find all F# source files in a directory tree (uses default exclusions).
 pub fn find_fsharp_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    find_fsharp_files_with_exclusions(root, &crate::config::DEFAULT_EXCLUDE_DIRS.to_vec())
+}
+
+/// Find all F# source files in a directory tree with custom exclusions.
+pub fn find_fsharp_files_with_exclusions(
+    root: &Path,
+    exclude_dirs: &[&str],
+) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    find_fsharp_files_recursive(root, &mut files)?;
+    find_fsharp_files_recursive(root, &mut files, exclude_dirs)?;
     Ok(files)
 }
 
-fn find_fsharp_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+fn find_fsharp_files_recursive(
+    dir: &Path,
+    files: &mut Vec<PathBuf>,
+    exclude_dirs: &[&str],
+) -> std::io::Result<()> {
     if !dir.is_dir() {
         return Ok(());
     }
@@ -154,15 +166,10 @@ fn find_fsharp_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) -> std::io:
         let path = entry.path();
 
         if path.is_dir() {
-            // Skip hidden directories and common non-source directories
+            // Skip hidden directories and excluded directories
             let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !dir_name.starts_with('.')
-                && dir_name != "node_modules"
-                && dir_name != "bin"
-                && dir_name != "obj"
-                && dir_name != "packages"
-            {
-                find_fsharp_files_recursive(&path, files)?;
+            if !dir_name.starts_with('.') && !exclude_dirs.contains(&dir_name) {
+                find_fsharp_files_recursive(&path, files, exclude_dirs)?;
             }
         } else if is_fsharp_file(&path) {
             files.push(path);

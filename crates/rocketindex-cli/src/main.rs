@@ -14,10 +14,11 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use rayon::prelude::*;
 use rocketindex::{
+    config::Config,
     db::DEFAULT_DB_NAME,
     find_fsproj_files, parse_fsproj,
     spider::{format_spider_result, spider},
-    watch::{find_fsharp_files, is_fsharp_file},
+    watch::{find_fsharp_files_with_exclusions, is_fsharp_file},
     CodeIndex, SqliteIndex,
 };
 
@@ -209,7 +210,19 @@ fn cmd_build(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
         .canonicalize()
         .context("Failed to resolve root directory")?;
 
-    let files = find_fsharp_files(&root).context("Failed to find F# files")?;
+    // Load configuration
+    let config = Config::load(&root);
+    let exclude_dirs = config.excluded_dirs();
+
+    if !quiet && !config.exclude_dirs.is_empty() {
+        eprintln!(
+            "Custom exclusions: {}",
+            config.exclude_dirs.join(", ")
+        );
+    }
+
+    let files =
+        find_fsharp_files_with_exclusions(&root, &exclude_dirs).context("Failed to find F# files")?;
 
     // Try to find and parse .fsproj files for compilation order
     let fsproj_files = find_fsproj_files(&root);
@@ -230,11 +243,12 @@ fn cmd_build(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
     }
 
     // Parse files in parallel using rayon
+    let max_depth = config.max_recursion_depth;
     let parse_results: Vec<_> = files
         .par_iter()
         .map(|file| match std::fs::read_to_string(file) {
             Ok(source) => {
-                let result = rocketindex::extract_symbols(file, &source);
+                let result = rocketindex::extract_symbols(file, &source, max_depth);
                 Ok((file.clone(), result))
             }
             Err(e) => Err(format!("{}: {}", file.display(), e)),
@@ -268,40 +282,68 @@ fn cmd_build(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
     }
 
     let mut errors = Vec::new();
-    let mut symbol_count = 0;
+    let mut warnings = Vec::new();
 
-    // TODO: Use batch insert methods for better performance
-    // Individual inserts are auto-committed by SQLite
+    // Collect all data for batch insertion
+    let mut all_symbols = Vec::new();
+    let mut all_references: Vec<(PathBuf, rocketindex::index::Reference)> = Vec::new();
+    let mut all_opens: Vec<(PathBuf, String, u32)> = Vec::new();
+
     for result in parse_results {
         match result {
             Ok((file, parse_result)) => {
-                // Insert symbols
-                for symbol in &parse_result.symbols {
-                    if let Err(e) = index.insert_symbol(symbol) {
-                        errors.push(format!("Failed to insert symbol {}: {}", symbol.name, e));
-                    } else {
-                        symbol_count += 1;
-                    }
+                all_symbols.extend(parse_result.symbols);
+
+                for reference in parse_result.references {
+                    all_references.push((file.clone(), reference));
                 }
 
-                // Insert references
-                for reference in &parse_result.references {
-                    if let Err(e) = index.insert_reference(&file, reference) {
-                        errors.push(format!("Failed to insert reference: {}", e));
-                    }
+                for (line, open) in parse_result.opens.into_iter().enumerate() {
+                    all_opens.push((file.clone(), open, line as u32 + 1));
                 }
 
-                // Insert opens
-                for (line, open) in parse_result.opens.iter().enumerate() {
-                    if let Err(e) = index.insert_open(&file, open, line as u32 + 1) {
-                        errors.push(format!("Failed to insert open: {}", e));
-                    }
+                // Collect warnings
+                for warning in parse_result.warnings {
+                    warnings.push(format!(
+                        "{}: {} ({})",
+                        file.display(),
+                        warning.message,
+                        warning
+                            .location
+                            .map(|l| format!("{}:{}", l.line, l.column))
+                            .unwrap_or_else(|| "unknown location".to_string())
+                    ));
                 }
             }
             Err(e) => {
                 errors.push(e);
             }
         }
+    }
+
+    let symbol_count = all_symbols.len();
+
+    // Batch insert symbols
+    if let Err(e) = index.insert_symbols(&all_symbols) {
+        errors.push(format!("Failed to batch insert symbols: {}", e));
+    }
+
+    // Batch insert references
+    let ref_tuples: Vec<_> = all_references
+        .iter()
+        .map(|(f, r)| (f.as_path(), r))
+        .collect();
+    if let Err(e) = index.insert_references(&ref_tuples) {
+        errors.push(format!("Failed to batch insert references: {}", e));
+    }
+
+    // Batch insert opens
+    let open_tuples: Vec<_> = all_opens
+        .iter()
+        .map(|(f, m, l)| (f.as_path(), m.as_str(), *l))
+        .collect();
+    if let Err(e) = index.insert_opens(&open_tuples) {
+        errors.push(format!("Failed to batch insert opens: {}", e));
     }
 
     if format == OutputFormat::Json {
@@ -311,6 +353,7 @@ fn cmd_build(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
             "fsproj_files": fsproj_count,
             "file_order_count": file_order.len(),
             "errors": errors,
+            "warnings": warnings,
             "database": db_path.display().to_string(),
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
@@ -331,6 +374,15 @@ fn cmd_build(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
             }
             if errors.len() > 10 {
                 eprintln!("  ... and {} more", errors.len() - 10);
+            }
+        }
+        if !warnings.is_empty() {
+            eprintln!("Warnings:");
+            for warning in &warnings[..warnings.len().min(10)] {
+                eprintln!("  {}", warning);
+            }
+            if warnings.len() > 10 {
+                eprintln!("  ... and {} more", warnings.len() - 10);
             }
         }
     }
@@ -595,9 +647,13 @@ fn cmd_update(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
 
     let index = SqliteIndex::open(&db_path).context("Failed to open SQLite index")?;
 
+    // Load configuration for exclusions
+    let config = Config::load(&root);
+    let exclude_dirs = config.excluded_dirs();
+
     // Find files that have changed (simplified: just re-index all files for now)
     // TODO: Use file modification times or a proper incremental strategy
-    let files = find_fsharp_files(&root)?;
+    let files = find_fsharp_files_with_exclusions(&root, &exclude_dirs)?;
     let mut updated_count = 0;
 
     for file in &files {
@@ -605,7 +661,7 @@ fn cmd_update(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
             // Clear existing data for this file
             index.clear_file(file)?;
 
-            let result = rocketindex::extract_symbols(file, &source);
+            let result = rocketindex::extract_symbols(file, &source, config.max_recursion_depth);
 
             for symbol in &result.symbols {
                 index.insert_symbol(symbol)?;
@@ -844,6 +900,10 @@ fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     }
     cmd_build(&root, false, format, quiet)?;
 
+    // Load config for recursion depth
+    let config = Config::load(&root);
+    let max_depth = config.max_recursion_depth;
+
     let mut watcher = FileWatcher::new(&root).context("Failed to create file watcher")?;
     watcher.start().context("Failed to start watching")?;
 
@@ -856,7 +916,7 @@ fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
                 | rocketindex::watch::WatchEvent::Modified(path) => {
                     if is_fsharp_file(&path) {
                         println!("Updated: {}", path.display());
-                        update_single_file(&root, &path)?;
+                        update_single_file(&root, &path, max_depth)?;
                     }
                 }
                 rocketindex::watch::WatchEvent::Deleted(path) => {
@@ -870,7 +930,7 @@ fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
                         println!("Renamed: {} -> {}", old.display(), new.display());
                         remove_file_from_index(&root, &old)?;
                         if is_fsharp_file(&new) {
-                            update_single_file(&root, &new)?;
+                            update_single_file(&root, &new, max_depth)?;
                         }
                     }
                 }
@@ -946,14 +1006,14 @@ fn get_line_content(file: &PathBuf, line: usize) -> Option<String> {
 }
 
 /// Update a single file in the index
-fn update_single_file(root: &Path, file: &Path) -> Result<()> {
+fn update_single_file(root: &Path, file: &Path, max_depth: usize) -> Result<()> {
     let db_path = root.join(".rocketindex").join(DEFAULT_DB_NAME);
     let index = SqliteIndex::open(&db_path)?;
 
     index.clear_file(file)?;
 
     if let Ok(source) = std::fs::read_to_string(file) {
-        let result = rocketindex::extract_symbols(file, &source);
+        let result = rocketindex::extract_symbols(file, &source, max_depth);
         for symbol in &result.symbols {
             index.insert_symbol(symbol)?;
         }

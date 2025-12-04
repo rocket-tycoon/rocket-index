@@ -1,5 +1,5 @@
 ---
-name: fsharp-tools
+name: rocketindex
 description: F# code navigation and indexing
 triggers:
   - "F# definition"
@@ -9,32 +9,37 @@ triggers:
   - "*.fsproj"
 ---
 
-# F# Code Navigation Skill
+# RocketIndex - F# Code Navigation
 
-When working with F# codebases, use the `fsharp-index` CLI for:
+When working with F# codebases, use the `rocketindex` CLI:
 
 ## Commands
 
-### Find Definition
+### Build Index
 ```bash
-fsharp-index def <qualified.name>
+rocketindex build
 ```
 
-### Find References
+### Find Definition
 ```bash
-fsharp-index refs <file-path>
+rocketindex def <qualified.name>
+```
+
+### Search Symbols
+```bash
+rocketindex symbols "Pattern*"
 ```
 
 ### Build Dependency Graph
 ```bash
-fsharp-index spider <Module.function> --depth 3
+rocketindex spider <Module.function> --depth 3
 ```
 
 ## When to Use
 - Before modifying F# code, spider from the function to understand impact
 - Use `def` instead of grep when looking for where something is defined
-- Use `refs` to find all usages before refactoring
+- Use `symbols` for fuzzy symbol search
 
 ## Index Management
-Build/rebuild: `fsharp-index build --project <.fsproj>`
-The index is stored in SQLite and survives session restarts.
+Build/rebuild: `rocketindex build`
+The index is stored in SQLite at `.rocketindex/index.db` and survives session restarts.
