@@ -139,7 +139,7 @@ pub fn is_fsharp_file(path: &Path) -> bool {
 
 /// Find all F# source files in a directory tree (uses default exclusions).
 pub fn find_fsharp_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
-    find_fsharp_files_with_exclusions(root, &crate::config::DEFAULT_EXCLUDE_DIRS.to_vec())
+    find_fsharp_files_with_exclusions(root, crate::config::DEFAULT_EXCLUDE_DIRS)
 }
 
 /// Find all F# source files in a directory tree with custom exclusions.

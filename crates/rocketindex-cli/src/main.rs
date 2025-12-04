@@ -215,14 +215,11 @@ fn cmd_build(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
     let exclude_dirs = config.excluded_dirs();
 
     if !quiet && !config.exclude_dirs.is_empty() {
-        eprintln!(
-            "Custom exclusions: {}",
-            config.exclude_dirs.join(", ")
-        );
+        eprintln!("Custom exclusions: {}", config.exclude_dirs.join(", "));
     }
 
-    let files =
-        find_fsharp_files_with_exclusions(&root, &exclude_dirs).context("Failed to find F# files")?;
+    let files = find_fsharp_files_with_exclusions(&root, &exclude_dirs)
+        .context("Failed to find F# files")?;
 
     // Try to find and parse .fsproj files for compilation order
     let fsproj_files = find_fsproj_files(&root);

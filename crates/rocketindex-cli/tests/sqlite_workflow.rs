@@ -337,11 +337,11 @@ fn syntax_error_is_handled_gracefully() -> TestResult {
     let workspace = SampleWorkspace::new("BadSyntax")?;
     let src_dir = workspace.root().join("src");
     fs::create_dir_all(&src_dir)?;
-    
+
     // Write a file with invalid F# syntax
     fs::write(
         src_dir.join("Bad.fs"),
-        "module BadSyntax\n\nlet this is not valid fsharp = \n"
+        "module BadSyntax\n\nlet this is not valid fsharp = \n",
     )?;
 
     // Build should not crash, but might report error or just skip
@@ -361,7 +361,7 @@ fn syntax_error_is_handled_gracefully() -> TestResult {
 fn missing_file_does_not_crash_indexer() -> TestResult {
     let workspace = SampleWorkspace::new("MissingFile")?;
     // Don't write any files, but try to build
-    
+
     Command::cargo_bin("rocketindex")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])

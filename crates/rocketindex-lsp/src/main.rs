@@ -1652,7 +1652,8 @@ let x = 1"#;
 let x = helper 42
 "#;
 
-        let missing = find_missing_opens(&index, &std::path::PathBuf::from("Test.fs"), content, 500);
+        let missing =
+            find_missing_opens(&index, &std::path::PathBuf::from("Test.fs"), content, 500);
 
         assert!(
             missing.contains(&"MyApp.Utils".to_string()),
@@ -1684,7 +1685,8 @@ open MyApp.Utils
 let x = helper 42
 "#;
 
-        let missing = find_missing_opens(&index, &std::path::PathBuf::from("Test.fs"), content, 500);
+        let missing =
+            find_missing_opens(&index, &std::path::PathBuf::from("Test.fs"), content, 500);
 
         assert!(
             !missing.contains(&"MyApp.Utils".to_string()),

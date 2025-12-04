@@ -51,7 +51,7 @@ impl SqliteIndex {
         }
 
         let conn = Connection::open(path)?;
-        
+
         // Enable WAL mode and normal sync for performance
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -439,9 +439,8 @@ impl SqliteIndex {
     pub fn insert_references(&self, refs: &[(&Path, &Reference)]) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         {
-            let mut stmt = tx.prepare(
-                "INSERT INTO refs (name, file, line, column) VALUES (?1, ?2, ?3, ?4)",
-            )?;
+            let mut stmt =
+                tx.prepare("INSERT INTO refs (name, file, line, column) VALUES (?1, ?2, ?3, ?4)")?;
 
             for (file, reference) in refs {
                 let file_str = file.to_string_lossy();
@@ -531,9 +530,8 @@ impl SqliteIndex {
     pub fn insert_opens(&self, opens: &[(&Path, &str, u32)]) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         {
-            let mut stmt = tx.prepare(
-                "INSERT INTO opens (file, module_path, line) VALUES (?1, ?2, ?3)",
-            )?;
+            let mut stmt =
+                tx.prepare("INSERT INTO opens (file, module_path, line) VALUES (?1, ?2, ?3)")?;
 
             for (file, module_path, line) in opens {
                 let file_str = file.to_string_lossy();

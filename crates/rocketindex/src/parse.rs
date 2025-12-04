@@ -359,7 +359,15 @@ fn extract_recursive_with_depth(
     // Recurse into children - no cloning needed since current_module is &str
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            extract_recursive_with_depth(&child, source, file, result, current_module, depth + 1, max_depth);
+            extract_recursive_with_depth(
+                &child,
+                source,
+                file,
+                result,
+                current_module,
+                depth + 1,
+                max_depth,
+            );
         }
     }
 }
@@ -707,7 +715,7 @@ module Test
 
 let add x y = x + y
 "#;
-let result = extract_symbols(Path::new("test.fs"), source, 500);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         assert!(result.symbols.len() >= 2); // module + function
         let func = result.symbols.iter().find(|s| s.name == "add");
@@ -720,7 +728,7 @@ let result = extract_symbols(Path::new("test.fs"), source, 500);
         let source = r#"
 type Person = { Name: string; Age: int }
 "#;
-let result = extract_symbols(Path::new("test.fs"), source, 500);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         let type_sym = result.symbols.iter().find(|s| s.name == "Person");
         assert!(type_sym.is_some());
@@ -734,7 +742,7 @@ module MyApp.Services.Payment
 
 let process () = ()
 "#;
-let result = extract_symbols(Path::new("Payment.fs"), source, 500);
+        let result = extract_symbols(Path::new("Payment.fs"), source, 500);
 
         let module = result.symbols.iter().find(|s| s.name == "Payment");
         assert!(module.is_some());
@@ -751,7 +759,7 @@ open System.Collections.Generic
 
 let x = 1
 "#;
-let result = extract_symbols(Path::new("test.fs"), source, 500);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         assert!(result.opens.contains(&"System".to_string()));
         assert!(result
@@ -769,7 +777,7 @@ let internal process x = x * 2
 let public main () = ()
 let defaultFn () = ()
 "#;
-let result = extract_symbols(Path::new("test.fs"), source, 500);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         let helper = result.symbols.iter().find(|s| s.name == "helper");
         assert!(helper.is_some());
@@ -832,7 +840,7 @@ module TestMetadata =
     let addTag tag metadata =
         { metadata with Tags = tag :: metadata.Tags }
 "#;
-let result = extract_symbols(Path::new("Types.fs"), source, 500);
+        let result = extract_symbols(Path::new("Types.fs"), source, 500);
 
         // Debug: print all symbols
         for s in &result.symbols {
@@ -922,7 +930,7 @@ let public main () = ()
             }
         }
 
-let result = extract_symbols(std::path::Path::new("Types.fs"), &source, 500);
+        let result = extract_symbols(std::path::Path::new("Types.fs"), &source, 500);
 
         println!("Found {} symbols:", result.symbols.len());
         for s in &result.symbols {
@@ -933,7 +941,7 @@ let result = extract_symbols(std::path::Path::new("Types.fs"), &source, 500);
         }
 
         assert!(
-            result.symbols.len() > 0,
+            !result.symbols.is_empty(),
             "Should extract symbols from Types.fs"
         );
     }
@@ -949,7 +957,7 @@ module Test
 
 let x 42
 "#;
-let result = extract_symbols(Path::new("test.fs"), source, 500);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         assert!(!result.errors.is_empty(), "Should detect syntax error");
         // The error should be near line 4 where "let x 42" is invalid
@@ -967,7 +975,7 @@ module Test
 
 let items = [1; 2; 3
 "#;
-let result = extract_symbols(Path::new("test.fs"), source, 500);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         assert!(!result.errors.is_empty(), "Should detect unclosed bracket");
     }
@@ -980,7 +988,7 @@ module Test
 let result = match x with
     | Some
 "#;
-let result = extract_symbols(Path::new("test.fs"), source, 500);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         // Incomplete match expression should be an error
         assert!(
@@ -1001,7 +1009,7 @@ type Person = { Name: string; Age: int }
 let greet person =
     printfn "Hello %s" person.Name
 "#;
-let result = extract_symbols(Path::new("test.fs"), source, 500);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         assert!(
             result.errors.is_empty(),
@@ -1018,9 +1026,12 @@ module Test
 let x 42
 let y [1; 2
 "#;
-let result = extract_symbols(Path::new("test.fs"), source, 500);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
-        assert!(result.errors.len() >= 1, "Should detect at least one error");
+        assert!(
+            !result.errors.is_empty(),
+            "Should detect at least one error"
+        );
     }
 
     #[test]
@@ -1028,7 +1039,7 @@ let result = extract_symbols(Path::new("test.fs"), source, 500);
         let source = r#"module Test
 
 let x 42"#;
-let result = extract_symbols(Path::new("test.fs"), source, 500);
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
 
         assert!(!result.errors.is_empty(), "Should detect syntax error");
         let error = &result.errors[0];
