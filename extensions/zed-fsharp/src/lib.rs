@@ -83,14 +83,21 @@ impl FSharpExtension {
         let worktree_root = worktree.root_path();
         eprintln!("rocketindex-lsp: worktree root is {}", worktree_root);
 
-        // For development: look for binary in rocket-index/target/release
-        if worktree_root.contains("rocket-index") {
-            // Find the rocket-index root by looking for it in the path
-            if let Some(idx) = worktree_root.find("rocket-index") {
-                let rocket_index_root = &worktree_root[..idx + "rocket-index".len()];
-                let binary_path = format!("{}/target/release/rocketindex-lsp", rocket_index_root);
-                eprintln!("rocketindex-lsp: trying development path {}", binary_path);
-                return Some(binary_path);
+        // For development: look for binary in RocketIndex/target/release
+        // Check both cases: RocketIndex and rocket-index
+        let worktree_lower = worktree_root.to_lowercase();
+        for folder_name in &["RocketIndex", "rocket-index"] {
+            if worktree_lower.contains(&folder_name.to_lowercase()) {
+                // Find the actual folder in the original path (preserve case)
+                if let Some(idx) = worktree_lower.find(&folder_name.to_lowercase()) {
+                    let rocket_index_root = &worktree_root[..idx + folder_name.len()];
+                    let binary_path = format!("{}/target/release/rocketindex-lsp", rocket_index_root);
+                    if fs::metadata(&binary_path).is_ok() {
+                        eprintln!("rocketindex-lsp: found development binary at {}", binary_path);
+                        return Some(binary_path);
+                    }
+                    eprintln!("rocketindex-lsp: tried {} but binary not found", binary_path);
+                }
             }
         }
 
@@ -124,7 +131,11 @@ impl FSharpExtension {
         )?;
 
         // Find the appropriate asset for this platform
-        let asset_name = format!("rocketindex-{}-{}.tar.gz", arch_str, platform_str);
+        // Asset naming: rocketindex-{version}-{arch}-{platform}.tar.gz
+        let asset_name = format!(
+            "rocketindex-{}-{}-{}.tar.gz",
+            release.version, arch_str, platform_str
+        );
         let asset = release
             .assets
             .iter()

@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn keyword_list_is_not_empty() {
-        assert!(!FSHARP_KEYWORDS.is_empty());
+        // The len check implicitly verifies non-empty
         assert!(FSHARP_KEYWORDS.len() >= 50, "Should have many keywords");
     }
 
