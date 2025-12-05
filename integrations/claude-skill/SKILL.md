@@ -1,45 +1,52 @@
 ---
 name: rocketindex
-description: F# code navigation and indexing
+description: Code navigation and indexing (F#, Ruby)
 triggers:
-  - "F# definition"
-  - "F# references"
-  - "F# call graph"
+  - "definition"
+  - "references"
+  - "call graph"
   - "*.fs"
   - "*.fsproj"
+  - "*.rb"
 ---
 
-# RocketIndex - F# Code Navigation
+# RocketIndex - Code Navigation
 
-When working with F# codebases, use the `rkt` CLI:
+When working with F# or Ruby codebases, use the `rkt` CLI:
 
 ## Commands
 
 ### Build Index
 ```bash
-rktbuild
+rkt index
 ```
 
 ### Find Definition
 ```bash
-rktdef <qualified.name>
+rkt def <qualified.name>
 ```
 
 ### Search Symbols
 ```bash
-rktsymbols "Pattern*"
+rkt symbols "Pattern*"
 ```
 
 ### Build Dependency Graph
 ```bash
-rktspider <Module.function> --depth 3
+rkt spider <Module.function> --depth 3
+```
+
+### Find Callers (Impact Analysis)
+```bash
+rkt callers <Symbol>
 ```
 
 ## When to Use
-- Before modifying F# code, spider from the function to understand impact
-- Use `def` instead of grep when looking for where something is defined
-- Use `symbols` for fuzzy symbol search
+- Before modifying code, use `rkt callers` to understand impact
+- Use `rkt def` instead of grep when looking for where something is defined
+- Use `rkt symbols` for fuzzy symbol search
+- Use `rkt spider` to explore dependencies
 
 ## Index Management
-Build/rebuild: `rktbuild`
+Build/rebuild: `rkt index`
 The index is stored in SQLite at `.rocketindex/index.db` and survives session restarts.

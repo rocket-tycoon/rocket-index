@@ -721,7 +721,7 @@ fn cmd_update(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
                 serde_json::json!({"error": "Index not found. Run 'build' first."})
             );
         } else {
-            eprintln!("Index not found. Run 'rktindex' first.");
+            eprintln!("Index not found. Run 'rkt index' first.");
         }
         return Ok(exit_codes::NOT_FOUND);
     }
@@ -1349,7 +1349,7 @@ fn load_sqlite_index() -> Result<SqliteIndex> {
     let db_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
 
     if !db_path.exists() {
-        anyhow::bail!("Index not found. Run 'rktindex' first.");
+        anyhow::bail!("Index not found. Run 'rkt index' first.");
     }
 
     SqliteIndex::open(&db_path).context("Failed to open SQLite index")
@@ -1362,7 +1362,7 @@ fn load_code_index() -> Result<CodeIndex> {
     let db_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
 
     if !db_path.exists() {
-        anyhow::bail!("Index not found. Run 'rktindex' first.");
+        anyhow::bail!("Index not found. Run 'rkt index' first.");
     }
 
     let sqlite_index = SqliteIndex::open(&db_path).context("Failed to open SQLite index")?;
@@ -1561,7 +1561,7 @@ fn cmd_doctor(format: OutputFormat, quiet: bool) -> Result<u8> {
         checks.push(("Index", true, format!("{}", db_path.display())));
     } else {
         checks.push(("Index", false, "Not found".to_string()));
-        suggestions.push("Run 'rktindex' to create the index".to_string());
+        suggestions.push("Run 'rkt index' to create the index".to_string());
     }
 
     // Check 2: Symbol and file counts (if index exists)
@@ -1859,21 +1859,21 @@ Use RocketIndex to navigate and understand this codebase.
 
 Run these in your terminal:
 
-- `rktindex` - Index the codebase (run first!)
-- `rktdef "SymbolName"` - Find where a symbol is defined
-- `rktsymbols "pattern"` - Search for symbols matching a pattern
-- `rktspider "Entry.point" -d 3` - Explore dependencies from a symbol
-- `rktcallers "Symbol"` - Find what calls a symbol (impact analysis)
-- `rktblame "file.fs:42"` - Git blame for a line
-- `rkthistory "Symbol"` - Git history for a symbol
-- `rktdoctor` - Check RocketIndex health
+- `rkt index` - Index the codebase (run first!)
+- `rkt def "SymbolName"` - Find where a symbol is defined
+- `rkt symbols "pattern"` - Search for symbols matching a pattern
+- `rkt spider "Entry.point" -d 3` - Explore dependencies from a symbol
+- `rkt callers "Symbol"` - Find what calls a symbol (impact analysis)
+- `rkt blame "file.fs:42"` - Git blame for a line
+- `rkt history "Symbol"` - Git history for a symbol
+- `rkt doctor` - Check RocketIndex health
 
 ## Usage Tips
 
-1. First run `rktindex` to build the index
+1. First run `rkt index` to build the index
 2. Use `--concise` for minimal output (saves tokens)
 3. Use `--format json` for machine-readable output (default)
-4. Use `rktcallers` before refactoring to understand impact
+4. Use `rkt callers` before refactoring to understand impact
 "#;
 
     let command_path = commands_dir.join("ri.md");
@@ -1979,22 +1979,22 @@ fn setup_cursor(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
 
 This project uses RocketIndex for fast code navigation. Before exploring the codebase:
 
-1. Run `rktindex` to build/update the symbol index
-2. Use `rktdef "Symbol"` to find definitions
-3. Use `rktcallers "Symbol"` before refactoring to understand impact
-4. Use `rktspider "Entry.point" -d 3` to explore dependencies
+1. Run `rkt index` to build/update the symbol index
+2. Use `rkt def "Symbol"` to find definitions
+3. Use `rkt callers "Symbol"` before refactoring to understand impact
+4. Use `rkt spider "Entry.point" -d 3` to explore dependencies
 
 Key commands:
-- `rktdef "MyModule.myFunction"` - Jump to definition
-- `rktsymbols "pattern*"` - Search symbols (supports wildcards)
-- `rktcallers "Symbol"` - Find all callers (impact analysis)
-- `rktblame "src/file.fs:42"` - Git blame for a line
-- `rktdoctor` - Check index health
+- `rkt def "MyModule.myFunction"` - Jump to definition
+- `rkt symbols "pattern*"` - Search symbols (supports wildcards)
+- `rkt callers "Symbol"` - Find all callers (impact analysis)
+- `rkt blame "src/file.fs:42"` - Git blame for a line
+- `rkt doctor` - Check index health
 
 Tips:
 - Use `--concise` flag for minimal JSON output
 - The index is stored in `.rocketindex/` (add to .gitignore)
-- Run `rktindex` after significant changes
+- Run `rkt index` after significant changes
 "#;
 
     std::fs::write(&rules_path, rules_content)?;
