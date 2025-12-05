@@ -11,28 +11,28 @@ triggers:
 
 # RocketIndex - F# Code Navigation
 
-When working with F# codebases, use the `rocketindex` CLI:
+When working with F# codebases, use the `rkt` CLI:
 
 ## Commands
 
 ### Build Index
 ```bash
-rocketindex build
+rktbuild
 ```
 
 ### Find Definition
 ```bash
-rocketindex def <qualified.name>
+rktdef <qualified.name>
 ```
 
 ### Search Symbols
 ```bash
-rocketindex symbols "Pattern*"
+rktsymbols "Pattern*"
 ```
 
 ### Build Dependency Graph
 ```bash
-rocketindex spider <Module.function> --depth 3
+rktspider <Module.function> --depth 3
 ```
 
 ## When to Use
@@ -41,5 +41,5 @@ rocketindex spider <Module.function> --depth 3
 - Use `symbols` for fuzzy symbol search
 
 ## Index Management
-Build/rebuild: `rocketindex build`
+Build/rebuild: `rktbuild`
 The index is stored in SQLite at `.rocketindex/index.db` and survives session restarts.

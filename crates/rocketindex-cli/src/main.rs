@@ -35,6 +35,7 @@ mod exit_codes {
     pub const ERROR: u8 = 2;
 }
 
+mod guidelines;
 mod skills;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -46,7 +47,7 @@ enum OutputFormat {
 
 /// Rocket-fast F# codebase indexing and navigation tool
 #[derive(Parser)]
-#[command(name = "rocketindex")]
+#[command(name = "rkt")]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -720,7 +721,7 @@ fn cmd_update(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
                 serde_json::json!({"error": "Index not found. Run 'build' first."})
             );
         } else {
-            eprintln!("Index not found. Run 'rocketindex index' first.");
+            eprintln!("Index not found. Run 'rktindex' first.");
         }
         return Ok(exit_codes::NOT_FOUND);
     }
@@ -1348,7 +1349,7 @@ fn load_sqlite_index() -> Result<SqliteIndex> {
     let db_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
 
     if !db_path.exists() {
-        anyhow::bail!("Index not found. Run 'rocketindex index' first.");
+        anyhow::bail!("Index not found. Run 'rktindex' first.");
     }
 
     SqliteIndex::open(&db_path).context("Failed to open SQLite index")
@@ -1361,7 +1362,7 @@ fn load_code_index() -> Result<CodeIndex> {
     let db_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
 
     if !db_path.exists() {
-        anyhow::bail!("Index not found. Run 'rocketindex index' first.");
+        anyhow::bail!("Index not found. Run 'rktindex' first.");
     }
 
     let sqlite_index = SqliteIndex::open(&db_path).context("Failed to open SQLite index")?;
@@ -1560,7 +1561,7 @@ fn cmd_doctor(format: OutputFormat, quiet: bool) -> Result<u8> {
         checks.push(("Index", true, format!("{}", db_path.display())));
     } else {
         checks.push(("Index", false, "Not found".to_string()));
-        suggestions.push("Run 'rocketindex index' to create the index".to_string());
+        suggestions.push("Run 'rktindex' to create the index".to_string());
     }
 
     // Check 2: Symbol and file counts (if index exists)
@@ -1740,6 +1741,108 @@ fn cmd_setup(editor: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
     }
 }
 
+/// Detect the primary programming language of a project by counting file extensions
+fn detect_primary_language(cwd: &Path) -> Option<String> {
+    use std::collections::HashMap;
+
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+
+    // Walk the directory (shallow, skip hidden dirs and common non-source dirs)
+    if let Ok(entries) = std::fs::read_dir(cwd) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+
+            // Skip hidden directories and common non-source directories
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with('.')
+                    || name == "node_modules"
+                    || name == "target"
+                    || name == "vendor"
+                    || name == "dist"
+                    || name == "build"
+                {
+                    continue;
+                }
+            }
+
+            // Count files by extension (recursive but limited)
+            count_extensions(&path, &mut counts, 3);
+        }
+    }
+
+    // Map extensions to language names
+    let language_map: HashMap<&str, &str> = [
+        ("rs", "Rust"),
+        ("fs", "F#"),
+        ("fsx", "F#"),
+        ("rb", "Ruby"),
+        ("ts", "TypeScript"),
+        ("tsx", "TypeScript"),
+        ("py", "Python"),
+        ("go", "Go"),
+    ]
+    .into_iter()
+    .collect();
+
+    // Find the dominant language
+    let mut language_counts: HashMap<&str, usize> = HashMap::new();
+    for (ext, count) in &counts {
+        if let Some(lang) = language_map.get(ext) {
+            *language_counts.entry(lang).or_default() += count;
+        }
+    }
+
+    language_counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .filter(|(_, count)| *count >= 3) // Require at least 3 files
+        .map(|(lang, _)| lang.to_string())
+}
+
+/// Recursively count file extensions up to a certain depth
+fn count_extensions(
+    path: &Path,
+    counts: &mut std::collections::HashMap<&'static str, usize>,
+    depth: usize,
+) {
+    if depth == 0 {
+        return;
+    }
+
+    if path.is_file() {
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            // Map to static str for the extensions we care about
+            let static_ext: Option<&'static str> = match ext {
+                "rs" => Some("rs"),
+                "fs" => Some("fs"),
+                "fsx" => Some("fsx"),
+                "rb" => Some("rb"),
+                "ts" => Some("ts"),
+                "tsx" => Some("tsx"),
+                "py" => Some("py"),
+                "go" => Some("go"),
+                _ => None,
+            };
+            if let Some(e) = static_ext {
+                *counts.entry(e).or_default() += 1;
+            }
+        }
+    } else if path.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                // Skip hidden dirs
+                if let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with('.') {
+                        continue;
+                    }
+                }
+                count_extensions(&entry_path, counts, depth - 1);
+            }
+        }
+    }
+}
+
 /// Set up Claude Code slash commands and optional skills
 fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     use dialoguer::MultiSelect;
@@ -1756,21 +1859,21 @@ Use RocketIndex to navigate and understand this codebase.
 
 Run these in your terminal:
 
-- `rocketindex index` - Index the codebase (run first!)
-- `rocketindex def "SymbolName"` - Find where a symbol is defined
-- `rocketindex symbols "pattern"` - Search for symbols matching a pattern
-- `rocketindex spider "Entry.point" -d 3` - Explore dependencies from a symbol
-- `rocketindex callers "Symbol"` - Find what calls a symbol (impact analysis)
-- `rocketindex blame "file.fs:42"` - Git blame for a line
-- `rocketindex history "Symbol"` - Git history for a symbol
-- `rocketindex doctor` - Check RocketIndex health
+- `rktindex` - Index the codebase (run first!)
+- `rktdef "SymbolName"` - Find where a symbol is defined
+- `rktsymbols "pattern"` - Search for symbols matching a pattern
+- `rktspider "Entry.point" -d 3` - Explore dependencies from a symbol
+- `rktcallers "Symbol"` - Find what calls a symbol (impact analysis)
+- `rktblame "file.fs:42"` - Git blame for a line
+- `rkthistory "Symbol"` - Git history for a symbol
+- `rktdoctor` - Check RocketIndex health
 
 ## Usage Tips
 
-1. First run `rocketindex index` to build the index
+1. First run `rktindex` to build the index
 2. Use `--concise` for minimal output (saves tokens)
 3. Use `--format json` for machine-readable output (default)
-4. Use `rocketindex callers` before refactoring to understand impact
+4. Use `rktcallers` before refactoring to understand impact
 "#;
 
     let command_path = commands_dir.join("ri.md");
@@ -1783,7 +1886,13 @@ Run these in your terminal:
         println!("Claude Code setup: /ri command created");
         println!();
 
-        // Build the selection items
+        // Detect primary language
+        let detected_language = detect_primary_language(cwd);
+        if let Some(lang) = &detected_language {
+            println!("Detected: {} project", lang);
+        }
+
+        // Build the selection items for skills
         let items: Vec<String> = skills::SKILLS
             .iter()
             .map(|s| format!("{} - {}", s.display_name, s.description))
@@ -1809,6 +1918,33 @@ Run these in your terminal:
 
                     if !quiet {
                         println!("  Installed: {}", skill.display_name);
+                    }
+                }
+            }
+        }
+
+        // Offer to install coding guidelines for detected language
+        if let Some(lang_name) = &detected_language {
+            if let Some(guideline) = guidelines::GUIDELINES
+                .iter()
+                .find(|g| g.display_name == lang_name.as_str())
+            {
+                println!();
+                let install_guidelines = dialoguer::Confirm::new()
+                    .with_prompt(format!(
+                        "Install {} coding guidelines (coding-guidelines.md)?",
+                        guideline.display_name
+                    ))
+                    .default(true)
+                    .interact_opt()?;
+
+                if install_guidelines == Some(true) {
+                    let guidelines_path = cwd.join("coding-guidelines.md");
+                    std::fs::write(&guidelines_path, guideline.content)?;
+                    created_files.push(guidelines_path.display().to_string());
+
+                    if !quiet {
+                        println!("  Installed: coding-guidelines.md");
                     }
                 }
             }
@@ -1843,22 +1979,22 @@ fn setup_cursor(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
 
 This project uses RocketIndex for fast code navigation. Before exploring the codebase:
 
-1. Run `rocketindex index` to build/update the symbol index
-2. Use `rocketindex def "Symbol"` to find definitions
-3. Use `rocketindex callers "Symbol"` before refactoring to understand impact
-4. Use `rocketindex spider "Entry.point" -d 3` to explore dependencies
+1. Run `rktindex` to build/update the symbol index
+2. Use `rktdef "Symbol"` to find definitions
+3. Use `rktcallers "Symbol"` before refactoring to understand impact
+4. Use `rktspider "Entry.point" -d 3` to explore dependencies
 
 Key commands:
-- `rocketindex def "MyModule.myFunction"` - Jump to definition
-- `rocketindex symbols "pattern*"` - Search symbols (supports wildcards)
-- `rocketindex callers "Symbol"` - Find all callers (impact analysis)
-- `rocketindex blame "src/file.fs:42"` - Git blame for a line
-- `rocketindex doctor` - Check index health
+- `rktdef "MyModule.myFunction"` - Jump to definition
+- `rktsymbols "pattern*"` - Search symbols (supports wildcards)
+- `rktcallers "Symbol"` - Find all callers (impact analysis)
+- `rktblame "src/file.fs:42"` - Git blame for a line
+- `rktdoctor` - Check index health
 
 Tips:
 - Use `--concise` flag for minimal JSON output
 - The index is stored in `.rocketindex/` (add to .gitignore)
-- Run `rocketindex index` after significant changes
+- Run `rktindex` after significant changes
 "#;
 
     std::fs::write(&rules_path, rules_content)?;
