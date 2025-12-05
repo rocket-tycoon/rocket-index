@@ -31,19 +31,19 @@ cargo fmt                       # Format code
 
 ```bash
 # Build index (creates .rocketindex/index.db)
-./target/release/rocketindex build
+./target/release/rkt build
 
 # Find symbol definition
-./target/release/rocketindex def "PaymentService.processPayment"
+./target/release/rkt def "PaymentService.processPayment"
 
 # Search symbols (supports wildcards)
-./target/release/rocketindex symbols "User*"
+./target/release/rkt symbols "User*"
 
 # Dependency graph from entry point
-./target/release/rocketindex spider "Program.main" --depth 5
+./target/release/rkt spider "Program.main" --depth 5
 
 # Watch mode (auto-reindex on file changes)
-./target/release/rocketindex watch
+./target/release/rkt watch
 ```
 
 ## Architecture
@@ -53,7 +53,7 @@ cargo fmt                       # Format code
 ```
 crates/
 ├── rocketindex/          # Core library - parsing, indexing, resolution
-├── rocketindex-cli/      # CLI binary (rocketindex command)
+├── rocketindex-cli/      # CLI binary (rkt command)
 └── rocketindex-lsp/      # Language server (tower-lsp based)
 ```
 
