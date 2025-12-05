@@ -49,3 +49,5 @@ coverage/
 
 # Integration test repos (cloned external projects)
 test-repos/
+
+.fake

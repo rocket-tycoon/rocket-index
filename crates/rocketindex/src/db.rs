@@ -202,8 +202,8 @@ impl SqliteIndex {
         let tx = self.conn.unchecked_transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO symbols (name, qualified, kind, file, line, column, end_line, end_column, visibility, source)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'syntactic')",
+                "INSERT INTO symbols (name, qualified, kind, file, line, column, end_line, end_column, visibility, language, source)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'syntactic')",
             )?;
 
             for symbol in symbols {
@@ -217,6 +217,7 @@ impl SqliteIndex {
                     symbol.location.end_line,
                     symbol.location.end_column,
                     visibility_to_str(symbol.visibility),
+                    symbol.language,
                 ])?;
             }
         }
@@ -230,7 +231,7 @@ impl SqliteIndex {
         let symbol = self
             .conn
             .query_row(
-                "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility
+                "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
                  FROM symbols WHERE qualified = ?1 LIMIT 1",
                 params![qualified],
                 row_to_symbol,
@@ -242,7 +243,7 @@ impl SqliteIndex {
     /// Find all symbols with the given qualified name (for overloads).
     pub fn find_all_by_qualified(&self, qualified: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
-            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility
+            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
              FROM symbols WHERE qualified = ?1",
         )?;
 
@@ -255,20 +256,34 @@ impl SqliteIndex {
 
     /// Search for symbols matching a pattern. Supports SQL LIKE wildcards (% and _).
     #[must_use = "search results should not be ignored"]
-    pub fn search(&self, pattern: &str, limit: usize) -> Result<Vec<Symbol>> {
+    pub fn search(
+        &self,
+        pattern: &str,
+        limit: usize,
+        language: Option<&str>,
+    ) -> Result<Vec<Symbol>> {
         // Convert glob-style wildcards to SQL LIKE
         let sql_pattern = pattern.replace('*', "%").replace('?', "_");
 
-        let mut stmt = self.conn.prepare(
-            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility
+        let mut stmt = self.conn.prepare(if language.is_some() {
+            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
              FROM symbols
-             WHERE name LIKE ?1 OR qualified LIKE ?1
-             LIMIT ?2",
-        )?;
+             WHERE (name LIKE ?1 OR qualified LIKE ?1) AND language = ?2
+             LIMIT ?3"
+        } else {
+            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
+             FROM symbols
+             WHERE (name LIKE ?1 OR qualified LIKE ?1)
+             LIMIT ?2"
+        })?;
 
-        let symbols = stmt
-            .query_map(params![sql_pattern, limit as i64], row_to_symbol)?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let symbols = if let Some(lang) = language {
+            stmt.query_map(params![sql_pattern, lang, limit as i64], row_to_symbol)?
+        } else {
+            stmt.query_map(params![sql_pattern, limit as i64], row_to_symbol)?
+        };
+
+        let symbols = symbols.collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(symbols)
     }
@@ -285,7 +300,12 @@ impl SqliteIndex {
     /// Falls back to LIKE search for patterns that FTS5 can't handle well
     /// (e.g., suffix matches like `*Service` or complex wildcards).
     #[must_use = "search results should not be ignored"]
-    pub fn search_fts(&self, pattern: &str, limit: usize) -> Result<Vec<Symbol>> {
+    pub fn search_fts(
+        &self,
+        pattern: &str,
+        limit: usize,
+        language: Option<&str>,
+    ) -> Result<Vec<Symbol>> {
         // Check if this is a pattern FTS5 can handle well
         let trimmed = pattern.trim();
 
@@ -308,39 +328,53 @@ impl SqliteIndex {
                 trimmed.to_string()
             } else if trimmed.contains('*') {
                 // Has wildcards in middle - not suitable for FTS
-                return self.search(pattern, limit);
+                return self.search(pattern, limit, language);
             } else {
                 // Exact word - add prefix wildcard for partial matching
                 format!("{}*", trimmed)
             };
 
-            let result = self.search_fts_raw(&fts_query, limit);
+            let result = self.search_fts_raw(&fts_query, limit, language);
 
             // If FTS fails (e.g., syntax error), fall back to LIKE
             match result {
                 Ok(symbols) => return Ok(symbols),
-                Err(_) => return self.search(pattern, limit),
+                Err(_) => return self.search(pattern, limit, language),
             }
         }
 
         // Fall back to LIKE for patterns FTS can't handle
-        self.search(pattern, limit)
+        self.search(pattern, limit, language)
     }
 
     /// Raw FTS5 search - directly executes an FTS5 query.
-    fn search_fts_raw(&self, fts_query: &str, limit: usize) -> Result<Vec<Symbol>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT s.name, s.qualified, s.kind, s.file, s.line, s.column, s.end_line, s.end_column, s.visibility
+    fn search_fts_raw(
+        &self,
+        fts_query: &str,
+        limit: usize,
+        language: Option<&str>,
+    ) -> Result<Vec<Symbol>> {
+        let mut stmt = self.conn.prepare(if language.is_some() {
+            "SELECT s.name, s.qualified, s.kind, s.file, s.line, s.column, s.end_line, s.end_column, s.visibility, s.language
+             FROM symbols s
+             JOIN symbols_fts fts ON s.id = fts.rowid
+             WHERE symbols_fts MATCH ?1 AND s.language = ?2
+             ORDER BY rank LIMIT ?3"
+        } else {
+            "SELECT s.name, s.qualified, s.kind, s.file, s.line, s.column, s.end_line, s.end_column, s.visibility, s.language
              FROM symbols s
              JOIN symbols_fts fts ON s.id = fts.rowid
              WHERE symbols_fts MATCH ?1
-             ORDER BY rank
-             LIMIT ?2",
-        )?;
+             ORDER BY rank LIMIT ?2"
+        })?;
 
-        let symbols = stmt
-            .query_map(params![fts_query, limit as i64], row_to_symbol)?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let symbols = if let Some(lang) = language {
+            stmt.query_map(params![fts_query, lang, limit as i64], row_to_symbol)?
+        } else {
+            stmt.query_map(params![fts_query, limit as i64], row_to_symbol)?
+        };
+
+        let symbols = symbols.collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(symbols)
     }
@@ -349,7 +383,7 @@ impl SqliteIndex {
     pub fn symbols_in_file(&self, file: &Path) -> Result<Vec<Symbol>> {
         let file_str = file.to_string_lossy();
         let mut stmt = self.conn.prepare(
-            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility
+            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
              FROM symbols WHERE file = ?1",
         )?;
 
@@ -376,6 +410,101 @@ impl SqliteIndex {
             .conn
             .query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get(0))?;
         Ok(count as usize)
+    }
+
+    /// Find similar symbol names for "did you mean?" suggestions.
+    ///
+    /// Returns symbols within `max_distance` edits of the query,
+    /// sorted by edit distance (closest first).
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - The symbol name to find suggestions for
+    /// * `max_distance` - Maximum edit distance to consider (default: 3)
+    /// * `max_suggestions` - Maximum suggestions to return (default: 5)
+    pub fn suggest_similar(
+        &self,
+        query: &str,
+        max_distance: usize,
+        max_suggestions: usize,
+    ) -> Result<Vec<crate::fuzzy::Suggestion>> {
+        // Get all unique symbol names and qualified names
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT name FROM symbols
+             UNION
+             SELECT DISTINCT qualified FROM symbols",
+        )?;
+
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // Run fuzzy matching
+        let suggestions = crate::fuzzy::find_similar(
+            query,
+            names.iter().map(String::as_str),
+            max_distance,
+            max_suggestions,
+        );
+
+        Ok(suggestions)
+    }
+
+    /// Search for symbols using fuzzy matching (edit distance).
+    ///
+    /// Returns symbols whose name or qualified name is within `max_distance`
+    /// edits of the query, sorted by edit distance (closest first).
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - The pattern to fuzzy match against
+    /// * `max_distance` - Maximum edit distance to consider
+    /// * `limit` - Maximum number of results to return
+    /// * `language` - Optional language filter
+    pub fn fuzzy_search(
+        &self,
+        query: &str,
+        max_distance: usize,
+        limit: usize,
+        language: Option<&str>,
+    ) -> Result<Vec<(Symbol, usize)>> {
+        // Get all symbols (we need to compare each one)
+        let mut stmt = self.conn.prepare(if language.is_some() {
+            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
+             FROM symbols WHERE language = ?1"
+        } else {
+            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
+             FROM symbols"
+        })?;
+
+        let symbols: Vec<Symbol> = if let Some(lang) = language {
+            stmt.query_map(params![lang], row_to_symbol)?
+        } else {
+            stmt.query_map([], row_to_symbol)?
+        }
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // Calculate distance for each symbol and filter
+        let mut matches: Vec<(Symbol, usize)> = symbols
+            .into_iter()
+            .filter_map(|sym| {
+                let name_dist = crate::fuzzy::levenshtein_distance(query, &sym.name);
+                let qualified_dist = crate::fuzzy::levenshtein_distance(query, &sym.qualified);
+                let min_dist = name_dist.min(qualified_dist);
+
+                if min_dist <= max_distance {
+                    Some((sym, min_dist))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by distance, then by qualified name
+        matches.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.qualified.cmp(&b.0.qualified)));
+
+        matches.truncate(limit);
+        Ok(matches)
     }
 
     /// List all indexed files.
@@ -689,7 +818,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     end_line INTEGER,
     end_column INTEGER,
     visibility TEXT DEFAULT 'public',
-    source TEXT DEFAULT 'syntactic'
+    source TEXT DEFAULT 'syntactic',
+    language TEXT DEFAULT 'fsharp'
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbols_qualified ON symbols(qualified);
@@ -774,6 +904,9 @@ fn row_to_symbol(row: &rusqlite::Row<'_>) -> rusqlite::Result<Symbol> {
     let visibility_str: String = row
         .get::<_, Option<String>>(8)?
         .unwrap_or_else(|| "public".to_string());
+    let language: String = row
+        .get::<_, Option<String>>(9)?
+        .unwrap_or_else(|| "fsharp".to_string());
 
     Ok(Symbol {
         name,
@@ -781,6 +914,7 @@ fn row_to_symbol(row: &rusqlite::Row<'_>) -> rusqlite::Result<Symbol> {
         kind: str_to_symbol_kind(&kind_str),
         location: Location::with_end(PathBuf::from(file), line, column, end_line, end_column),
         visibility: str_to_visibility(&visibility_str),
+        language,
     })
 }
 
@@ -878,6 +1012,7 @@ mod tests {
             kind: SymbolKind::Function,
             location: Location::new(PathBuf::from(file), line, 1),
             visibility: Visibility::Public,
+            language: "fsharp".to_string(),
         }
     }
 
@@ -1016,10 +1151,10 @@ mod tests {
             .insert_symbol(&make_symbol("OrderService", "App.OrderService", "b.fs", 1))
             .unwrap();
 
-        let results = index.search("Payment%", 100).unwrap();
+        let results = index.search("Payment%", 100, None).unwrap();
         assert_eq!(results.len(), 2);
 
-        let results = index.search("Order%", 100).unwrap();
+        let results = index.search("Order%", 100, None).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -1352,11 +1487,11 @@ mod tests {
             .unwrap();
 
         // FTS5 prefix search
-        let results = index.search_fts("Payment*", 100).unwrap();
+        let results = index.search_fts("Payment*", 100, None).unwrap();
         assert_eq!(results.len(), 2);
 
         // FTS5 exact word (becomes prefix)
-        let results = index.search_fts("Order", 100).unwrap();
+        let results = index.search_fts("Order", 100, None).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -1380,11 +1515,11 @@ mod tests {
             .unwrap();
 
         // Suffix search falls back to LIKE
-        let results = index.search_fts("*Service", 100).unwrap();
+        let results = index.search_fts("*Service", 100, None).unwrap();
         assert_eq!(results.len(), 2);
 
         // Contains search falls back to LIKE
-        let results = index.search_fts("*Order*", 100).unwrap();
+        let results = index.search_fts("*Order*", 100, None).unwrap();
         assert_eq!(results.len(), 2);
     }
 
@@ -1400,18 +1535,18 @@ mod tests {
             .unwrap();
 
         // Should find foo
-        let results = index.search_fts("foo", 100).unwrap();
+        let results = index.search_fts("foo", 100, None).unwrap();
         assert_eq!(results.len(), 1);
 
         // Delete file with foo
         index.delete_symbols_in_file(Path::new("src/a.fs")).unwrap();
 
         // FTS index should be updated - no more foo
-        let results = index.search_fts("foo", 100).unwrap();
+        let results = index.search_fts("foo", 100, None).unwrap();
         assert_eq!(results.len(), 0);
 
         // bar should still be there
-        let results = index.search_fts("bar", 100).unwrap();
+        let results = index.search_fts("bar", 100, None).unwrap();
         assert_eq!(results.len(), 1);
     }
 }
