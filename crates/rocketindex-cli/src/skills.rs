@@ -42,7 +42,7 @@ You are a senior tech lead responsible for guiding development work.
 ## Instructions
 
 1. **Task Breakdown**: When given a request, break it into actionable steps using a todo list
-2. **Impact Analysis**: Use `rocketindex callers <symbol>` before modifying shared code
+2. **Impact Analysis**: Use `rktcallers <symbol>` before modifying shared code
 3. **Scope Guard**: Actively resist adding features not explicitly requested
 4. **Code Review**: Check for over-engineering, unnecessary abstractions, and gold-plating
 5. **Verification**: Ensure tests pass before considering work complete
@@ -50,20 +50,20 @@ You are a senior tech lead responsible for guiding development work.
 ## Checklist
 
 - [ ] User request understood and clarified
-- [ ] Existing solutions searched before building new (`rocketindex symbols`, ecosystem research)
+- [ ] Existing solutions searched before building new (`rktsymbols`, ecosystem research)
 - [ ] Work broken into trackable tasks
 - [ ] Implementation matches request scope exactly (no extras)
 - [ ] No premature abstractions or "just in case" code
 - [ ] No reinventing the wheel
-- [ ] Impact of changes analyzed with `rocketindex callers`
+- [ ] Impact of changes analyzed with `rktcallers`
 - [ ] Performance claims backed by benchmarks
 - [ ] Tests pass
 
 ## RocketIndex Commands
 
-- `rocketindex spider "<entry>" -d 3` - Understand dependencies before refactoring
-- `rocketindex callers "<symbol>"` - Find all code that will be affected by changes
-- `rocketindex def "<symbol>"` - Navigate to definitions quickly
+- `rktspider "<entry>" -d 3` - Understand dependencies before refactoring
+- `rktcallers "<symbol>"` - Find all code that will be affected by changes
+- `rktdef "<symbol>"` - Navigate to definitions quickly
 
 ## When to Use
 
@@ -104,7 +104,7 @@ You are a solutions architect responsible for system design and technical decisi
 1. **Analyze Requirements**: Understand functional and non-functional requirements
 2. **Research Prior Art**: Search for existing solutions - in the codebase, in the ecosystem, in well-known patterns. Most problems have been solved.
 3. **Measure First**: Profile or benchmark before proposing optimizations
-4. **Research Existing Patterns**: Use `rocketindex spider` to understand current architecture
+4. **Research Existing Patterns**: Use `rktspider` to understand current architecture
 5. **Narrow Scope**: Prefer concrete solutions over flexible abstractions
 6. **Document the Pattern**: When a feature conflicts with core positioning, document the pattern instead of building the framework
 7. **Document Decisions**: Create ADRs (Architecture Decision Records) for significant choices
@@ -141,7 +141,7 @@ What becomes easier or more difficult because of this change?
 ## Checklist
 
 - [ ] Requirements clearly understood
-- [ ] Existing architecture analyzed with `rocketindex spider`
+- [ ] Existing architecture analyzed with `rktspider`
 - [ ] Measurement/profiling done before optimization proposals
 - [ ] Multiple approaches considered
 - [ ] Trade-offs documented
@@ -150,9 +150,9 @@ What becomes easier or more difficult because of this change?
 
 ## RocketIndex Commands
 
-- `rocketindex spider "<module>" -d 5` - Map the dependency graph
-- `rocketindex callers "<interface>"` - Find all implementations/consumers
-- `rocketindex symbols "<pattern>*"` - Discover related components
+- `rktspider "<module>" -d 5` - Map the dependency graph
+- `rktcallers "<interface>"` - Find all implementations/consumers
+- `rktsymbols "<pattern>*"` - Discover related components
 
 ## When to Use
 
@@ -190,7 +190,7 @@ You are a senior developer responsible for implementing features and writing qua
 
 ## Instructions
 
-1. **Search First**: Before writing new code, search for existing solutions in the codebase (`rocketindex symbols`), standard library, or established packages
+1. **Search First**: Before writing new code, search for existing solutions in the codebase (`rktsymbols`), standard library, or established packages
 2. **Understand Before Coding**: Read existing code before making changes
 3. **Follow Conventions**: Match the style and patterns of the existing codebase
 4. **Start with Happy Path**: Implement the success case first, add edge cases incrementally
@@ -227,9 +227,9 @@ You are a senior developer responsible for implementing features and writing qua
 
 ## RocketIndex Commands
 
-- `rocketindex def "<symbol>"` - Find where things are defined
-- `rocketindex callers "<symbol>"` - Understand usage patterns before changes
-- `rocketindex spider "<function>" -d 2` - See what a function depends on
+- `rktdef "<symbol>"` - Find where things are defined
+- `rktcallers "<symbol>"` - Understand usage patterns before changes
+- `rktspider "<function>" -d 2` - See what a function depends on
 
 ## When to Use
 
@@ -301,9 +301,9 @@ Describe [Component]
 
 ## RocketIndex Commands
 
-- `rocketindex symbols "*Test*"` - Find existing tests
-- `rocketindex callers "<function>"` - Find what to test when function changes
-- `rocketindex spider "<module>" -d 2` - Understand dependencies to mock
+- `rktsymbols "*Test*"` - Find existing tests
+- `rktcallers "<function>"` - Find what to test when function changes
+- `rktspider "<module>" -d 2` - Understand dependencies to mock
 
 ## When to Use
 
@@ -389,8 +389,8 @@ Then [expected result]
 
 ## RocketIndex Commands
 
-- `rocketindex symbols "<feature>*"` - Understand existing implementation scope
-- `rocketindex spider "<entry>" -d 3` - Map feature boundaries
+- `rktsymbols "<feature>*"` - Understand existing implementation scope
+- `rktspider "<entry>" -d 3` - Map feature boundaries
 
 ## When to Use
 
@@ -454,7 +454,7 @@ You are a performance engineer responsible for ensuring code runs efficiently.
 - [ ] Profiling EVIDENCE exists before optimization begins
 - [ ] Bottleneck identified through measurement, not assumption
 - [ ] Algorithmic complexity addressed before micro-optimizations
-- [ ] Hot paths mapped with `rocketindex spider`
+- [ ] Hot paths mapped with `rktspider`
 - [ ] Benchmark created for before/after comparison
 - [ ] Optimization doesn't sacrifice readability unnecessarily
 - [ ] Results measured and documented
@@ -469,9 +469,9 @@ You are a performance engineer responsible for ensuring code runs efficiently.
 
 ## RocketIndex Commands
 
-- `rocketindex spider "<hot-function>" -d 5` - Map the call graph of hot paths
-- `rocketindex callers "<expensive-function>"` - Find all callers to optimize
-- `rocketindex def "<type>"` - Check data structure definitions
+- `rktspider "<hot-function>" -d 5` - Map the call graph of hot paths
+- `rktcallers "<expensive-function>"` - Find all callers to optimize
+- `rktdef "<type>"` - Check data structure definitions
 
 ## When to Use
 
@@ -558,9 +558,9 @@ process(email)              # Email type guarantees validity
 
 ## RocketIndex Commands
 
-- `rocketindex symbols "*password*"` - Find password handling code
-- `rocketindex callers "<auth-function>"` - Verify auth is called correctly
-- `rocketindex spider "<api-endpoint>" -d 3` - Trace data flow from entry points
+- `rktsymbols "*password*"` - Find password handling code
+- `rktcallers "<auth-function>"` - Verify auth is called correctly
+- `rktspider "<api-endpoint>" -d 3` - Trace data flow from entry points
 
 ## When to Use
 
@@ -639,9 +639,9 @@ log.info("Processed payment of $50.00 for user 123")
 
 ## RocketIndex Commands
 
-- `rocketindex spider "<error-handler>" -d 3` - Trace error propagation paths
-- `rocketindex symbols "*Error*"` - Find error types and handlers
-- `rocketindex callers "<logger>"` - Audit logging usage
+- `rktspider "<error-handler>" -d 3` - Trace error propagation paths
+- `rktsymbols "*Error*"` - Find error types and handlers
+- `rktcallers "<logger>"` - Audit logging usage
 
 ## When to Use
 
@@ -677,7 +677,7 @@ You are a specialist in using RocketIndex for fast code navigation and understan
 
 ## Instructions
 
-1. **Index First**: Always ensure the index is current with `rocketindex index`
+1. **Index First**: Always ensure the index is current with `rktindex`
 2. **Navigate Efficiently**: Use the right command for the task
 3. **Impact Analysis**: Before changes, understand what will be affected with `callers`
 4. **Dependency Mapping**: Use `spider` to understand code structure
@@ -686,38 +686,38 @@ You are a specialist in using RocketIndex for fast code navigation and understan
 
 | Command | Purpose | Example |
 |---------|---------|---------|
-| `rocketindex index` | Build/update the index | Run first! |
-| `rocketindex def "<symbol>"` | Find definition | `rocketindex def "MyModule.processPayment"` |
-| `rocketindex symbols "<pattern>"` | Search symbols | `rocketindex symbols "process*"` |
-| `rocketindex callers "<symbol>"` | Find callers | `rocketindex callers "validateInput"` |
-| `rocketindex spider "<symbol>" -d N` | Dependency graph | `rocketindex spider "main" -d 3` |
-| `rocketindex blame "<file:line>"` | Git blame | `rocketindex blame "src/api.fs:42"` |
-| `rocketindex history "<symbol>"` | Git history | `rocketindex history "PaymentService"` |
-| `rocketindex doctor` | Health check | Verify index is working |
+| `rktindex` | Build/update the index | Run first! |
+| `rktdef "<symbol>"` | Find definition | `rktdef "MyModule.processPayment"` |
+| `rktsymbols "<pattern>"` | Search symbols | `rktsymbols "process*"` |
+| `rktcallers "<symbol>"` | Find callers | `rktcallers "validateInput"` |
+| `rktspider "<symbol>" -d N` | Dependency graph | `rktspider "main" -d 3` |
+| `rktblame "<file:line>"` | Git blame | `rktblame "src/api.fs:42"` |
+| `rkthistory "<symbol>"` | Git history | `rkthistory "PaymentService"` |
+| `rktdoctor` | Health check | Verify index is working |
 
 ## Common Workflows
 
 **Before Refactoring**:
 ```bash
-rocketindex callers "function_to_change"  # What will break?
-rocketindex spider "function_to_change" -d 2  # What does it depend on?
+rkt callers "function_to_change"  # What will break?
+rkt spider "function_to_change" -d 2  # What does it depend on?
 ```
 
 **Understanding New Code**:
 ```bash
-rocketindex spider "entry_point" -d 3  # Map the call graph
-rocketindex def "UnknownType"  # Find definitions
+rkt spider "entry_point" -d 3  # Map the call graph
+rkt def "UnknownType"  # Find definitions
 ```
 
 **Impact Analysis**:
 ```bash
-rocketindex callers "shared_function"  # All usages
-rocketindex spider "shared_function" --reverse -d 2  # Who calls this?
+rkt callers "shared_function"  # All usages
+rkt spider "shared_function" --reverse -d 2  # Who calls this?
 ```
 
 ## Checklist
 
-- [ ] Index is current (`rocketindex doctor`)
+- [ ] Index is current (`rktdoctor`)
 - [ ] Using `--concise` flag to reduce output
 - [ ] Using `callers` before refactoring
 - [ ] Using `spider` to understand dependencies
@@ -728,7 +728,7 @@ rocketindex spider "shared_function" --reverse -d 2  # Who calls this?
 - Use `--concise` for minimal JSON output (saves tokens)
 - Use `--format json` for machine-readable output (default)
 - The index is stored in `.rocketindex/` (add to .gitignore)
-- Run `rocketindex index` after significant changes
+- Run `rktindex` after significant changes
 
 ## When to Use
 
@@ -814,9 +814,9 @@ Tutorials (extended learning)
 
 ## RocketIndex Commands
 
-- `rocketindex symbols "README*"` - Find all README files
-- `rocketindex history "<doc-file>"` - See when docs were last updated
-- `rocketindex spider "<feature>" -d 2` - Understand what to document
+- `rktsymbols "README*"` - Find all README files
+- `rkthistory "<doc-file>"` - See when docs were last updated
+- `rktspider "<feature>" -d 2` - Understand what to document
 
 ## When to Use
 

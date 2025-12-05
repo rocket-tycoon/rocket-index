@@ -7,7 +7,7 @@ authors.workspace = true
 description = "Rocket-fast CLI for F# codebase indexing and navigation"
 
 [[bin]]
-name = "rocketindex"
+name = "rkt"
 path = "src/main.rs"
 
 [dependencies]

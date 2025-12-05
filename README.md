@@ -63,52 +63,52 @@ All commands output JSON by default for easy integration. Use `--concise` for mi
 
 ```bash
 # Index the codebase (run first!)
-$ rocketindex index
+$ rktindex
 
 # Find definition (with optional git provenance)
-$ rocketindex def "PaymentService.processPayment"
-$ rocketindex def "PaymentService.processPayment" --git  # Include author, date, commit
+$ rktdef "PaymentService.processPayment"
+$ rktdef "PaymentService.processPayment" --git  # Include author, date, commit
 
 # Search symbols (supports wildcards)
-$ rocketindex symbols "User*"
-$ rocketindex symbols "process*" --concise
+$ rktsymbols "User*"
+$ rktsymbols "process*" --concise
 
 # Find references in a file
-$ rocketindex refs "src/Services.fs"
+$ rktrefs "src/Services.fs"
 ```
 
 ### Dependency Analysis
 
 ```bash
 # Spider forward: what does this symbol depend on?
-$ rocketindex spider "Program.main" -d 5
+$ rktspider "Program.main" -d 5
 
 # Spider reverse: what depends on this symbol? (impact analysis)
-$ rocketindex spider "validateInput" --reverse -d 3
+$ rktspider "validateInput" --reverse -d 3
 
 # Find direct callers (single-level reverse spider)
-$ rocketindex callers "PaymentService.processPayment"
+$ rktcallers "PaymentService.processPayment"
 ```
 
 ### Git Integration
 
 ```bash
 # Git blame for a specific line
-$ rocketindex blame "src/Services.fs:42"
+$ rktblame "src/Services.fs:42"
 
 # Git history for a symbol
-$ rocketindex history "PaymentService"
+$ rkthistory "PaymentService"
 ```
 
 ### Diagnostics
 
 ```bash
 # Check index health
-$ rocketindex doctor
+$ rktdoctor
 
 # Set up editor integrations
-$ rocketindex setup claude  # Interactive skill selection
-$ rocketindex setup cursor  # Creates .cursor/rules
+$ rktsetup claude  # Interactive skill selection
+$ rktsetup cursor  # Creates .cursor/rules
 ```
 
 ### Output Modes
@@ -136,7 +136,7 @@ These provide syntax highlighting, go-to-definition, and symbol search within th
 cargo build --release
 ```
 
-Binaries will be at `target/release/rocketindex` (CLI) and `target/release/rocketindex-lsp` (Server).
+Binaries will be at `target/release/rkt` (CLI) and `target/release/rocketindex-lsp` (Server).
 
 ## Agent Integration Guide
 
@@ -145,7 +145,7 @@ Binaries will be at `target/release/rocketindex` (CLI) and `target/release/rocke
 The fastest way to get started:
 
 ```bash
-rocketindex setup claude
+rkt setup claude
 ```
 
 This creates:
@@ -166,7 +166,7 @@ Each skill includes bounded checklists and integrates RocketIndex commands for c
 ### Cursor
 
 ```bash
-rocketindex setup cursor
+rkt setup cursor
 ```
 
 Creates `.cursor/rules` with RocketIndex guidance.
@@ -195,18 +195,18 @@ RocketIndex follows a simple contract:
 cargo build --release
 
 # 2. Index your codebase
-./target/release/rocketindex index
+./target/release/rkt index
 
 # 3. Check health
-./target/release/rocketindex doctor
+./target/release/rkt doctor
 
 # 4. Set up your editor (optional)
-./target/release/rocketindex setup claude
+./target/release/rkt setup claude
 
 # 5. Start exploring
-./target/release/rocketindex symbols "*Service*" --concise
-./target/release/rocketindex def "MyModule.myFunction" --git
-./target/release/rocketindex callers "validateInput"
+./target/release/rkt symbols "*Service*" --concise
+./target/release/rkt def "MyModule.myFunction" --git
+./target/release/rkt callers "validateInput"
 ```
 
 ## License

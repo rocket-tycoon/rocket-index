@@ -43,7 +43,7 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/rocketindex dist/
+          cp target/${{ matrix.target }}/release/rkt dist/
           cp target/${{ matrix.target }}/release/rocketindex-lsp dist/
           cp README.md LICENSE dist/ 2>/dev/null || cp README.md dist/
           cd dist
@@ -54,7 +54,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist
-          Copy-Item target/${{ matrix.target }}/release/rocketindex.exe dist/
+          Copy-Item target/${{ matrix.target }}/release/rkt.exe dist/
           Copy-Item target/${{ matrix.target }}/release/rocketindex-lsp.exe dist/
           Copy-Item README.md dist/
           if (Test-Path LICENSE) { Copy-Item LICENSE dist/ }
