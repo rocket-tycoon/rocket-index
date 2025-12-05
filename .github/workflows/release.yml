@@ -87,3 +87,77 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+
+  update-homebrew:
+    name: Update Homebrew Formula
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: rocket-tycoon/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Download artifacts for SHA256
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Calculate SHA256 and update formula
+        run: |
+          VERSION="${{ github.ref_name }}"
+
+          # Calculate SHA256 for each platform
+          SHA_ARM=$(sha256sum artifacts/rocketindex-aarch64-apple-darwin/rocketindex-${VERSION}-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)
+          SHA_INTEL=$(sha256sum artifacts/rocketindex-x86_64-apple-darwin/rocketindex-${VERSION}-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)
+          SHA_LINUX=$(sha256sum artifacts/rocketindex-x86_64-unknown-linux-gnu/rocketindex-${VERSION}-x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)
+
+          echo "SHA256 (ARM):   $SHA_ARM"
+          echo "SHA256 (Intel): $SHA_INTEL"
+          echo "SHA256 (Linux): $SHA_LINUX"
+
+          # Update formula
+          cat > homebrew-tap/Formula/rocketindex.rb << EOF
+          class Rocketindex < Formula
+            desc "Rocket-fast polyglot language server and code indexer"
+            homepage "https://github.com/rocket-tycoon/rocket-index"
+            license "MIT"
+            version "${VERSION#v}"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/rocket-tycoon/rocket-index/releases/download/${VERSION}/rocketindex-${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_ARM}"
+              end
+              on_intel do
+                url "https://github.com/rocket-tycoon/rocket-index/releases/download/${VERSION}/rocketindex-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_INTEL}"
+              end
+            end
+
+            on_linux do
+              url "https://github.com/rocket-tycoon/rocket-index/releases/download/${VERSION}/rocketindex-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+              sha256 "${SHA_LINUX}"
+            end
+
+            def install
+              bin.install "rkt"
+              bin.install "rocketindex-lsp"
+            end
+
+            test do
+              system "#{bin}/rkt", "--version"
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/rocketindex.rb
+          git commit -m "Update rocketindex to ${{ github.ref_name }}"
+          git push
