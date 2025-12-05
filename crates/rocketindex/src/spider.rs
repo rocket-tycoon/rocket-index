@@ -7,6 +7,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
+use crate::index::Reference;
 use crate::{CodeIndex, Symbol};
 
 /// A node in the spider's dependency graph.
@@ -194,6 +195,86 @@ pub fn spider_from_file(index: &CodeIndex, file: &Path, max_depth: usize) -> Spi
     combined_result
 }
 
+/// Spider backwards from an entry point, finding callers up to a maximum depth.
+///
+/// This is the reverse of `spider()` - instead of following what a symbol calls,
+/// it follows what calls the symbol (impact analysis).
+///
+/// # Arguments
+/// * `index` - The code index to search
+/// * `entry_point` - The qualified name of the starting symbol
+/// * `max_depth` - Maximum depth to traverse (0 = only entry point)
+///
+/// # Returns
+/// A `SpiderResult` containing all callers in breadth-first order.
+#[must_use]
+pub fn reverse_spider(index: &CodeIndex, entry_point: &str, max_depth: usize) -> SpiderResult {
+    let mut result = SpiderResult::new();
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+
+    // Start with the entry point
+    queue.push_back((entry_point.to_string(), 0));
+
+    while let Some((qualified_name, depth)) = queue.pop_front() {
+        // Skip if already visited
+        if visited.contains(&qualified_name) {
+            continue;
+        }
+        visited.insert(qualified_name.clone());
+
+        // Try to find the symbol
+        match index.get(&qualified_name) {
+            Some(symbol) => {
+                result.nodes.push(SpiderNode {
+                    symbol: symbol.clone(),
+                    depth,
+                });
+
+                // Don't follow callers beyond max depth
+                if depth >= max_depth {
+                    continue;
+                }
+
+                // Find all references TO this symbol
+                let references = index.find_references(&qualified_name);
+
+                // For each reference, find the containing symbol (the caller)
+                for reference in references {
+                    if let Some(caller) = find_containing_symbol(index, reference) {
+                        if !visited.contains(&caller.qualified) {
+                            queue.push_back((caller.qualified.clone(), depth + 1));
+                        }
+                    }
+                }
+            }
+            None => {
+                // Entry point not found
+                if depth == 0 {
+                    result.unresolved.push(qualified_name);
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Find the symbol that contains a given reference (for determining callers).
+///
+/// Uses a heuristic: the symbol whose definition starts closest to (but before)
+/// the reference line in the same file is likely the containing symbol.
+fn find_containing_symbol<'a>(index: &'a CodeIndex, reference: &Reference) -> Option<&'a Symbol> {
+    let symbols = index.symbols_in_file(&reference.location.file);
+
+    // Find symbol that most likely contains this reference
+    // Heuristic: the symbol with the largest line number that's still <= reference line
+    symbols
+        .into_iter()
+        .filter(|s| s.location.line <= reference.location.line)
+        .max_by_key(|s| s.location.line)
+}
+
 /// Format spider result for display.
 pub fn format_spider_result(result: &SpiderResult) -> String {
     let mut output = String::new();
@@ -234,6 +315,7 @@ mod tests {
             kind: SymbolKind::Function,
             location: Location::new(PathBuf::from(file), line, 1),
             visibility: Visibility::Public,
+            language: "fsharp".to_string(),
         }
     }
 
@@ -361,5 +443,130 @@ mod tests {
             .nodes
             .iter()
             .any(|n| n.symbol.qualified == "MyApp.Utils.helper"));
+    }
+
+    // =========================================================================
+    // Reverse Spider Tests
+    // =========================================================================
+
+    #[test]
+    fn test_reverse_spider_single_node() {
+        let mut index = CodeIndex::new();
+        index.add_symbol(make_symbol("main", "Program.main", "src/Program.fs", 10));
+
+        let result = reverse_spider(&index, "Program.main", 5);
+
+        assert_eq!(result.nodes.len(), 1);
+        assert_eq!(result.nodes[0].symbol.qualified, "Program.main");
+        assert_eq!(result.nodes[0].depth, 0);
+    }
+
+    #[test]
+    fn test_reverse_spider_finds_callers() {
+        let mut index = CodeIndex::new();
+        // helper is defined in Utils.fs
+        index.add_symbol(make_symbol("helper", "Utils.helper", "src/Utils.fs", 5));
+        // main is defined in Program.fs and calls helper
+        index.add_symbol(make_symbol("main", "Program.main", "src/Program.fs", 10));
+
+        // Add a reference from Program.fs to Utils.helper (main calls helper)
+        index.add_reference(
+            PathBuf::from("src/Program.fs"),
+            make_reference("Utils.helper", "src/Program.fs", 15),
+        );
+
+        // Reverse spider from helper should find main as a caller
+        let result = reverse_spider(&index, "Utils.helper", 5);
+
+        assert_eq!(result.nodes.len(), 2);
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.symbol.qualified == "Utils.helper" && n.depth == 0));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.symbol.qualified == "Program.main" && n.depth == 1));
+    }
+
+    #[test]
+    fn test_reverse_spider_respects_max_depth() {
+        let mut index = CodeIndex::new();
+        index.add_symbol(make_symbol("a", "M.a", "a.fs", 1));
+        index.add_symbol(make_symbol("b", "M.b", "b.fs", 1));
+        index.add_symbol(make_symbol("c", "M.c", "c.fs", 1));
+
+        // c -> b -> a (c calls b, b calls a)
+        // So reverse from a: a <- b <- c
+        index.add_reference(PathBuf::from("b.fs"), make_reference("M.a", "b.fs", 5));
+        index.add_reference(PathBuf::from("c.fs"), make_reference("M.b", "c.fs", 5));
+
+        // With max_depth = 1, should only get a and b
+        let result = reverse_spider(&index, "M.a", 1);
+
+        assert_eq!(result.nodes.len(), 2);
+        assert!(result.nodes.iter().all(|n| n.symbol.qualified != "M.c"));
+    }
+
+    #[test]
+    fn test_reverse_spider_multiple_callers() {
+        let mut index = CodeIndex::new();
+        // helper is called by both main and test
+        index.add_symbol(make_symbol("helper", "Utils.helper", "src/Utils.fs", 5));
+        index.add_symbol(make_symbol("main", "Program.main", "src/Program.fs", 10));
+        index.add_symbol(make_symbol("test", "Tests.test", "tests/Test.fs", 10));
+
+        // Both files reference helper
+        index.add_reference(
+            PathBuf::from("src/Program.fs"),
+            make_reference("helper", "src/Program.fs", 15),
+        );
+        index.add_reference(
+            PathBuf::from("tests/Test.fs"),
+            make_reference("helper", "tests/Test.fs", 15),
+        );
+
+        let result = reverse_spider(&index, "Utils.helper", 5);
+
+        assert_eq!(result.nodes.len(), 3);
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.symbol.qualified == "Utils.helper" && n.depth == 0));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.symbol.qualified == "Program.main" && n.depth == 1));
+        assert!(result
+            .nodes
+            .iter()
+            .any(|n| n.symbol.qualified == "Tests.test" && n.depth == 1));
+    }
+
+    #[test]
+    fn test_reverse_spider_not_found() {
+        let index = CodeIndex::new();
+        let result = reverse_spider(&index, "NonExistent.symbol", 5);
+
+        assert!(result.nodes.is_empty());
+        assert!(result
+            .unresolved
+            .contains(&"NonExistent.symbol".to_string()));
+    }
+
+    #[test]
+    fn test_reverse_spider_no_cycles() {
+        let mut index = CodeIndex::new();
+        index.add_symbol(make_symbol("a", "M.a", "a.fs", 1));
+        index.add_symbol(make_symbol("b", "M.b", "b.fs", 1));
+
+        // a and b call each other (cycle)
+        index.add_reference(PathBuf::from("a.fs"), make_reference("M.b", "a.fs", 5));
+        index.add_reference(PathBuf::from("b.fs"), make_reference("M.a", "b.fs", 5));
+
+        // Should not infinite loop - each symbol visited only once
+        let result = reverse_spider(&index, "M.a", 10);
+
+        assert_eq!(result.nodes.len(), 2);
     }
 }

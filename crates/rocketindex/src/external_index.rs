@@ -303,6 +303,7 @@ impl ExternalIndex {
             kind,
             Location::new(Path::new(&assembly).to_path_buf(), 1, 1),
             Visibility::Public,
+            "fsharp".to_string(),
         );
 
         let ext_symbol = ExternalSymbol { symbol, assembly };

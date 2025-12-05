@@ -20,7 +20,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use document_store::DocumentStore;
 use rocketindex::{
-    config::Config, db::DEFAULT_DB_NAME, extract_symbols, watch::find_fsharp_files, CodeIndex,
+    config::Config, db::DEFAULT_DB_NAME, extract_symbols, watch::find_source_files, CodeIndex,
     SqliteIndex, SyntaxError,
 };
 use tokio::sync::RwLock;
@@ -140,8 +140,9 @@ impl Backend {
 
         info!("Building index for {:?}", root_path);
 
-        let files = find_fsharp_files(&root_path)?;
-        info!("Found {} F# files", files.len());
+        // Find all source files
+        let files = find_source_files(&root_path)?;
+        info!("Found {} source files", files.len());
 
         let max_depth = *self.max_recursion_depth.read().await;
         let mut index = self.index.write().await;
@@ -1590,6 +1591,7 @@ let x = 1"#;
             SymbolKind::Value,
             Location::new(std::path::PathBuf::from("test.fs"), 1, 1),
             Visibility::Public,
+            "fsharp".to_string(),
         ));
 
         // Set up type cache
@@ -1644,6 +1646,7 @@ let x = 1"#;
             SymbolKind::Function,
             Location::new(std::path::PathBuf::from("Utils.fs"), 10, 1),
             Visibility::Public,
+            "fsharp".to_string(),
         ));
 
         // Content that references 'helper' without opening Utils
@@ -1675,6 +1678,7 @@ let x = helper 42
             SymbolKind::Function,
             Location::new(std::path::PathBuf::from("Utils.fs"), 10, 1),
             Visibility::Public,
+            "fsharp".to_string(),
         ));
 
         // Content that has the module already opened

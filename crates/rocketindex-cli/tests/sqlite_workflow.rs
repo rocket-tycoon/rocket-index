@@ -264,6 +264,61 @@ fn spider_traverses_dependencies() -> TestResult {
 }
 
 #[test]
+fn spider_reverse_finds_callers() -> TestResult {
+    let workspace = MultiFileWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("rocketindex")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", ".", "--format", "text"])
+        .assert()
+        .success();
+
+    // Reverse spider from getUserById should find the local binding 'user'
+    // Note: The indexer identifies the local variable 'user' as the caller because
+    // it's the closest symbol definition to the call site.
+    Command::cargo_bin("rocketindex")?
+        .current_dir(workspace.root())
+        .args([
+            "spider",
+            "MyApp.Services.getUserById",
+            "--reverse",
+            "--depth",
+            "2",
+            "--format",
+            "text",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("MyApp.App.user"));
+
+    Ok(())
+}
+
+#[test]
+fn callers_command_finds_direct_callers() -> TestResult {
+    let workspace = MultiFileWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("rocketindex")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", ".", "--format", "text"])
+        .assert()
+        .success();
+
+    // Callers of processOrder should include the local binding 'order'
+    Command::cargo_bin("rocketindex")?
+        .current_dir(workspace.root())
+        .args(["callers", "MyApp.Services.processOrder", "--format", "text"])
+        .assert()
+        .success()
+        .stdout(contains("Callers of MyApp.Services.processOrder"))
+        .stdout(contains("MyApp.App.order"));
+
+    Ok(())
+}
+
+#[test]
 fn json_output_format_works() -> TestResult {
     let workspace = MultiFileWorkspace::new()?;
 

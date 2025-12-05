@@ -310,6 +310,7 @@ mod tests {
             SymbolKind::Function,
             Location::new(PathBuf::from("Utils.fs"), 10, 1),
             Visibility::Public,
+            "fsharp".to_string(),
         ));
 
         index.add_symbol(Symbol::new(
@@ -318,6 +319,7 @@ mod tests {
             SymbolKind::Record,
             Location::new(PathBuf::from("Domain.fs"), 5, 1),
             Visibility::Public,
+            "fsharp".to_string(),
         ));
 
         index.add_symbol(Symbol::new(
@@ -326,6 +328,7 @@ mod tests {
             SymbolKind::Function,
             Location::new(PathBuf::from("Services.fs"), 15, 1),
             Visibility::Public,
+            "fsharp".to_string(),
         ));
 
         // Add an open statement
