@@ -1,9 +1,9 @@
-//! rocketindex: Rocket-fast F# symbol extraction, indexing, and name resolution
+//! rocketindex: Rocket-fast symbol extraction, indexing, and name resolution
 //!
-//! This crate provides the fundamental building blocks for a minimal F# language server:
-//! - Symbol extraction from F# source files using tree-sitter
+//! This crate provides the fundamental building blocks for a minimal language server:
+//! - Symbol extraction from source files (F#, Ruby) using tree-sitter
 //! - In-memory index for fast symbol lookup
-//! - Name resolution with F# scoping rules
+//! - Name resolution with language-specific scoping rules
 //! - Dependency graph traversal (spider)
 
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,10 @@ pub mod config;
 pub mod db;
 pub mod external_index;
 pub mod fsproj;
+pub mod fuzzy;
+pub mod git;
 pub mod index;
+pub mod languages;
 pub mod parse;
 pub mod resolve;
 pub mod spider;
@@ -100,7 +103,11 @@ pub enum Visibility {
     Private,
 }
 
-/// A symbol extracted from F# source code
+fn default_language() -> String {
+    "fsharp".to_string()
+}
+
+/// A symbol extracted from source code
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Symbol {
     /// Short name: "processPayment"
@@ -113,6 +120,9 @@ pub struct Symbol {
     pub location: Location,
     /// Visibility modifier
     pub visibility: Visibility,
+    /// Language of the symbol (e.g., "fsharp", "ruby")
+    #[serde(default = "default_language")]
+    pub language: String,
 }
 
 impl Symbol {
@@ -122,6 +132,7 @@ impl Symbol {
         kind: SymbolKind,
         location: Location,
         visibility: Visibility,
+        language: String,
     ) -> Self {
         Self {
             name,
@@ -129,6 +140,7 @@ impl Symbol {
             kind,
             location,
             visibility,
+            language,
         }
     }
 }
@@ -142,7 +154,7 @@ pub enum IndexError {
     #[error("Failed to parse file: {path}")]
     ParseError { path: PathBuf },
 
-    #[error("Index not found. Run 'rocketindex build' first.")]
+    #[error("Index not found. Run 'rocketindex index' first.")]
     IndexNotFound,
 
     #[error("Failed to serialize index: {0}")]
@@ -194,6 +206,7 @@ mod tests {
             SymbolKind::Function,
             Location::new(PathBuf::from("math.fs"), 5, 1),
             Visibility::Public,
+            "fsharp".to_string(),
         );
         assert_eq!(sym.name, "add");
         assert_eq!(sym.qualified, "MyApp.Math.add");
