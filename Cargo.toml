@@ -33,6 +33,7 @@ tower-lsp = "0.20"
 
 # CLI dependencies
 clap = { version = "4.0", features = ["derive"] }
+dialoguer = "0.11"
 
 # File watching
 notify = "6.0"

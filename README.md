@@ -1,47 +1,80 @@
 # RocketIndex
 
-Rocket-fast F# language server and code indexer. Pure Rust, ~50MB RAM, no .NET required.
+**The LSP for the AI Era.**
 
-## Overview
+RocketIndex is a rocket-fast, polyglot language server and code indexer designed for the modern development workflow: **Humans architecting solutions with AI Agents.**
 
-RocketIndex provides codebase indexing and navigation for F# projects without the unbounded memory growth that plagues fsautocomplete. Written entirely in Rust using tree-sitter for parsing—no .NET runtime required.
+Written in pure Rust with ~50MB RAM usage. No runtime required.
 
-### Features
+## The Shift: Developer as Architect
 
-- **Bounded, predictable memory usage** (<50MB for large codebases)
-- **Fast codebase indexing and navigation**
-- **SQLite-backed index** (persistent symbol store with optional type extraction data)
-- **Go-to-definition** across files
-- **Dependency graph traversal** ("spider" from entry point)
-- **Clean CLI** for AI agent tooling
-- **Zed extension** ("F# Fast") with syntax highlighting
+The role of the software engineer is evolving. You are no longer just a coder; you are a Technical Product Manager and Solution Architect for a team of AI agents. You design the system, and your agents (Claude Code, Aider, etc.) implement and refactor it.
 
-### Non-Goals
+But agents are blind. They run in headless terminals. They can't "right-click -> Go to Definition". They waste massive amounts of context tokens reading unrelated files just to find where a class is defined.
 
-- Feature parity with fsautocomplete
-- Type-aware completions or hover information
-- Refactoring tools (AI agents handle this)
-- MCP integration (causes context bloat)
+**RocketIndex bridges this gap.** It gives your agents the same code intelligence you have in your IDE, but via a high-performance CLI.
 
-### Known Limitations
+## Why RocketIndex?
 
-This tool uses syntactic analysis only (no .NET runtime). Key limitations:
+### 🤖 For Your Agents (The Brain)
+RocketIndex is the "LSP for Agents". It provides a structured, queryable interface to your codebase.
 
-- **No type awareness** — Cannot resolve overloaded methods or infer types
-- **No external dependencies** — NuGet packages and FSharp.Core are not indexed
-- **Approximate resolution** — Spider dependency graphs are best-effort
+*   **Headless Intelligence**: Agents can ask *"Where is `User` defined?"* or *"Who calls `process_payment`?"* and get an instant, precise answer.
+*   **Context Efficiency**: Instead of `grep`-ing or reading 50 files (wasting tokens and money), agents get the exact file and line number in milliseconds.
+*   **Unified Tooling**: Whether your agent is working on F# or Ruby, it uses the exact same commands (`def`, `refs`, `symbols`).
 
-## Project Structure
+### 🧑‍💻 For You (The Eyes)
+RocketIndex powers the **"F# Fast"** and **"Ruby Fast"** extensions for Zed.
 
+*   **Instant Feedback**: Go-to-definition and symbol search that feels instantaneous.
+*   **Lightweight**: Uses <50MB RAM, unlike other servers that eat GBs of memory.
+*   **Reliable**: Built on SQLite and Rust. It doesn't crash on large monoliths.
+
+## Key Differentiators
+
+RocketIndex was built to overcome specific limitations of existing tools:
+
+1.  **Unbounded Memory Growth**: Unlike some language servers that load the entire project state into RAM (causing crashes), RocketIndex uses streaming parsing and a SQLite backend to keep memory usage low and constant.
+2.  **File Count Limits**: Unlike servers that cap indexing at ~5000 files, RocketIndex handles large monoliths (like `vets-api` with 7000+ files) with ease.
+3.  **Polyglot Core**: Powered by Tree-sitter, allowing it to support multiple languages (currently F# and Ruby) with a single binary.
+
+## Why not MCP?
+
+While the Model Context Protocol (MCP) is great for connecting agents to static resources (Jira, Postgres), it is the "wrong abstraction" for deep code intelligence.
+
+1.  **Context Bloat**: MCP forces you to load tool definitions upfront. For a large codebase, this "dictionary problem" wastes thousands of tokens and makes agents "dumber" due to cognitive overload. RocketIndex acts as an O(1) Oracle, answering specific queries without polluting the context.
+2.  **Statelessness**: MCP is designed to be stateless. RocketIndex uses a persistent SQLite graph, allowing for instant, complex "spidering" of dependency trees that would be impossibly slow over a stateless JSON-RPC protocol.
+3.  **Domain Specificity**: MCP treats code as generic "resources". RocketIndex understands the *graph* of code (definitions, references, calls), providing "spatial reasoning" that generic tools cannot match.
+
+## CLI Usage (for Agents)
+
+All commands output JSON by default for easy integration.
+
+```bash
+# Build/rebuild the index (incremental)
+$ rocketindex build
+
+# Find definition
+$ rocketindex def "PaymentService.processPayment"
+# {"file": "src/Services.fs", "line": 42, "column": 5, ...}
+
+# Find references
+$ rocketindex refs "src/Services.fs"
+
+# Spider dependency graph (explore related code)
+$ rocketindex spider "Program.main" --depth 5
+
+# Search symbols (with language filter)
+$ rocketindex symbols "User" --language ruby
 ```
-rocket-index/
-├── crates/
-│   ├── rocketindex/        # Core library for symbol extraction and indexing
-│   ├── rocketindex-cli/    # Command-line tool
-│   └── rocketindex-lsp/    # Language server protocol implementation
-└── extensions/
-    └── zed-fsharp/         # Zed editor extension (F# Fast)
-```
+
+## IDE Integration (for Humans)
+
+RocketIndex powers the following Zed extensions:
+*   **F# Fast** (`extensions/zed-fsharp`)
+*   **Ruby Fast** (`extensions/zed-ruby`)
+
+These provide syntax highlighting, go-to-definition, and symbol search within the editor.
 
 ## Installation
 
@@ -51,83 +84,24 @@ rocket-index/
 cargo build --release
 ```
 
-The binaries will be available at:
-- `target/release/rocketindex`
-- `target/release/rocketindex-lsp`
+Binaries will be at `target/release/rocketindex` (CLI) and `target/release/rocketindex-lsp` (Server).
 
-## CLI Usage
+## Agent Integration Guide
 
-All commands output JSON by default for easy integration with AI agents.
+### Claude Code
+Drop-in slash commands are available in `integrations/claude-code/`. Copy these to your `.claude/commands/` directory to enable `/rocketindex-def` and `/rocketindex-spider`.
 
-```bash
-# Build/rebuild the index for current directory
-$ rocketindex build
+### Custom Agents
+RocketIndex follows a simple contract:
+*   **Output**: JSON (`--format json`) or Human (`--format pretty`).
+*   **Exit Codes**: `0` (Success), `1` (Not Found), `2` (Error).
+*   **Storage**: All data is persisted in `.rocketindex/index.db` (SQLite).
 
-# Find definition (JSON output)
-$ rocketindex def "PaymentService.processPayment"
-# {"file": "src/Services.fs", "line": 42, "column": 5, ...}
+## Limitations
 
-# Human-readable output
-$ rocketindex def "PaymentService.processPayment" --format pretty
-
-# Spider from entry point
-$ rocketindex spider "Program.main" --depth 5
-
-# List all symbols matching pattern
-$ rocketindex symbols "Payment*"
-
-# Suppress progress output (useful in scripts)
-$ rocketindex build --quiet
-```
-
-## AI Agent Integration
-
-RocketIndex is designed to be the "SQLite of code indexing" for AI agents. It provides a CLI-first, JSON-native interface that works with any agent (Claude Code, Aider, Cursor, etc.).
-
-### CLI Contract
-
-- **Output**: JSON by default (`--format json`). Use `--format pretty` for human-readable output.
-- **Errors**: Printed to stderr in JSON format when using JSON output.
-- **Exit Codes**:
-    - `0`: Success
-    - `1`: Not found (valid query, no results)
-    - `2`: Error (invalid input, missing file, etc.)
-
-### Claude Code Integration
-
-Drop-in slash commands are available in `integrations/claude-code/`. Copy these to your `.claude/commands/` directory to enable:
-- `/rocketindex-def`: Find symbol definition
-- `/rocketindex-spider`: Spider dependency graph
-
-### Claude Skills
-
-A template for Claude Skills is available in `integrations/claude-skill/SKILL.md`.
-
-## SQLite Storage & Type Extraction
-
-The `rocketindex build` command writes every symbol, reference, and `open` directive into a SQLite database at `.rocketindex/index.db`. This persistent store is used by both the CLI and the LSP so large workspaces can be loaded without rebuilding an in-memory index each run.
-
-Optional semantic type data can be added by running the `scripts/extract-types.fsx` helper (automatically triggered by `rocketindex build --extract-types`). The script uses FSharp.Compiler.Service to record function signatures and type members, which are merged into the same SQLite file for richer hover output and member-resolution heuristics.
-
-## Development
-
-### Prerequisites
-
-- Rust 1.75+
-- Cargo
-
-### Building
-
-```bash
-cargo build
-```
-
-### Testing
-
-```bash
-cargo test --all
-```
+*   **Syntactic Only**: No compiler/runtime required. This means no type inference or overload resolution.
+*   **No External Indexing**: Standard libraries and external packages (NuGets, Gems) are not indexed.
 
 ## License
 
-MIT - Copyright (c) 2025 Alastair Dawson
+[MIT](LICENSE) - Copyright (c) 2025 Alastair Dawson

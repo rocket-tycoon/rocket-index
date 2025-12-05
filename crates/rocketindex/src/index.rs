@@ -324,6 +324,25 @@ impl CodeIndex {
             .collect()
     }
 
+    /// Get all qualified names in the index (for fuzzy matching).
+    #[must_use]
+    pub fn all_qualified_names(&self) -> Vec<String> {
+        self.definitions.keys().cloned().collect()
+    }
+
+    /// Get all symbol names (short and qualified) for fuzzy matching.
+    #[must_use]
+    pub fn all_names_for_fuzzy(&self) -> Vec<String> {
+        let mut names = std::collections::HashSet::new();
+        for symbols in self.definitions.values() {
+            for sym in symbols {
+                names.insert(sym.name.clone());
+                names.insert(sym.qualified.clone());
+            }
+        }
+        names.into_iter().collect()
+    }
+
     /// Clear all data for a specific file (used before re-indexing).
     ///
     /// The file path can be either absolute or relative.
@@ -555,6 +574,7 @@ mod tests {
             kind: SymbolKind::Function,
             location: Location::new(PathBuf::from(file), 1, 1),
             visibility: Visibility::Public,
+            language: "fsharp".to_string(),
         }
     }
 
@@ -669,6 +689,7 @@ mod tests {
             kind: SymbolKind::Function,
             location: Location::new(PathBuf::from("src/Parser.fs"), 10, 1),
             visibility: Visibility::Public,
+            language: "fsharp".to_string(),
         };
         let sym2 = Symbol {
             name: "parse".to_string(),
@@ -676,6 +697,7 @@ mod tests {
             kind: SymbolKind::Function,
             location: Location::new(PathBuf::from("src/Parser.fs"), 20, 1),
             visibility: Visibility::Public,
+            language: "fsharp".to_string(),
         };
 
         index.add_symbol(sym1);
@@ -706,6 +728,7 @@ mod tests {
             kind: SymbolKind::Value,
             location: Location::new(PathBuf::from("src/Config.fs"), 5, 1),
             visibility: Visibility::Public,
+            language: "fsharp".to_string(),
         };
         let sym2 = Symbol {
             name: "config".to_string(),
@@ -713,6 +736,7 @@ mod tests {
             kind: SymbolKind::Value,
             location: Location::new(PathBuf::from("src/Override.fs"), 10, 1),
             visibility: Visibility::Public,
+            language: "fsharp".to_string(),
         };
 
         index.add_symbol(sym1);

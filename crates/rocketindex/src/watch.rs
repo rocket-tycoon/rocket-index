@@ -112,7 +112,7 @@ impl FileWatcher {
         let paths: Vec<_> = event
             .paths
             .into_iter()
-            .filter(|p| is_fsharp_file(p))
+            .filter(|p| is_supported_file(p))
             .collect();
 
         if paths.is_empty() {
@@ -129,30 +129,30 @@ impl FileWatcher {
     }
 }
 
-/// Check if a path is an F# source file.
-pub fn is_fsharp_file(path: &Path) -> bool {
+/// Check if a path is a supported source file (F# or Ruby).
+pub fn is_supported_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| matches!(ext, "fs" | "fsi" | "fsx"))
+        .map(|ext| matches!(ext, "fs" | "fsi" | "fsx" | "rb"))
         .unwrap_or(false)
 }
 
-/// Find all F# source files in a directory tree (uses default exclusions).
-pub fn find_fsharp_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
-    find_fsharp_files_with_exclusions(root, crate::config::DEFAULT_EXCLUDE_DIRS)
+/// Find all supported source files in a directory tree (uses default exclusions).
+pub fn find_source_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    find_source_files_with_exclusions(root, crate::config::DEFAULT_EXCLUDE_DIRS)
 }
 
-/// Find all F# source files in a directory tree with custom exclusions.
-pub fn find_fsharp_files_with_exclusions(
+/// Find all supported source files in a directory tree with custom exclusions.
+pub fn find_source_files_with_exclusions(
     root: &Path,
     exclude_dirs: &[&str],
 ) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    find_fsharp_files_recursive(root, &mut files, exclude_dirs)?;
+    find_source_files_recursive(root, &mut files, exclude_dirs)?;
     Ok(files)
 }
 
-fn find_fsharp_files_recursive(
+fn find_source_files_recursive(
     dir: &Path,
     files: &mut Vec<PathBuf>,
     exclude_dirs: &[&str],
@@ -169,9 +169,9 @@ fn find_fsharp_files_recursive(
             // Skip hidden directories and excluded directories
             let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if !dir_name.starts_with('.') && !exclude_dirs.contains(&dir_name) {
-                find_fsharp_files_recursive(&path, files, exclude_dirs)?;
+                find_source_files_recursive(&path, files, exclude_dirs)?;
             }
-        } else if is_fsharp_file(&path) {
+        } else if is_supported_file(&path) {
             files.push(path);
         }
     }
@@ -184,23 +184,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_fsharp_file() {
-        assert!(is_fsharp_file(Path::new("test.fs")));
-        assert!(is_fsharp_file(Path::new("test.fsi")));
-        assert!(is_fsharp_file(Path::new("test.fsx")));
-        assert!(is_fsharp_file(Path::new("/path/to/Module.fs")));
+    fn test_is_supported_file() {
+        assert!(is_supported_file(Path::new("test.fs")));
+        assert!(is_supported_file(Path::new("test.fsi")));
+        assert!(is_supported_file(Path::new("test.fsx")));
+        assert!(is_supported_file(Path::new("test.rb")));
+        assert!(is_supported_file(Path::new("/path/to/Module.fs")));
 
-        assert!(!is_fsharp_file(Path::new("test.cs")));
-        assert!(!is_fsharp_file(Path::new("test.rs")));
-        assert!(!is_fsharp_file(Path::new("test.txt")));
-        assert!(!is_fsharp_file(Path::new("test")));
+        assert!(!is_supported_file(Path::new("test.cs")));
+        assert!(!is_supported_file(Path::new("test.rs")));
+        assert!(!is_supported_file(Path::new("test.txt")));
+        assert!(!is_supported_file(Path::new("test")));
     }
 
     #[test]
-    fn test_find_fsharp_files() {
+    fn test_find_source_files() {
         // This test would need a temp directory with test files
         // For now, just verify the function exists and returns Ok
-        let result = find_fsharp_files(Path::new("."));
+        let result = find_source_files(Path::new("."));
         assert!(result.is_ok());
     }
 }
