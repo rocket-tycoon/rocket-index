@@ -63,52 +63,52 @@ All commands output JSON by default for easy integration. Use `--concise` for mi
 
 ```bash
 # Index the codebase (run first!)
-$ rktindex
+$ rkt index
 
 # Find definition (with optional git provenance)
-$ rktdef "PaymentService.processPayment"
-$ rktdef "PaymentService.processPayment" --git  # Include author, date, commit
+$ rkt def "PaymentService.processPayment"
+$ rkt def "PaymentService.processPayment" --git  # Include author, date, commit
 
 # Search symbols (supports wildcards)
-$ rktsymbols "User*"
-$ rktsymbols "process*" --concise
+$ rkt symbols "User*"
+$ rkt symbols "process*" --concise
 
 # Find references in a file
-$ rktrefs "src/Services.fs"
+$ rkt refs "src/Services.fs"
 ```
 
 ### Dependency Analysis
 
 ```bash
 # Spider forward: what does this symbol depend on?
-$ rktspider "Program.main" -d 5
+$ rkt spider "Program.main" -d 5
 
 # Spider reverse: what depends on this symbol? (impact analysis)
-$ rktspider "validateInput" --reverse -d 3
+$ rkt spider "validateInput" --reverse -d 3
 
 # Find direct callers (single-level reverse spider)
-$ rktcallers "PaymentService.processPayment"
+$ rkt callers "PaymentService.processPayment"
 ```
 
 ### Git Integration
 
 ```bash
 # Git blame for a specific line
-$ rktblame "src/Services.fs:42"
+$ rkt blame "src/Services.fs:42"
 
 # Git history for a symbol
-$ rkthistory "PaymentService"
+$ rkt history "PaymentService"
 ```
 
 ### Diagnostics
 
 ```bash
 # Check index health
-$ rktdoctor
+$ rkt doctor
 
 # Set up editor integrations
-$ rktsetup claude  # Interactive skill selection
-$ rktsetup cursor  # Creates .cursor/rules
+$ rkt setup claude  # Interactive skill selection
+$ rkt setup cursor  # Creates .cursor/rules
 ```
 
 ### Output Modes
