@@ -1849,9 +1849,21 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
 
     let mut created_files = Vec::new();
 
-    // Ask about skills installation (interactive mode only, when connected to a terminal)
+    // Always install the rocketindex skill (core functionality)
+    let skills_dir = cwd.join(".claude").join("skills");
+    if let Some(rocketindex_skill) = skills::SKILLS.iter().find(|s| s.name == "rocketindex") {
+        let skill_dir = skills_dir.join(rocketindex_skill.name);
+        std::fs::create_dir_all(&skill_dir)?;
+        let skill_path = skill_dir.join("SKILL.md");
+        std::fs::write(&skill_path, rocketindex_skill.content)?;
+        created_files.push(skill_path.display().to_string());
+        if !quiet && dialoguer::console::Term::stderr().is_term() {
+            println!("Installed: RocketIndex skill");
+        }
+    }
+
+    // Ask about optional skills (interactive mode only)
     // Note: We check is_term() first, then only skip if --quiet was passed
-    // The --format flag doesn't affect interactivity - use --quiet to suppress prompts
     if !quiet && dialoguer::console::Term::stderr().is_term() {
         // Detect primary language
         let detected_language = detect_primary_language(cwd);
@@ -1859,23 +1871,26 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
             println!("Detected: {} project", lang);
         }
 
-        // Build the selection items for skills
-        let items: Vec<String> = skills::SKILLS
+        // Build the selection items for optional skills (exclude rocketindex - already installed)
+        let optional_skills: Vec<_> = skills::SKILLS
+            .iter()
+            .filter(|s| s.name != "rocketindex")
+            .collect();
+
+        let items: Vec<String> = optional_skills
             .iter()
             .map(|s| format!("{} - {}", s.display_name, s.description))
             .collect();
 
         let selections = MultiSelect::new()
-            .with_prompt("Install skills? (space to select, enter to confirm)")
+            .with_prompt("Install additional skills? (space to select, enter to confirm)")
             .items(&items)
             .interact_opt()?;
 
         if let Some(selected) = selections {
             if !selected.is_empty() {
-                let skills_dir = cwd.join(".claude").join("skills");
-
                 for idx in selected {
-                    let skill = &skills::SKILLS[idx];
+                    let skill = optional_skills[idx];
                     let skill_dir = skills_dir.join(skill.name);
                     std::fs::create_dir_all(&skill_dir)?;
 
