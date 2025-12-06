@@ -1951,6 +1951,135 @@ Run these in your terminal:
         }
     }
 
+    // Update CLAUDE.md if it exists
+    let claude_md_path = cwd.join("CLAUDE.md");
+    if claude_md_path.exists() {
+        let claude_content = std::fs::read_to_string(&claude_md_path).unwrap_or_default();
+        let rocketindex_note = "**Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.\n   Run `rkt index` to build the index. See AGENTS.md for workflow details.\n";
+
+        // Only add if not already present
+        if !claude_content.contains("RocketIndex") {
+            // Find insertion point after the title/header
+            let updated = if let Some(pos) = claude_content.find("\n\n") {
+                format!(
+                    "{}\n\n{}\n{}",
+                    &claude_content[..pos],
+                    rocketindex_note,
+                    &claude_content[pos + 2..]
+                )
+            } else {
+                format!("{}\n\n{}", claude_content, rocketindex_note)
+            };
+            std::fs::write(&claude_md_path, updated)?;
+            if !quiet && format != OutputFormat::Json {
+                println!("  Updated: CLAUDE.md");
+            }
+        }
+    }
+
+    // Create/update AGENTS.md with RocketIndex section
+    let agents_md_path = cwd.join("AGENTS.md");
+    let agents_section = r#"## Code Navigation with RocketIndex
+
+This project uses **RocketIndex** (`rkt`) for fast, token-efficient code navigation.
+
+### Quick Start
+
+```bash
+rkt index                    # Build/update the index (run first!)
+rkt doctor                   # Check index health
+```
+
+### Essential Commands
+
+| Command | Purpose | When to Use |
+|---------|---------|-------------|
+| `rkt def "Symbol"` | Find definition | Looking for where something is defined |
+| `rkt callers "Symbol"` | Find all callers | **Before refactoring** - understand impact |
+| `rkt spider "Entry" -d 3` | Dependency graph | Understanding what code depends on |
+| `rkt symbols "pattern*"` | Search symbols | Fuzzy search (supports wildcards) |
+
+### Workflow Rules
+
+- ✅ **Always run `rkt callers`** before modifying shared code
+- ✅ Use `--concise` flag to reduce output tokens
+- ✅ Use `--format json` for programmatic parsing (default)
+- ✅ Run `rkt index` after significant file changes
+- ❌ Don't grep for definitions - use `rkt def`
+- ❌ Don't read files to find callers - use `rkt callers`
+
+### Best Practices
+
+1. **Impact Analysis First**: Before changing a function, run `rkt callers` to see what will break
+2. **Navigate, Don't Search**: Use `rkt def` instead of grep/ripgrep for definitions
+3. **Spider for Context**: Use `rkt spider` to understand dependencies before refactoring
+4. **Efficient Queries**: Use `--concise` to minimize token usage
+
+### Storage
+
+Index stored in `.rocketindex/index.db` (add to .gitignore)
+"#;
+
+    let agents_content = std::fs::read_to_string(&agents_md_path).unwrap_or_default();
+    if !agents_content.contains("RocketIndex") {
+        if agents_content.is_empty() {
+            // Create new AGENTS.md
+            let new_content = format!("# Agent Instructions\n\n{}", agents_section);
+            std::fs::write(&agents_md_path, new_content)?;
+            created_files.push(agents_md_path.display().to_string());
+            if !quiet && format != OutputFormat::Json {
+                println!("  Created: AGENTS.md");
+            }
+        } else {
+            // Append to existing
+            let updated = format!("{}\n\n{}", agents_content.trim_end(), agents_section);
+            std::fs::write(&agents_md_path, updated)?;
+            if !quiet && format != OutputFormat::Json {
+                println!("  Updated: AGENTS.md");
+            }
+        }
+    }
+
+    // Create .github/copilot-instructions.md for GitHub Copilot
+    let github_dir = cwd.join(".github");
+    let copilot_path = github_dir.join("copilot-instructions.md");
+    if !copilot_path.exists() {
+        std::fs::create_dir_all(&github_dir)?;
+        let copilot_content = r#"# GitHub Copilot Instructions
+
+## Code Navigation
+
+This project uses **RocketIndex** for code navigation. Use these commands instead of searching:
+
+```bash
+rkt index                    # Build index (run first)
+rkt def "Symbol"             # Find definition
+rkt callers "Symbol"         # Find callers (impact analysis)
+rkt spider "Entry" -d 3      # Dependency graph
+rkt symbols "pattern*"       # Search symbols
+```
+
+## Key Rules
+
+- **Before refactoring**: Always run `rkt callers` to understand impact
+- **Finding definitions**: Use `rkt def`, not grep
+- **Use `--concise`**: Reduces output for token efficiency
+- **Index location**: `.rocketindex/index.db`
+
+## Workflow
+
+1. Run `rkt index` to ensure index is current
+2. Use `rkt callers` before modifying shared code
+3. Use `rkt spider` to understand dependencies
+4. Use `rkt def` to navigate to definitions
+"#;
+        std::fs::write(&copilot_path, copilot_content)?;
+        created_files.push(copilot_path.display().to_string());
+        if !quiet && format != OutputFormat::Json {
+            println!("  Created: .github/copilot-instructions.md");
+        }
+    }
+
     if format == OutputFormat::Json {
         println!(
             "{}",
