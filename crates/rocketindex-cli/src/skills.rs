@@ -100,7 +100,7 @@ What becomes easier or more difficult?
 
 ## Code Navigation
 
-Use `rkt` for code relationships:
+Use `.rocketindex/AGENTS.md` for quick reference, or `rkt` commands directly:
 - `rkt def` - Jump to definitions
 - `rkt callers` - Check usage before modifying shared code
 - `rkt spider` - Map dependency graphs before changes
@@ -176,7 +176,7 @@ Describe [Component]
 
 ## Code Navigation
 
-For code navigation, use the **rocketindex** skill. Key commands for QA:
+For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** skill. Key commands:
 - `rkt symbols "*Test*"` - Find existing tests
 - `rkt callers` - Find what needs testing when a function changes
 
@@ -265,7 +265,7 @@ Then [expected result]
 
 ## Code Navigation
 
-For code navigation, use the **rocketindex** skill. Key commands for PMs:
+For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** skill. Key commands:
 - `rkt symbols` - Understand existing implementation scope
 - `rkt spider` - Map feature boundaries
 
@@ -355,7 +355,7 @@ process(email)              # Email type guarantees validity
 
 ## Code Navigation
 
-For code navigation, use the **rocketindex** skill. Key commands for security:
+For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** skill. Key commands:
 - `rkt symbols "*password*"` - Find sensitive code
 - `rkt spider` - Trace data flow from entry points
 - `rkt callers` - Verify auth functions are called correctly
@@ -464,7 +464,7 @@ log.info("Processed payment of $50.00 for user 123")
 
 ## Code Navigation
 
-Use `rkt` for reliability analysis:
+For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** skill. Key commands:
 - `rkt spider --reverse` - Trace error propagation / stacktrace analysis
 - `rkt symbols "*Error*"` - Find error types and handlers
 - `rkt callers` - Map hot paths, audit logging usage
@@ -494,8 +494,10 @@ description: Code navigation and relationship lookup. Use rkt for finding defini
 ---
 
 # RocketIndex - Code Navigation
-
-RocketIndex (`rkt`) provides fast, indexed lookups for code relationships.
+ 
+ RocketIndex (`rkt`) provides fast, indexed lookups for code relationships.
+ 
+ **See `.rocketindex/AGENTS.md` for a quick reference of commands.**
 
 ## When to Use RocketIndex
 
