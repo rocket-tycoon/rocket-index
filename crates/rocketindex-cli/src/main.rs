@@ -2015,7 +2015,9 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
         }
     }
 
-    if format == OutputFormat::Json {
+    // Use text output if interactive (terminal), JSON only if explicitly requested or non-interactive
+    let is_interactive = dialoguer::console::Term::stderr().is_term();
+    if format == OutputFormat::Json && !is_interactive {
         println!(
             "{}",
             serde_json::json!({
