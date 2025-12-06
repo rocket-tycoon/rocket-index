@@ -74,14 +74,14 @@ fn blame_command_shows_commit_info() -> TestResult {
     )?;
 
     // Build index
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", "."])
         .assert()
         .success();
 
     // Test blame
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["blame", "App.hello", "--format", "text"])
         .assert()
@@ -110,14 +110,14 @@ fn history_command_shows_log() -> TestResult {
     )?;
 
     // Build index
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", "."])
         .assert()
         .success();
 
     // Test history
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["history", "App.hello", "--format", "text"])
         .assert()
@@ -139,14 +139,14 @@ fn def_git_flag_shows_provenance() -> TestResult {
     )?;
 
     // Build index
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", "."])
         .assert()
         .success();
 
     // Test def --git
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["def", "App.hello", "--git", "--format", "text"])
         .assert()

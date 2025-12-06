@@ -55,7 +55,7 @@ fn build_creates_sqlite_index_with_metadata() -> TestResult {
     let workspace = SampleWorkspace::new("BuildSmoke")?;
     workspace.write_entry_file()?;
 
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
@@ -77,13 +77,13 @@ fn def_command_reads_from_sqlite_index() -> TestResult {
     let workspace = SampleWorkspace::new("DefinitionSmoke")?;
     workspace.write_entry_file()?;
 
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["def", "DefinitionSmoke.hello", "--format", "text"])
         .assert()
@@ -162,7 +162,7 @@ fn multi_file_project_indexes_all_symbols() -> TestResult {
     let workspace = MultiFileWorkspace::new()?;
 
     // Build the index
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
@@ -178,14 +178,14 @@ fn symbol_search_finds_types_and_functions() -> TestResult {
     let workspace = MultiFileWorkspace::new()?;
 
     // Build the index
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
     // Search for User type
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["symbols", "*User*", "--format", "text"])
         .assert()
@@ -194,7 +194,7 @@ fn symbol_search_finds_types_and_functions() -> TestResult {
         .stdout(contains("Record"));
 
     // Search for functions
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["symbols", "*process*", "--format", "text"])
         .assert()
@@ -209,14 +209,14 @@ fn def_resolves_across_modules() -> TestResult {
     let workspace = MultiFileWorkspace::new()?;
 
     // Build the index
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
     // Look up a function in Services that uses Domain
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args([
             "def",
@@ -238,14 +238,14 @@ fn spider_traverses_dependencies() -> TestResult {
     let workspace = MultiFileWorkspace::new()?;
 
     // Build the index
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
     // Spider from main should find dependencies
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args([
             "spider",
@@ -268,7 +268,7 @@ fn spider_reverse_finds_callers() -> TestResult {
     let workspace = MultiFileWorkspace::new()?;
 
     // Build the index
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
@@ -277,7 +277,7 @@ fn spider_reverse_finds_callers() -> TestResult {
     // Reverse spider from getUserById should find the local binding 'user'
     // Note: The indexer identifies the local variable 'user' as the caller because
     // it's the closest symbol definition to the call site.
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args([
             "spider",
@@ -300,14 +300,14 @@ fn callers_command_finds_direct_callers() -> TestResult {
     let workspace = MultiFileWorkspace::new()?;
 
     // Build the index
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
     // Callers of processOrder should include the local binding 'order'
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["callers", "MyApp.Services.processOrder", "--format", "text"])
         .assert()
@@ -323,7 +323,7 @@ fn json_output_format_works() -> TestResult {
     let workspace = MultiFileWorkspace::new()?;
 
     // Build with JSON output
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--json"])
         .assert()
@@ -332,7 +332,7 @@ fn json_output_format_works() -> TestResult {
         .stdout(contains("\"symbols\""));
 
     // Symbols with JSON output
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["symbols", "*User*", "--json"])
         .assert()
@@ -349,14 +349,14 @@ fn incremental_indexing_updates_symbols() -> TestResult {
     let file_path = workspace.write_entry_file()?;
 
     // Initial build
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
     // Verify initial state
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["def", "Incremental.hello", "--format", "text"])
         .assert()
@@ -368,7 +368,7 @@ fn incremental_indexing_updates_symbols() -> TestResult {
     fs::write(&file_path, new_content)?;
 
     // Rebuild (incremental)
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
@@ -377,7 +377,7 @@ fn incremental_indexing_updates_symbols() -> TestResult {
     // Verify old symbol is gone (or at least new one is present)
     // Note: In a real incremental indexer, we'd want to ensure 'hello' is removed.
     // For now, let's just check that 'goodbye' is found.
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["def", "Incremental.goodbye", "--format", "text"])
         .assert()
@@ -403,7 +403,7 @@ fn syntax_error_is_handled_gracefully() -> TestResult {
     // We expect success exit code because one bad file shouldn't stop the world in many tools,
     // but let's see what the current implementation does.
     // If it fails, we'll adjust expectation.
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
@@ -417,7 +417,7 @@ fn missing_file_does_not_crash_indexer() -> TestResult {
     let workspace = SampleWorkspace::new("MissingFile")?;
     // Don't write any files, but try to build
 
-    Command::cargo_bin("rocketindex")?
+    Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["build", "--root", ".", "--format", "text"])
         .assert()
