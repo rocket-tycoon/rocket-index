@@ -139,3 +139,91 @@ fn setup_cursor_creates_rules() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn setup_copilot_creates_correct_files() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Run setup copilot
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "copilot", "--quiet"])
+        .assert()
+        .success();
+
+    // Verify .github/copilot-instructions.md creation
+    workspace.assert_exists(".github/copilot-instructions.md");
+    let copilot = workspace.read_file(".github/copilot-instructions.md")?;
+    assert!(
+        copilot.contains("RocketIndex Code Navigation"),
+        "Copilot instructions should contain RocketIndex section"
+    );
+    assert!(
+        copilot.contains("rkt def"),
+        "Copilot instructions should contain rkt commands"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn setup_copilot_updates_existing_file() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Create existing copilot-instructions.md
+    fs::create_dir_all(workspace.path(".github"))?;
+    fs::write(
+        workspace.path(".github/copilot-instructions.md"),
+        "# Copilot Instructions\n\nExisting content about my project.\n",
+    )?;
+
+    // Run setup copilot
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "copilot", "--quiet"])
+        .assert()
+        .success();
+
+    // Verify content was appended, not replaced
+    let copilot = workspace.read_file(".github/copilot-instructions.md")?;
+    assert!(
+        copilot.contains("Existing content about my project"),
+        "Original content should be preserved"
+    );
+    assert!(
+        copilot.contains("RocketIndex Code Navigation"),
+        "RocketIndex section should be added"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn setup_copilot_idempotent() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Run setup copilot twice
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "copilot", "--quiet"])
+        .assert()
+        .success();
+
+    let first_content = workspace.read_file(".github/copilot-instructions.md")?;
+
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "copilot", "--quiet"])
+        .assert()
+        .success();
+
+    let second_content = workspace.read_file(".github/copilot-instructions.md")?;
+
+    // Content should be identical - no duplicate sections
+    assert_eq!(
+        first_content, second_content,
+        "Running setup copilot twice should produce identical content"
+    );
+
+    Ok(())
+}

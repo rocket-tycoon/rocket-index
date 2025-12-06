@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::languages::{fsharp, python, ruby, rust};
+use crate::languages::{fsharp, go, python, ruby, rust};
 use crate::{Location, Reference, Symbol};
 
 /// A syntax error detected during parsing.
@@ -71,6 +71,7 @@ pub fn extract_symbols(file: &Path, source: &str, max_depth: usize) -> ParseResu
         "rb" => ruby::RubyParser.extract_symbols(file, source, max_depth),
         "py" | "pyi" => python::parser::PythonParser.extract_symbols(file, source, max_depth),
         "rs" => rust::RustParser.extract_symbols(file, source, max_depth),
+        "go" => go::GoParser.extract_symbols(file, source, max_depth),
         _ => {
             tracing::warn!("Unsupported file extension: {}", extension);
             ParseResult::default()
@@ -94,7 +95,7 @@ pub fn node_to_location(file: &Path, node: &tree_sitter::Node) -> Location {
 /// Find a child node by its kind.
 /// Uses cursor-based iteration for O(n) instead of O(n²) performance.
 pub fn find_child_by_kind<'a>(
-    node: &'a tree_sitter::Node<'a>,
+    node: &tree_sitter::Node<'a>,
     kind: &str,
 ) -> Option<tree_sitter::Node<'a>> {
     let mut cursor = node.walk();

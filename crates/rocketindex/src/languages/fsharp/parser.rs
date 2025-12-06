@@ -1,49 +1,183 @@
 //! Symbol extraction from F# source files using tree-sitter.
 
+use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{LanguageParser, ParseResult, ParseWarning, SyntaxError};
 use crate::{Location, Reference, Symbol, SymbolKind, Visibility};
 
+// Thread-local parser reuse - avoids creating a new parser per file
+thread_local! {
+    static FSHARP_PARSER: RefCell<tree_sitter::Parser> = RefCell::new({
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_fsharp::LANGUAGE_FSHARP.into())
+            .expect("tree-sitter-fsharp grammar incompatible with tree-sitter version");
+        parser
+    });
+}
+
 pub struct FSharpParser;
 
 impl LanguageParser for FSharpParser {
     fn extract_symbols(&self, file: &Path, source: &str, max_depth: usize) -> ParseResult {
-        let mut parser = tree_sitter::Parser::new();
+        FSHARP_PARSER.with(|parser| {
+            let mut parser = parser.borrow_mut();
 
-        // Set the F# language
-        parser
-            .set_language(&tree_sitter_fsharp::LANGUAGE_FSHARP.into())
-            .expect("tree-sitter-fsharp grammar incompatible with tree-sitter version");
+            let tree = match parser.parse(source, None) {
+                Some(tree) => tree,
+                None => {
+                    tracing::warn!("Failed to parse file: {:?}", file);
+                    return ParseResult::default();
+                }
+            };
 
-        let tree = match parser.parse(source, None) {
-            Some(tree) => tree,
-            None => {
-                tracing::warn!("Failed to parse file: {:?}", file);
-                return ParseResult::default();
-            }
-        };
+            let mut result = ParseResult::default();
+            let root = tree.root_node();
 
-        let mut result = ParseResult::default();
-        let root = tree.root_node();
+            // Extract syntax errors from the tree
+            extract_syntax_errors(&root, source.as_bytes(), file, &mut result.errors);
 
-        // Extract syntax errors from the tree
-        extract_syntax_errors(&root, source.as_bytes(), file, &mut result.errors);
+            extract_recursive(
+                &root,
+                source.as_bytes(),
+                file,
+                &mut result,
+                None, // No parent module yet
+                max_depth,
+            );
 
-        extract_recursive(
-            &root,
-            source.as_bytes(),
-            file,
-            &mut result,
-            None, // No parent module yet
-            max_depth,
-        );
-
-        result
+            result
+        })
     }
 }
 
-/// Extract syntax errors from the tree-sitter parse tree.
+struct ExtractionContext<'a> {
+    source: &'a [u8],
+    file: &'a Path,
+    result: &'a mut ParseResult,
+}
+
+impl<'a> ExtractionContext<'a> {
+    fn extract_type_defn(
+        &mut self,
+        node: &tree_sitter::Node,
+        current_module: Option<&str>,
+        doc: Option<&str>,
+    ) {
+        let kind = match node.kind() {
+            "record_type_defn" => SymbolKind::Record,
+            "union_type_defn" => SymbolKind::Union,
+            "class_type_defn" | "anon_type_defn" => SymbolKind::Class,
+            "interface_type_defn" => SymbolKind::Interface,
+            "type_abbrev_defn" | "type_extension" => SymbolKind::Type,
+            _ => return,
+        };
+
+        // Process the type definition with an inline helper that keeps node references in scope
+        if let Some(type_name_node) = find_child_by_kind(node, "type_name") {
+            let name_node = type_name_node
+                .child_by_field_name("type_name")
+                .or_else(|| find_child_by_kind(&type_name_node, "identifier"))
+                .or_else(|| find_child_by_kind(&type_name_node, "long_identifier"))
+                .unwrap_or(type_name_node);
+            self.create_type_symbol(node, &name_node, kind, current_module, doc);
+        } else if let Some(name_node) = find_child_by_kind(node, "identifier") {
+            self.create_type_symbol(node, &name_node, kind, current_module, doc);
+        } else if let Some(name_node) = find_child_by_kind(node, "long_identifier") {
+            self.create_type_symbol(node, &name_node, kind, current_module, doc);
+        }
+    }
+
+    fn create_type_symbol(
+        &mut self,
+        node: &tree_sitter::Node,
+        name_node: &tree_sitter::Node,
+        kind: SymbolKind,
+        current_module: Option<&str>,
+        doc: Option<&str>,
+    ) {
+        let Ok(name) = name_node.utf8_text(self.source) else {
+            return;
+        };
+
+        let trimmed = name.trim();
+        let attrs = extract_attributes(node, self.source);
+        let interfaces = extract_interfaces(node, self.source);
+
+        let signature = match kind {
+            SymbolKind::Record => extract_record_signature(node, self.source),
+            SymbolKind::Union => extract_union_signature(node, self.source),
+            _ => None,
+        };
+
+        let symbol = Symbol {
+            name: trimmed.to_string(),
+            qualified: qualified_name(trimmed, current_module),
+            kind,
+            location: node_to_location(self.file, name_node),
+            visibility: Visibility::Public,
+            language: "fsharp".to_string(),
+            parent: None,
+            mixins: None,
+            attributes: if attrs.is_empty() { None } else { Some(attrs) },
+            implements: if interfaces.is_empty() {
+                None
+            } else {
+                Some(interfaces)
+            },
+            doc: doc.map(|d| d.to_string()),
+            signature,
+        };
+        self.result.symbols.push(symbol);
+
+        if matches!(kind, SymbolKind::Class | SymbolKind::Interface) {
+            self.extract_members(node, current_module, 0);
+        }
+    }
+
+    fn extract_members(
+        &mut self,
+        node: &tree_sitter::Node,
+        current_module: Option<&str>,
+        depth: usize,
+    ) {
+        if depth > MAX_HELPER_DEPTH {
+            return;
+        }
+
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i) else {
+                continue;
+            };
+
+            if child.kind() == "member_defn" {
+                if let Some(name_node) = find_child_by_kind(&child, "identifier") {
+                    if let Ok(name) = name_node.utf8_text(self.source) {
+                        let trimmed = name.trim();
+                        let symbol = Symbol {
+                            name: trimmed.to_string(),
+                            qualified: qualified_name(trimmed, current_module),
+                            kind: SymbolKind::Member,
+                            location: node_to_location(self.file, &name_node),
+                            visibility: extract_visibility(&child, self.source),
+                            language: "fsharp".to_string(),
+                            parent: None,
+                            mixins: None,
+                            attributes: None,
+                            implements: None,
+                            doc: None,
+                            signature: None,
+                        };
+                        self.result.symbols.push(symbol);
+                    }
+                }
+            }
+            self.extract_members(&child, current_module, depth + 1);
+        }
+    }
+}
+
 fn extract_syntax_errors(
     node: &tree_sitter::Node,
     source: &[u8],
@@ -440,133 +574,12 @@ fn extract_type_defn(
     current_module: Option<&str>,
     doc: Option<&str>,
 ) {
-    let kind = match node.kind() {
-        "record_type_defn" => SymbolKind::Record,
-        "union_type_defn" => SymbolKind::Union,
-        "class_type_defn" | "anon_type_defn" => SymbolKind::Class, // anon_type_defn = class with primary constructor
-        "interface_type_defn" => SymbolKind::Interface,
-        "type_abbrev_defn" | "type_extension" => SymbolKind::Type,
-        _ => return,
+    let mut ctx = ExtractionContext {
+        source,
+        file,
+        result,
     };
-
-    // Find the type name - structure is:
-    // record_type_defn > type_name > (identifier or type_name: identifier)
-    //
-    // We try to find the innermost identifier within type_name children
-    if let Some(type_name_node) = find_child_by_kind(node, "type_name") {
-        // Look for identifier inside type_name, or use type_name's inner type_name field
-        let name_node = type_name_node
-            .child_by_field_name("type_name") // Some grammars nest: type_name > type_name: identifier
-            .or_else(|| find_child_by_kind(&type_name_node, "identifier"))
-            .or_else(|| find_child_by_kind(&type_name_node, "long_identifier"))
-            .unwrap_or(type_name_node);
-
-        if let Ok(name) = name_node.utf8_text(source) {
-            let trimmed = name.trim();
-            let attrs = extract_attributes(node, source);
-            let interfaces = extract_interfaces(node, source);
-            let symbol = Symbol {
-                name: trimmed.to_string(),
-                qualified: qualified_name(trimmed, current_module),
-                kind,
-                location: node_to_location(file, &name_node),
-                visibility: Visibility::Public,
-                language: "fsharp".to_string(),
-                parent: None,
-                mixins: None,
-                attributes: if attrs.is_empty() { None } else { Some(attrs) },
-                implements: if interfaces.is_empty() {
-                    None
-                } else {
-                    Some(interfaces)
-                },
-                doc: doc.map(|d| d.to_string()),
-                signature: None,
-            };
-            result.symbols.push(symbol);
-
-            if matches!(kind, SymbolKind::Class | SymbolKind::Interface) {
-                extract_members(node, source, file, result, current_module, 0);
-            }
-            return;
-        }
-    }
-
-    // Fallback: try to find identifier directly on node
-    if let Some(name_node) = find_child_by_kind(node, "identifier")
-        .or_else(|| find_child_by_kind(node, "long_identifier"))
-    {
-        if let Ok(name) = name_node.utf8_text(source) {
-            let trimmed = name.trim();
-            let attrs = extract_attributes(node, source);
-            let interfaces = extract_interfaces(node, source);
-            let symbol = Symbol {
-                name: trimmed.to_string(),
-                qualified: qualified_name(trimmed, current_module),
-                kind,
-                location: node_to_location(file, &name_node),
-                visibility: Visibility::Public,
-                language: "fsharp".to_string(),
-                parent: None,
-                mixins: None,
-                attributes: if attrs.is_empty() { None } else { Some(attrs) },
-                implements: if interfaces.is_empty() {
-                    None
-                } else {
-                    Some(interfaces)
-                },
-                doc: doc.map(|d| d.to_string()),
-                signature: None,
-            };
-            result.symbols.push(symbol);
-        }
-    }
-
-    if matches!(kind, SymbolKind::Class | SymbolKind::Interface) {
-        extract_members(node, source, file, result, current_module, 0);
-    }
-}
-
-fn extract_members(
-    node: &tree_sitter::Node,
-    source: &[u8],
-    file: &Path,
-    result: &mut ParseResult,
-    current_module: Option<&str>,
-    depth: usize,
-) {
-    // Prevent stack overflow on deeply nested class hierarchies
-    if depth > MAX_HELPER_DEPTH {
-        return;
-    }
-
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "member_defn" {
-                if let Some(name_node) = find_child_by_kind(&child, "identifier") {
-                    if let Ok(name) = name_node.utf8_text(source) {
-                        let trimmed = name.trim();
-                        let symbol = Symbol {
-                            name: trimmed.to_string(),
-                            qualified: qualified_name(trimmed, current_module),
-                            kind: SymbolKind::Member,
-                            location: node_to_location(file, &name_node),
-                            visibility: extract_visibility(&child, source),
-                            language: "fsharp".to_string(),
-                            parent: None,
-                            mixins: None,
-                            attributes: None,
-                            implements: None,
-                            doc: None,
-                            signature: None,
-                        };
-                        result.symbols.push(symbol);
-                    }
-                }
-            }
-            extract_members(&child, source, file, result, current_module, depth + 1);
-        }
-    }
+    ctx.extract_type_defn(node, current_module, doc);
 }
 
 /// Extract type signature from a function or value definition.
@@ -619,6 +632,76 @@ fn extract_signature(node: &tree_sitter::Node, source: &[u8]) -> Option<String> 
         Some(sig)
     }
 }
+
+/// Extract record type signature showing field types.
+/// Returns signatures like "{ Name: string; Age: int }"
+fn extract_record_signature(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let fields = find_child_by_kind(node, "record_fields")?;
+    let mut field_sigs = Vec::new();
+
+    for i in 0..fields.child_count() {
+        if let Some(field) = fields.child(i) {
+            if field.kind() == "record_field" {
+                let field_name = find_child_by_kind(&field, "identifier");
+                // Type can be simple_type or postfix_type (e.g., "string option")
+                let field_type = find_child_by_kind(&field, "simple_type")
+                    .or_else(|| find_child_by_kind(&field, "postfix_type"));
+
+                if let (Some(name_node), Some(type_node)) = (field_name, field_type) {
+                    if let (Ok(name), Ok(type_text)) =
+                        (name_node.utf8_text(source), type_node.utf8_text(source))
+                    {
+                        field_sigs.push(format!("{}: {}", name.trim(), type_text.trim()));
+                    }
+                }
+            }
+        }
+    }
+
+    if field_sigs.is_empty() {
+        None
+    } else {
+        Some(format!("{{ {} }}", field_sigs.join("; ")))
+    }
+}
+
+/// Extract union type signature showing case types.
+/// Returns signatures like "| Some of 'T | None"
+fn extract_union_signature(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let cases_node = find_child_by_kind(node, "union_type_cases")?;
+    let mut cases = Vec::new();
+
+    for i in 0..cases_node.child_count() {
+        if let Some(case) = cases_node.child(i) {
+            if case.kind() == "union_type_case" {
+                if let Some(name_node) = find_child_by_kind(&case, "identifier") {
+                    if let Ok(name) = name_node.utf8_text(source) {
+                        // Check for "of" clause with type fields
+                        let type_part = find_child_by_kind(&case, "union_type_fields")
+                            .and_then(|fields| fields.utf8_text(source).ok())
+                            .map(|t| format!(" of {}", t.trim()))
+                            .unwrap_or_default();
+
+                        cases.push(format!("{}{}", name.trim(), type_part));
+                    }
+                }
+            }
+        }
+    }
+
+    if cases.is_empty() {
+        None
+    } else {
+        Some(
+            cases
+                .iter()
+                .map(|c| format!("| {}", c))
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    }
+}
+
 fn handle_function_or_value_defn(
     node: &tree_sitter::Node,
     source: &[u8],
@@ -1150,6 +1233,111 @@ let noType x y = x + y
     }
 
     #[test]
+    fn extracts_record_signature() {
+        let source = r#"
+type Person = {
+    Name: string
+    Age: int
+    Email: string option
+}
+"#;
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
+
+        let person = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Person")
+            .expect("Person should be found");
+
+        assert_eq!(person.kind, SymbolKind::Record);
+        let sig = person
+            .signature
+            .as_ref()
+            .expect("Record should have signature");
+        assert!(
+            sig.contains("Name: string"),
+            "Should contain Name field: {}",
+            sig
+        );
+        assert!(
+            sig.contains("Age: int"),
+            "Should contain Age field: {}",
+            sig
+        );
+        assert!(
+            sig.contains("Email: string option"),
+            "Should contain Email field: {}",
+            sig
+        );
+    }
+
+    #[test]
+    fn extracts_union_signature() {
+        let source = r#"
+type Option<'T> =
+    | Some of 'T
+    | None
+"#;
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
+
+        let option = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Option")
+            .expect("Option should be found");
+
+        assert_eq!(option.kind, SymbolKind::Union);
+        let sig = option
+            .signature
+            .as_ref()
+            .expect("Union should have signature");
+        assert!(
+            sig.contains("| Some of 'T"),
+            "Should contain Some case: {}",
+            sig
+        );
+        assert!(sig.contains("| None"), "Should contain None case: {}", sig);
+    }
+
+    #[test]
+    fn extracts_simple_union_signature() {
+        let source = r#"
+type Status =
+    | Active
+    | Inactive
+    | Pending
+"#;
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
+
+        let status = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Status")
+            .expect("Status should be found");
+
+        assert_eq!(status.kind, SymbolKind::Union);
+        let sig = status
+            .signature
+            .as_ref()
+            .expect("Union should have signature");
+        assert!(
+            sig.contains("| Active"),
+            "Should contain Active case: {}",
+            sig
+        );
+        assert!(
+            sig.contains("| Inactive"),
+            "Should contain Inactive case: {}",
+            sig
+        );
+        assert!(
+            sig.contains("| Pending"),
+            "Should contain Pending case: {}",
+            sig
+        );
+    }
+
+    #[test]
     #[ignore] // Debug test - run with: cargo test debug_type_signature_ast -- --ignored --nocapture
     fn debug_type_signature_ast() {
         let source = r#"
@@ -1209,6 +1397,46 @@ type Derived() =
                 indent_str,
                 node.kind(),
                 node.byte_range(),
+                short_text.replace("\n", "\\n")
+            );
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    print_tree(&child, source, indent + 1);
+                }
+            }
+        }
+
+        print_tree(&tree.root_node(), source, 0);
+    }
+
+    #[test]
+    #[ignore] // Debug test - run with: cargo test debug_record_ast -- --ignored --nocapture
+    fn debug_record_ast() {
+        let source = r#"
+type Person = {
+    Name: string
+    Age: int
+    Email: string option
+}
+
+type Option<'T> =
+    | Some of 'T
+    | None
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_fsharp::LANGUAGE_FSHARP.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        fn print_tree(node: &tree_sitter::Node, source: &str, indent: usize) {
+            let indent_str = "  ".repeat(indent);
+            let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+            let short_text = if text.len() > 50 { &text[..50] } else { text };
+            println!(
+                "{}[{}] {:?}",
+                indent_str,
+                node.kind(),
                 short_text.replace("\n", "\\n")
             );
             for i in 0..node.child_count() {

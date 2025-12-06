@@ -1,0 +1,810 @@
+//! Symbol extraction from Go source files using tree-sitter.
+
+use std::cell::RefCell;
+use std::path::Path;
+
+use crate::parse::{find_child_by_kind, node_to_location, LanguageParser, ParseResult};
+use crate::{Symbol, SymbolKind, Visibility};
+
+// Thread-local parser reuse - avoids creating a new parser per file
+thread_local! {
+    static GO_PARSER: RefCell<tree_sitter::Parser> = RefCell::new({
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_go::LANGUAGE.into())
+            .expect("tree-sitter-go grammar incompatible with tree-sitter version");
+        parser
+    });
+}
+
+pub struct GoParser;
+
+impl LanguageParser for GoParser {
+    fn extract_symbols(&self, file: &Path, source: &str, max_depth: usize) -> ParseResult {
+        GO_PARSER.with(|parser| {
+            let mut parser = parser.borrow_mut();
+
+            let tree = match parser.parse(source, None) {
+                Some(tree) => tree,
+                None => {
+                    tracing::warn!("Failed to parse file: {:?}", file);
+                    return ParseResult::default();
+                }
+            };
+
+            let mut result = ParseResult::default();
+            let root = tree.root_node();
+
+            // Extract package name first for qualified names
+            let package_name = extract_package_name(&root, source);
+
+            extract_recursive(
+                &root,
+                source.as_bytes(),
+                file,
+                &mut result,
+                package_name.as_deref(),
+                max_depth,
+            );
+
+            // Set module path from package
+            result.module_path = package_name;
+
+            result
+        })
+    }
+}
+
+/// Extract the package name from a source file
+fn extract_package_name(root: &tree_sitter::Node, source: &str) -> Option<String> {
+    let source_bytes = source.as_bytes();
+    for i in 0..root.child_count() {
+        if let Some(child) = root.child(i) {
+            if child.kind() == "package_clause" {
+                // Look for package_identifier child (not a named field)
+                for j in 0..child.child_count() {
+                    if let Some(pkg_id) = child.child(j) {
+                        if pkg_id.kind() == "package_identifier" {
+                            if let Ok(name) = pkg_id.utf8_text(source_bytes) {
+                                return Some(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Determine visibility based on Go's capitalization convention
+/// Exported (public) identifiers start with an uppercase letter
+fn extract_visibility(name: &str) -> Visibility {
+    if name
+        .chars()
+        .next()
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false)
+    {
+        Visibility::Public
+    } else {
+        Visibility::Private
+    }
+}
+
+/// Build a qualified name with optional package prefix
+fn qualified_name(name: &str, package: Option<&str>) -> String {
+    match package {
+        Some(pkg) => format!("{}.{}", pkg, name),
+        None => name.to_string(),
+    }
+}
+
+/// Extract doc comments from preceding comment nodes
+fn extract_doc_comments(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut docs = Vec::new();
+
+    // Look for preceding comment nodes (siblings before this node)
+    if let Some(parent) = node.parent() {
+        let mut prev_sibling = None;
+        for i in 0..parent.child_count() {
+            if let Some(child) = parent.child(i) {
+                if child.id() == node.id() {
+                    break;
+                }
+                prev_sibling = Some(child);
+            }
+        }
+
+        // Check if the previous sibling is a comment
+        if let Some(prev) = prev_sibling {
+            if prev.kind() == "comment" {
+                if let Ok(text) = prev.utf8_text(source) {
+                    let doc = text
+                        .trim_start_matches("//")
+                        .trim_start_matches("/*")
+                        .trim_end_matches("*/")
+                        .trim();
+                    if !doc.is_empty() {
+                        docs.push(doc.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if docs.is_empty() {
+        None
+    } else {
+        Some(docs.join("\n"))
+    }
+}
+
+/// Extract function/method signature
+fn extract_function_signature(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    name: &str,
+) -> Option<String> {
+    let mut sig = format!("func {}", name);
+
+    // Get parameters
+    if let Some(params) = node.child_by_field_name("parameters") {
+        if let Ok(params_text) = params.utf8_text(source) {
+            sig.push_str(params_text);
+        }
+    }
+
+    // Get return type if present
+    if let Some(result) = node.child_by_field_name("result") {
+        if let Ok(result_text) = result.utf8_text(source) {
+            sig.push(' ');
+            sig.push_str(result_text);
+        }
+    }
+
+    Some(sig)
+}
+
+/// Extract the receiver type from a method declaration
+fn extract_receiver_type(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let receiver = node.child_by_field_name("receiver")?;
+
+    // The receiver is a parameter_list, find the type inside
+    for i in 0..receiver.child_count() {
+        if let Some(child) = receiver.child(i) {
+            if child.kind() == "parameter_declaration" {
+                // Look for the type (could be pointer or value receiver)
+                if let Some(type_node) = child.child_by_field_name("type") {
+                    let type_text = type_node.utf8_text(source).ok()?;
+                    // Strip pointer prefix if present
+                    let type_name = type_text.trim_start_matches('*');
+                    return Some(type_name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract import paths from import declarations
+fn extract_imports(node: &tree_sitter::Node, source: &[u8], result: &mut ParseResult) {
+    match node.kind() {
+        "import_spec" => {
+            // Single import: import "fmt" or import alias "fmt"
+            if let Some(path_node) = node.child_by_field_name("path") {
+                if let Ok(path) = path_node.utf8_text(source) {
+                    // Remove quotes from import path
+                    let clean_path = path.trim_matches('"').to_string();
+                    result.opens.push(clean_path);
+                }
+            }
+        }
+        "import_spec_list" => {
+            // Grouped imports: import ( "fmt" \n "os" )
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "import_spec" {
+                        extract_imports(&child, source, result);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn extract_recursive(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+    package: Option<&str>,
+    max_depth: usize,
+) {
+    if max_depth == 0 {
+        return;
+    }
+
+    match node.kind() {
+        "function_declaration" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source) {
+                    let qualified = qualified_name(name, package);
+                    let visibility = extract_visibility(name);
+                    let doc = extract_doc_comments(node, source);
+                    let signature = extract_function_signature(node, source, name);
+
+                    result.symbols.push(Symbol {
+                        name: name.to_string(),
+                        qualified,
+                        kind: SymbolKind::Function,
+                        location: node_to_location(file, &name_node),
+                        visibility,
+                        language: "go".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: None,
+                        implements: None,
+                        doc,
+                        signature,
+                    });
+                }
+            }
+        }
+
+        "method_declaration" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source) {
+                    let receiver_type = extract_receiver_type(node, source);
+                    let visibility = extract_visibility(name);
+                    let doc = extract_doc_comments(node, source);
+
+                    // Build qualified name as Package.Type.Method
+                    let qualified = match (&receiver_type, package) {
+                        (Some(recv), Some(pkg)) => format!("{}.{}.{}", pkg, recv, name),
+                        (Some(recv), None) => format!("{}.{}", recv, name),
+                        (None, Some(pkg)) => format!("{}.{}", pkg, name),
+                        (None, None) => name.to_string(),
+                    };
+
+                    // Build signature with receiver
+                    let mut sig = String::from("func ");
+                    if let Some(recv) = &receiver_type {
+                        sig.push_str(&format!("({}) ", recv));
+                    }
+                    sig.push_str(name);
+                    if let Some(params) = node.child_by_field_name("parameters") {
+                        if let Ok(params_text) = params.utf8_text(source) {
+                            sig.push_str(params_text);
+                        }
+                    }
+                    if let Some(ret) = node.child_by_field_name("result") {
+                        if let Ok(ret_text) = ret.utf8_text(source) {
+                            sig.push(' ');
+                            sig.push_str(ret_text);
+                        }
+                    }
+
+                    result.symbols.push(Symbol {
+                        name: name.to_string(),
+                        qualified,
+                        kind: SymbolKind::Function,
+                        location: node_to_location(file, &name_node),
+                        visibility,
+                        language: "go".to_string(),
+                        parent: receiver_type,
+                        mixins: None,
+                        attributes: None,
+                        implements: None,
+                        doc,
+                        signature: Some(sig),
+                    });
+                }
+            }
+        }
+
+        "type_declaration" => {
+            // type_declaration contains one or more type_spec
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "type_spec" {
+                        extract_type_spec(&child, source, file, result, package, max_depth);
+                    }
+                }
+            }
+        }
+
+        "const_declaration" => {
+            // const_declaration contains one or more const_spec
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "const_spec" {
+                        extract_const_or_var_spec(
+                            &child,
+                            source,
+                            file,
+                            result,
+                            package,
+                            SymbolKind::Value,
+                        );
+                    }
+                }
+            }
+        }
+
+        "var_declaration" => {
+            // var_declaration contains one or more var_spec
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "var_spec" {
+                        extract_const_or_var_spec(
+                            &child,
+                            source,
+                            file,
+                            result,
+                            package,
+                            SymbolKind::Value,
+                        );
+                    }
+                }
+            }
+        }
+
+        "import_declaration" => {
+            // Extract imports for resolution
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    extract_imports(&child, source, result);
+                }
+            }
+        }
+
+        _ => {}
+    }
+
+    // Recurse into children
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            extract_recursive(&child, source, file, result, package, max_depth - 1);
+        }
+    }
+}
+
+/// Extract a type specification (struct, interface, or type alias)
+fn extract_type_spec(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+    package: Option<&str>,
+    max_depth: usize,
+) {
+    let name_node = match node.child_by_field_name("name") {
+        Some(n) => n,
+        None => return,
+    };
+
+    let name = match name_node.utf8_text(source) {
+        Ok(n) => n,
+        Err(_) => return,
+    };
+
+    let type_node = match node.child_by_field_name("type") {
+        Some(n) => n,
+        None => return,
+    };
+
+    let qualified = qualified_name(name, package);
+    let visibility = extract_visibility(name);
+    let doc = extract_doc_comments(node, source);
+
+    match type_node.kind() {
+        "struct_type" => {
+            result.symbols.push(Symbol {
+                name: name.to_string(),
+                qualified: qualified.clone(),
+                kind: SymbolKind::Class,
+                location: node_to_location(file, &name_node),
+                visibility,
+                language: "go".to_string(),
+                parent: None,
+                mixins: None,
+                attributes: None,
+                implements: None,
+                doc,
+                signature: None,
+            });
+
+            // Extract struct fields
+            if let Some(field_list) = find_child_by_kind(&type_node, "field_declaration_list") {
+                extract_struct_fields(&field_list, source, file, result, &qualified, max_depth);
+            }
+        }
+
+        "interface_type" => {
+            result.symbols.push(Symbol {
+                name: name.to_string(),
+                qualified: qualified.clone(),
+                kind: SymbolKind::Interface,
+                location: node_to_location(file, &name_node),
+                visibility,
+                language: "go".to_string(),
+                parent: None,
+                mixins: None,
+                attributes: None,
+                implements: None,
+                doc,
+                signature: None,
+            });
+
+            // Extract interface methods
+            for i in 0..type_node.child_count() {
+                if let Some(child) = type_node.child(i) {
+                    if child.kind() == "method_elem" {
+                        extract_interface_method(&child, source, file, result, &qualified);
+                    }
+                }
+            }
+        }
+
+        _ => {
+            // Type alias or other type definition
+            result.symbols.push(Symbol {
+                name: name.to_string(),
+                qualified,
+                kind: SymbolKind::Type,
+                location: node_to_location(file, &name_node),
+                visibility,
+                language: "go".to_string(),
+                parent: None,
+                mixins: None,
+                attributes: None,
+                implements: None,
+                doc,
+                signature: None,
+            });
+        }
+    }
+}
+
+/// Extract struct fields
+fn extract_struct_fields(
+    field_list: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+    parent_qualified: &str,
+    _max_depth: usize,
+) {
+    for i in 0..field_list.child_count() {
+        if let Some(field) = field_list.child(i) {
+            if field.kind() == "field_declaration" {
+                // A field can have multiple names: x, y int
+                if let Some(name_node) = field.child_by_field_name("name") {
+                    if let Ok(name) = name_node.utf8_text(source) {
+                        let qualified = format!("{}.{}", parent_qualified, name);
+                        let visibility = extract_visibility(name);
+
+                        result.symbols.push(Symbol {
+                            name: name.to_string(),
+                            qualified,
+                            kind: SymbolKind::Member,
+                            location: node_to_location(file, &name_node),
+                            visibility,
+                            language: "go".to_string(),
+                            parent: Some(parent_qualified.to_string()),
+                            mixins: None,
+                            attributes: None,
+                            implements: None,
+                            doc: None,
+                            signature: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Extract interface method signatures
+fn extract_interface_method(
+    method_elem: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+    parent_qualified: &str,
+) {
+    if let Some(name_node) = method_elem.child_by_field_name("name") {
+        if let Ok(name) = name_node.utf8_text(source) {
+            let qualified = format!("{}.{}", parent_qualified, name);
+            let visibility = extract_visibility(name);
+
+            // Build signature
+            let mut sig = format!("func {}", name);
+            if let Some(params) = method_elem.child_by_field_name("parameters") {
+                if let Ok(params_text) = params.utf8_text(source) {
+                    sig.push_str(params_text);
+                }
+            }
+            if let Some(ret) = method_elem.child_by_field_name("result") {
+                if let Ok(ret_text) = ret.utf8_text(source) {
+                    sig.push(' ');
+                    sig.push_str(ret_text);
+                }
+            }
+
+            result.symbols.push(Symbol {
+                name: name.to_string(),
+                qualified,
+                kind: SymbolKind::Function,
+                location: node_to_location(file, &name_node),
+                visibility,
+                language: "go".to_string(),
+                parent: Some(parent_qualified.to_string()),
+                mixins: None,
+                attributes: None,
+                implements: None,
+                doc: None,
+                signature: Some(sig),
+            });
+        }
+    }
+}
+
+/// Extract const or var specifications
+fn extract_const_or_var_spec(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+    package: Option<&str>,
+    kind: SymbolKind,
+) {
+    // const/var spec can have multiple names: x, y = 1, 2
+    if let Some(name_node) = node.child_by_field_name("name") {
+        if let Ok(name) = name_node.utf8_text(source) {
+            let qualified = qualified_name(name, package);
+            let visibility = extract_visibility(name);
+            let doc = extract_doc_comments(node, source);
+
+            result.symbols.push(Symbol {
+                name: name.to_string(),
+                qualified,
+                kind,
+                location: node_to_location(file, &name_node),
+                visibility,
+                language: "go".to_string(),
+                parent: None,
+                mixins: None,
+                attributes: None,
+                implements: None,
+                doc,
+                signature: None,
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::LanguageParser;
+
+    #[test]
+    fn extracts_go_function() {
+        let source = r#"
+package main
+
+func HelloWorld() string {
+    return "Hello, World!"
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        assert_eq!(result.symbols.len(), 1);
+        assert_eq!(result.symbols[0].name, "HelloWorld");
+        assert_eq!(result.symbols[0].qualified, "main.HelloWorld");
+        assert_eq!(result.symbols[0].kind, SymbolKind::Function);
+        assert_eq!(result.symbols[0].visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn extracts_unexported_function() {
+        let source = r#"
+package utils
+
+func helperFunc() {
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        assert_eq!(result.symbols.len(), 1);
+        assert_eq!(result.symbols[0].name, "helperFunc");
+        assert_eq!(result.symbols[0].visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn extracts_go_struct() {
+        let source = r#"
+package models
+
+type User struct {
+    ID   int
+    Name string
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        // Should have User struct + 2 fields
+        assert!(!result.symbols.is_empty());
+        let user = result.symbols.iter().find(|s| s.name == "User").unwrap();
+        assert_eq!(user.qualified, "models.User");
+        assert_eq!(user.kind, SymbolKind::Class);
+        assert_eq!(user.visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn extracts_go_interface() {
+        let source = r#"
+package io
+
+type Reader interface {
+    Read(p []byte) (n int, err error)
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        let reader = result.symbols.iter().find(|s| s.name == "Reader").unwrap();
+        assert_eq!(reader.qualified, "io.Reader");
+        assert_eq!(reader.kind, SymbolKind::Interface);
+
+        // Should also have the Read method
+        let read = result.symbols.iter().find(|s| s.name == "Read");
+        assert!(read.is_some());
+    }
+
+    #[test]
+    fn extracts_go_method() {
+        let source = r#"
+package models
+
+type User struct {
+    Name string
+}
+
+func (u *User) GetName() string {
+    return u.Name
+}
+
+func (u User) String() string {
+    return u.Name
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        let get_name = result.symbols.iter().find(|s| s.name == "GetName").unwrap();
+        assert_eq!(get_name.qualified, "models.User.GetName");
+        assert_eq!(get_name.kind, SymbolKind::Function);
+        assert_eq!(get_name.parent, Some("User".to_string()));
+
+        let string_method = result.symbols.iter().find(|s| s.name == "String").unwrap();
+        assert_eq!(string_method.qualified, "models.User.String");
+    }
+
+    #[test]
+    fn extracts_go_const() {
+        let source = r#"
+package constants
+
+const MaxSize = 100
+const minSize = 10
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        let max_size = result.symbols.iter().find(|s| s.name == "MaxSize").unwrap();
+        assert_eq!(max_size.kind, SymbolKind::Value);
+        assert_eq!(max_size.visibility, Visibility::Public);
+
+        let min_size = result.symbols.iter().find(|s| s.name == "minSize").unwrap();
+        assert_eq!(min_size.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn extracts_go_var() {
+        let source = r#"
+package globals
+
+var DefaultTimeout = 30
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        let timeout = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "DefaultTimeout")
+            .unwrap();
+        assert_eq!(timeout.kind, SymbolKind::Value);
+        assert_eq!(timeout.visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn extracts_go_imports() {
+        let source = r#"
+package main
+
+import (
+    "fmt"
+    "os"
+    "encoding/json"
+)
+
+func main() {}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        assert!(result.opens.contains(&"fmt".to_string()));
+        assert!(result.opens.contains(&"os".to_string()));
+        assert!(result.opens.contains(&"encoding/json".to_string()));
+    }
+
+    #[test]
+    fn extracts_type_alias() {
+        let source = r#"
+package types
+
+type ID int64
+type StringList []string
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        let id = result.symbols.iter().find(|s| s.name == "ID").unwrap();
+        assert_eq!(id.kind, SymbolKind::Type);
+
+        let string_list = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "StringList")
+            .unwrap();
+        assert_eq!(string_list.kind, SymbolKind::Type);
+    }
+
+    #[test]
+    fn extracts_package_name() {
+        let source = r#"
+package mypackage
+
+func Foo() {}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        assert_eq!(result.module_path, Some("mypackage".to_string()));
+    }
+
+    #[test]
+    fn handles_grouped_const_declaration() {
+        let source = r#"
+package status
+
+const (
+    StatusOK = 200
+    StatusNotFound = 404
+)
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        assert!(result.symbols.iter().any(|s| s.name == "StatusOK"));
+        assert!(result.symbols.iter().any(|s| s.name == "StatusNotFound"));
+    }
+}

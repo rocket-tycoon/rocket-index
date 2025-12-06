@@ -102,6 +102,7 @@ What becomes easier or more difficult?
 
 Use `.rocketindex/AGENTS.md` for quick reference, or `rkt` commands directly:
 - `rkt def` - Jump to definitions
+- `rkt refs` - Find all usages (more comprehensive than callers)
 - `rkt callers` - Check usage before modifying shared code
 - `rkt spider` - Map dependency graphs before changes
 
@@ -178,6 +179,7 @@ Describe [Component]
 
 For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** skill. Key commands:
 - `rkt symbols "*Test*"` - Find existing tests
+- `rkt refs "Symbol"` - Find all usages of a symbol
 - `rkt callers` - Find what needs testing when a function changes
 
 ## When to Use
@@ -358,6 +360,7 @@ process(email)              # Email type guarantees validity
 For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** skill. Key commands:
 - `rkt symbols "*password*"` - Find sensitive code
 - `rkt spider` - Trace data flow from entry points
+- `rkt refs` - Find all usages of sensitive types
 - `rkt callers` - Verify auth functions are called correctly
 
 ## When to Use
@@ -467,6 +470,7 @@ log.info("Processed payment of $50.00 for user 123")
 For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** skill. Key commands:
 - `rkt spider --reverse` - Trace error propagation / stacktrace analysis
 - `rkt symbols "*Error*"` - Find error types and handlers
+- `rkt refs` - Find all usages of error types
 - `rkt callers` - Map hot paths, audit logging usage
 
 ## When to Use
@@ -494,15 +498,28 @@ description: Code navigation and relationship lookup. Use rkt for finding defini
 ---
 
 # RocketIndex - Code Navigation
- 
+
  RocketIndex (`rkt`) provides fast, indexed lookups for code relationships.
- 
+
  **See `.rocketindex/AGENTS.md` for a quick reference of commands.**
+
+## ⚠️ Essential: Watch Mode
+
+**Always ensure `rkt watch` is running in a background terminal during coding sessions.**
+
+```bash
+# Start watch mode first (run in separate terminal, leave running)
+rkt watch
+```
+
+Without watch mode, the index becomes stale as you modify files. All `rkt` commands
+(`def`, `callers`, `spider`, etc.) will return outdated results.
 
 ## When to Use RocketIndex
 
 Use `rkt` for **code relationships and structure**:
 - Finding where a symbol is **defined** → `rkt def`
+- Finding all **usages** of a symbol → `rkt refs`
 - Finding what **calls** a function → `rkt callers`
 - Understanding **dependencies** → `rkt spider`
 - Searching for **symbols** by pattern → `rkt symbols`
@@ -527,12 +544,15 @@ rkt spider "functionToChange" -d 2  # What does it depend on?
 | Command | Purpose | Example |
 |---------|---------|---------|
 | `rkt index` | Build/update index | Run once to initialize |
+| `rkt update` | Incrementally update index | Run after git pull |
 | `rkt watch` | Auto-reindex on changes | Run in background for live updates |
 | `rkt def "Symbol"` | Find definition | `rkt def "UserService.validate"` |
-| `rkt callers "Symbol"` | Find all callers | `rkt callers "processPayment"` |
+| `rkt refs "Symbol"` | Find all references | `rkt refs "User"` |
+| `rkt callers "Symbol"` | Find direct callers | `rkt callers "processPayment"` |
 | `rkt spider "Symbol" -d N` | Dependency graph | `rkt spider "main" -d 3` |
 | `rkt spider "Symbol" -d N --reverse` | Reverse dependencies | `rkt spider "util" -d 2 --reverse` |
 | `rkt symbols "pattern*"` | Search symbols | `rkt symbols "*Service*"` |
+| `rkt subclasses "Parent"` | Find implementations | `rkt subclasses "IHandler"` |
 | `rkt blame "file:line"` | Git blame | `rkt blame "src/api.rb:42"` |
 | `rkt history "Symbol"` | Git history | `rkt history "PaymentService"` |
 | `rkt doctor` | Health check | Verify index status |
@@ -559,8 +579,8 @@ rkt spider "sharedFunction" --reverse -d 2  # Reverse dependency tree
 
 ### Finding Implementations
 ```bash
-rkt symbols "*Handler*"             # Find all handlers
-rkt callers "InterfaceMethod"       # Find implementations
+rkt subclasses "BaseClass"          # Find subclasses/implementations
+rkt refs "InterfaceName"            # Find all references (implementations + usage)
 ```
 
 ## Output Flags
@@ -574,7 +594,7 @@ rkt callers "InterfaceMethod"       # Find implementations
 
 ## Best Practices
 
-1. **Run `rkt index`** once to initialize, or `rkt watch` for live updates
+1. **Run `rkt watch`** in a background terminal (essential for AI coding sessions)
 2. **Always use `rkt callers`** before modifying functions used elsewhere
 3. **Use `--concise`** to minimize token usage
 4. **Use `rkt def`** instead of grep when looking for symbol definitions
@@ -597,12 +617,26 @@ This project uses **RocketIndex** (`rkt`) for code relationship lookups.
 
 **For full documentation, see `.claude/skills/rocketindex/SKILL.md`**
 
+### ⚠️ Essential: Start Watch Mode First
+
+**Before starting a coding session, ensure `rkt watch` is running in a background terminal:**
+
+```bash
+# Terminal 1: Start watch mode (leave running throughout session)
+rkt watch
+
+# Terminal 2: Your coding session
+```
+
+Without watch mode, the index becomes stale as files change, and all `rkt` commands will return outdated results.
+
 ### Quick Reference
 
 ```bash
-rkt index                    # Build index (run once)
-rkt watch                    # Auto-reindex on file changes (run in background)
+rkt watch                    # ⚠️ ESSENTIAL: Run first, keep running in background
+rkt index                    # Build index (only needed once, watch handles updates)
 rkt def "Symbol"             # Find where symbol is defined
+rkt refs "Symbol"            # Find all references (usages)
 rkt callers "Symbol"         # Find what calls this (impact analysis)
 rkt spider "Symbol" -d 3     # Dependency graph
 rkt symbols "pattern*"       # Search symbols
@@ -612,7 +646,8 @@ rkt symbols "pattern*"       # Search symbols
 
 Use `rkt` for **code relationships**:
 - Symbol definitions → `rkt def`
-- Finding callers/usage → `rkt callers`
+- Finding all usages → `rkt refs`
+- Finding callers/direct impact → `rkt callers`
 - Dependency graphs → `rkt spider`
 
 Use standard tools for **text operations**:

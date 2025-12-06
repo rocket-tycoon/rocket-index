@@ -113,6 +113,58 @@ fn extract_function_signature(
     Some(sig)
 }
 
+/// Extract class signature from __init__ method.
+/// Returns signatures like "(name: str, age: int)" excluding self.
+fn extract_class_signature(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    // Find the class body
+    let body = node.child_by_field_name("body")?;
+
+    // Look for __init__ method in the class body
+    for i in 0..body.child_count() {
+        if let Some(child) = body.child(i) {
+            let def_node = if child.kind() == "decorated_definition" {
+                // If decorated, find the actual function_definition inside
+                find_child_by_kind(&child, "function_definition")
+            } else if child.kind() == "function_definition" {
+                Some(child)
+            } else {
+                None
+            };
+
+            if let Some(func) = def_node {
+                if let Some(name_node) = func.child_by_field_name("name") {
+                    if let Ok(name) = name_node.utf8_text(source) {
+                        if name == "__init__" {
+                            // Get parameters
+                            if let Some(params) = func.child_by_field_name("parameters") {
+                                if let Ok(params_text) = params.utf8_text(source) {
+                                    // Remove 'self' from params
+                                    let cleaned = params_text
+                                        .trim_start_matches('(')
+                                        .trim_end_matches(')')
+                                        .split(',')
+                                        .filter(|p| !p.trim().starts_with("self"))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                        .trim()
+                                        .to_string();
+
+                                    if cleaned.is_empty() {
+                                        return Some("()".to_string());
+                                    }
+                                    return Some(format!("({})", cleaned));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Extract docstring from a function or class body
 fn extract_docstring(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
     // Find the block/body child
@@ -330,6 +382,9 @@ fn extract_definition_with_decorators(
                     // Extract docstring
                     let doc = extract_docstring(node, source);
 
+                    // Extract constructor signature from __init__
+                    let signature = extract_class_signature(node, source);
+
                     result.symbols.push(Symbol {
                         name: name.to_string(),
                         qualified: qualified.clone(),
@@ -342,7 +397,7 @@ fn extract_definition_with_decorators(
                         attributes: decorators.cloned(),
                         implements,
                         doc,
-                        signature: None,
+                        signature,
                     });
 
                     // Process class body
@@ -774,5 +829,83 @@ def test_double(input, expected):
             .unwrap()
             .iter()
             .any(|a| a.contains("pytest.mark.parametrize")));
+    }
+
+    #[test]
+    fn extracts_python_class_constructor_signature() {
+        let source = r#"
+class Person:
+    def __init__(self, name: str, age: int):
+        self.name = name
+        self.age = age
+"#;
+        let result = extract_symbols(std::path::Path::new("test.py"), source, 100);
+
+        let class_sym = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Person")
+            .expect("Should find Person");
+
+        assert_eq!(class_sym.kind, SymbolKind::Class);
+        let sig = class_sym
+            .signature
+            .as_ref()
+            .expect("Class should have signature");
+        assert!(
+            sig.contains("name: str"),
+            "Should contain name param: {}",
+            sig
+        );
+        assert!(
+            sig.contains("age: int"),
+            "Should contain age param: {}",
+            sig
+        );
+        assert!(!sig.contains("self"), "Should not contain self: {}", sig);
+    }
+
+    #[test]
+    fn extracts_python_class_empty_constructor() {
+        let source = r#"
+class Empty:
+    def __init__(self):
+        pass
+"#;
+        let result = extract_symbols(std::path::Path::new("test.py"), source, 100);
+
+        let class_sym = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Empty")
+            .expect("Should find Empty");
+
+        assert_eq!(class_sym.kind, SymbolKind::Class);
+        let sig = class_sym
+            .signature
+            .as_ref()
+            .expect("Class should have signature");
+        assert_eq!(sig, "()", "Empty constructor should be (): {}", sig);
+    }
+
+    #[test]
+    fn extracts_python_class_no_constructor() {
+        let source = r#"
+class NoInit:
+    pass
+"#;
+        let result = extract_symbols(std::path::Path::new("test.py"), source, 100);
+
+        let class_sym = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "NoInit")
+            .expect("Should find NoInit");
+
+        assert_eq!(class_sym.kind, SymbolKind::Class);
+        assert!(
+            class_sym.signature.is_none(),
+            "Class without __init__ should have no signature"
+        );
     }
 }
