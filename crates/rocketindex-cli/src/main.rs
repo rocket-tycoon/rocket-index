@@ -1947,45 +1947,7 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
     if let Some(parent) = agents_md_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let agents_section = r#"## Code Navigation with RocketIndex
-
-This project uses **RocketIndex** (`rkt`) for code relationship lookups.
-
-**For full documentation, see `.claude/skills/rocketindex/SKILL.md`**
-
-### Quick Reference
-
-```bash
-rkt index                    # Build index (run once)
-rkt watch                    # Auto-reindex on file changes (run in background)
-rkt def "Symbol"             # Find where symbol is defined
-rkt callers "Symbol"         # Find what calls this (impact analysis)
-rkt spider "Symbol" -d 3     # Dependency graph
-rkt symbols "pattern*"       # Search symbols
-```
-
-### When to Use rkt
-
-Use `rkt` for **code relationships**:
-- Symbol definitions → `rkt def`
-- Finding callers/usage → `rkt callers`
-- Dependency graphs → `rkt spider`
-
-Use standard tools for **text operations**:
-- Text search → grep/ripgrep
-- File editing → sed/your editor
-
-### Key Rule
-
-**Before modifying shared code**, always run:
-```bash
-rkt callers "functionToChange"  # What will break?
-```
-
-### Storage
-
-Index: `.rocketindex/index.db` (add to .gitignore)
-"#;
+    let agents_section = skills::get_agents_summary();
 
     let agents_content = std::fs::read_to_string(&agents_md_path).unwrap_or_default();
     if !agents_content.contains("RocketIndex") {

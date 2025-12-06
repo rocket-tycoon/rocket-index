@@ -13,6 +13,17 @@ pub struct Skill {
     pub description: &'static str,
     /// Full SKILL.md content
     pub content: &'static str,
+    /// Optional summary for AGENTS.md (only rocketindex has this)
+    pub agents_summary: Option<&'static str>,
+}
+
+/// Get the AGENTS.md summary from the rocketindex skill
+pub fn get_agents_summary() -> &'static str {
+    SKILLS
+        .iter()
+        .find(|s| s.name == "rocketindex")
+        .and_then(|s| s.agents_summary)
+        .unwrap_or("## RocketIndex\n\nUse `rkt` for code navigation.")
 }
 
 /// All available skills
@@ -76,6 +87,7 @@ For code navigation, use the **rocketindex** skill. Key commands for tech leads:
 
 This skill can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
+        agents_summary: None,
     },
     Skill {
         name: "architect",
@@ -165,6 +177,7 @@ For code navigation, use the **rocketindex** skill. Key commands for architects:
 
 This skill can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
+        agents_summary: None,
     },
     Skill {
         name: "developer",
@@ -242,6 +255,7 @@ For code navigation, use the **rocketindex** skill. Key commands for developers:
 
 This skill can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
+        agents_summary: None,
     },
     Skill {
         name: "qa-engineer",
@@ -316,6 +330,7 @@ For code navigation, use the **rocketindex** skill. Key commands for QA:
 
 This skill can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
+        agents_summary: None,
     },
     Skill {
         name: "product-manager",
@@ -404,6 +419,7 @@ For code navigation, use the **rocketindex** skill. Key commands for PMs:
 
 This skill can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
+        agents_summary: None,
     },
     Skill {
         name: "perf-engineer",
@@ -485,6 +501,7 @@ For code navigation, use the **rocketindex** skill. Key commands for perf engine
 
 This skill can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
+        agents_summary: None,
     },
     Skill {
         name: "security-engineer",
@@ -575,6 +592,7 @@ For code navigation, use the **rocketindex** skill. Key commands for security:
 
 This skill can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
+        agents_summary: None,
     },
     Skill {
         name: "sre",
@@ -657,6 +675,7 @@ For code navigation, use the **rocketindex** skill. Key commands for SREs:
 
 This skill can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
+        agents_summary: None,
     },
     Skill {
         name: "rocketindex",
@@ -763,6 +782,47 @@ Index persists across sessions - no need to rebuild each time.
 Other skills (Tech Lead, Architect, QA, etc.) reference this skill for code navigation.
 When those skills mention "use rkt" or "impact analysis", refer to the commands documented here.
 "#,
+        agents_summary: Some(
+            r#"## Code Navigation with RocketIndex
+
+This project uses **RocketIndex** (`rkt`) for code relationship lookups.
+
+**For full documentation, see `.claude/skills/rocketindex/SKILL.md`**
+
+### Quick Reference
+
+```bash
+rkt index                    # Build index (run once)
+rkt watch                    # Auto-reindex on file changes (run in background)
+rkt def "Symbol"             # Find where symbol is defined
+rkt callers "Symbol"         # Find what calls this (impact analysis)
+rkt spider "Symbol" -d 3     # Dependency graph
+rkt symbols "pattern*"       # Search symbols
+```
+
+### When to Use rkt
+
+Use `rkt` for **code relationships**:
+- Symbol definitions → `rkt def`
+- Finding callers/usage → `rkt callers`
+- Dependency graphs → `rkt spider`
+
+Use standard tools for **text operations**:
+- Text search → grep/ripgrep
+- File editing → sed/your editor
+
+### Key Rule
+
+**Before modifying shared code**, always run:
+```bash
+rkt callers "functionToChange"  # What will break?
+```
+
+### Storage
+
+Index: `.rocketindex/index.db` (add to .gitignore)
+"#,
+        ),
     },
     Skill {
         name: "technical-writer",
@@ -852,5 +912,6 @@ For code navigation, use the **rocketindex** skill. Key commands for docs:
 
 This skill can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
+        agents_summary: None,
     },
 ];
