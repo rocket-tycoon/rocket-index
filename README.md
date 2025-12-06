@@ -148,18 +148,14 @@ The fastest way to get started:
 rkt setup claude
 ```
 
-This creates:
-- `/ri` slash command for quick access to RocketIndex commands
-- **Skills library** (optional) - 9 role-based prompts that help Claude frame tasks:
-  - **Tech Lead** - Task breakdown, code review, architectural oversight
-  - **Architect** - System design, technical decisions, ADRs
-  - **Developer** - Implementation with codebase conventions
-  - **QA Engineer** - Testing, verification, coverage
-  - **Product Manager** - Requirements, user stories, acceptance criteria
-  - **Performance Engineer** - Optimization, benchmarking, profiling
-  - **Security Engineer** - Vulnerability analysis, OWASP review
-  - **SRE** - Observability, reliability, error handling
-  - **RocketIndex** - Code navigation specialist
+- **Agent Instructions**: Configures `CLAUDE.md` and creates `.rocketindex/AGENTS.md` for context.
+- **Skills library** (optional) - 5 role-based prompts plus RocketIndex:
+  - **RocketIndex** - Code navigation (always installed)
+  - **Lead Engineer** - Design, implementation, ADRs
+  - **QA Engineer** - Testing, verification
+  - **SRE** - Reliability, performance, stacktrace analysis
+  - **Security Engineer** - Vulnerability analysis
+  - **Product Manager** - Requirements, acceptance criteria
 
 Each skill includes bounded checklists and integrates RocketIndex commands for code navigation.
 
