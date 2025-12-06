@@ -91,14 +91,19 @@ pub fn node_to_location(file: &Path, node: &tree_sitter::Node) -> Location {
 }
 
 /// Find a child node by its kind.
+/// Uses cursor-based iteration for O(n) instead of O(n²) performance.
 pub fn find_child_by_kind<'a>(
     node: &'a tree_sitter::Node<'a>,
     kind: &str,
 ) -> Option<tree_sitter::Node<'a>> {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == kind {
-                return Some(child);
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        loop {
+            if cursor.node().kind() == kind {
+                return Some(cursor.node());
+            }
+            if !cursor.goto_next_sibling() {
+                break;
             }
         }
     }
