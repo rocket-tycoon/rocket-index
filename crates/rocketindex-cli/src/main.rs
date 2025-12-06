@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use rocketindex::git;
 use rocketindex::{
@@ -116,10 +117,19 @@ enum Commands {
         git: bool,
     },
 
-    /// List references to symbols in a file
+    /// Find references to a symbol or list references in a file
     Refs {
-        /// File to analyze
-        file: PathBuf,
+        /// File to analyze (lists all references in the file)
+        #[arg(short, long, conflicts_with = "symbol")]
+        file: Option<PathBuf>,
+
+        /// Symbol to find all uses of (across entire codebase)
+        #[arg(short, long, conflicts_with = "file")]
+        symbol: Option<String>,
+
+        /// Number of context lines to show around each reference
+        #[arg(short, long, default_value = "0")]
+        context: usize,
     },
 
     /// Spider from an entry point symbol
@@ -154,6 +164,12 @@ enum Commands {
     Callers {
         /// Symbol to find callers for (qualified name)
         symbol: String,
+    },
+
+    /// Find classes that inherit from a parent class
+    Subclasses {
+        /// Parent class name to find subclasses of
+        parent: String,
     },
 
     /// Watch for file changes and update the index
@@ -260,7 +276,18 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
             context,
             git,
         } => cmd_def(&symbol, context, git, format, quiet, concise),
-        Commands::Refs { file } => cmd_refs(&file, format, quiet, concise),
+        Commands::Refs {
+            file,
+            symbol,
+            context,
+        } => cmd_refs(
+            file.as_deref(),
+            symbol.as_deref(),
+            context,
+            format,
+            quiet,
+            concise,
+        ),
         Commands::Spider {
             symbol,
             depth,
@@ -272,6 +299,7 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
             fuzzy,
         } => cmd_symbols(&pattern, language.as_deref(), fuzzy, format, quiet, concise),
         Commands::Callers { symbol } => cmd_callers(&symbol, format, quiet, concise),
+        Commands::Subclasses { parent } => cmd_subclasses(&parent, format, quiet, concise),
         Commands::Watch { root } => cmd_watch(&root, format, quiet),
         Commands::ExtractTypes {
             project,
@@ -325,16 +353,42 @@ fn cmd_index(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
 
     // Parse files in parallel using rayon
     let max_depth = config.max_recursion_depth;
+
+    // Create progress bar for parsing (only in non-quiet, non-JSON mode)
+    let parse_progress = if !quiet && format != OutputFormat::Json {
+        let pb = ProgressBar::new(files.len() as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} files ({eta})")
+                .unwrap()
+                .progress_chars("#>-"),
+        );
+        pb.set_message("Parsing files...");
+        Some(pb)
+    } else {
+        None
+    };
+
     let parse_results: Vec<_> = files
         .par_iter()
-        .map(|file| match std::fs::read_to_string(file) {
-            Ok(source) => {
-                let result = rocketindex::extract_symbols(file, &source, max_depth);
-                Ok((file.clone(), result))
+        .map(|file| {
+            let result = match std::fs::read_to_string(file) {
+                Ok(source) => {
+                    let result = rocketindex::extract_symbols(file, &source, max_depth);
+                    Ok((file.clone(), result))
+                }
+                Err(e) => Err(format!("{}: {}", file.display(), e)),
+            };
+            if let Some(ref pb) = parse_progress {
+                pb.inc(1);
             }
-            Err(e) => Err(format!("{}: {}", file.display(), e)),
+            result
         })
         .collect();
+
+    if let Some(pb) = parse_progress {
+        pb.finish_with_message("Parsing complete");
+    }
 
     // Create SQLite index
     let index_dir = root.join(".rocketindex");
@@ -403,13 +457,39 @@ fn cmd_index(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
     }
 
     let symbol_count = all_symbols.len();
+    let ref_count = all_references.len();
+    let open_count = all_opens.len();
+
+    // Create progress bar for insertion (only in non-quiet, non-JSON mode)
+    let insert_progress = if !quiet && format != OutputFormat::Json {
+        let total = 3; // symbols, references, opens
+        let pb = ProgressBar::new(total);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({msg})")
+                .unwrap()
+                .progress_chars("#>-"),
+        );
+        Some(pb)
+    } else {
+        None
+    };
 
     // Batch insert symbols
+    if let Some(ref pb) = insert_progress {
+        pb.set_message(format!("Inserting {} symbols...", symbol_count));
+    }
     if let Err(e) = index.insert_symbols(&all_symbols) {
         errors.push(format!("Failed to batch insert symbols: {}", e));
     }
+    if let Some(ref pb) = insert_progress {
+        pb.inc(1);
+    }
 
     // Batch insert references
+    if let Some(ref pb) = insert_progress {
+        pb.set_message(format!("Inserting {} references...", ref_count));
+    }
     let ref_tuples: Vec<_> = all_references
         .iter()
         .map(|(f, r)| (f.as_path(), r))
@@ -417,14 +497,23 @@ fn cmd_index(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
     if let Err(e) = index.insert_references(&ref_tuples) {
         errors.push(format!("Failed to batch insert references: {}", e));
     }
+    if let Some(ref pb) = insert_progress {
+        pb.inc(1);
+    }
 
     // Batch insert opens
+    if let Some(ref pb) = insert_progress {
+        pb.set_message(format!("Inserting {} opens...", open_count));
+    }
     let open_tuples: Vec<_> = all_opens
         .iter()
         .map(|(f, m, l)| (f.as_path(), m.as_str(), *l))
         .collect();
     if let Err(e) = index.insert_opens(&open_tuples) {
         errors.push(format!("Failed to batch insert opens: {}", e));
+    }
+    if let Some(ref pb) = insert_progress {
+        pb.finish_with_message("Indexing complete");
     }
 
     if format == OutputFormat::Json {
@@ -918,9 +1007,134 @@ fn output_location(
     Ok(())
 }
 
-/// List references in a file
-fn cmd_refs(file: &Path, format: OutputFormat, quiet: bool, concise: bool) -> Result<u8> {
+/// Find references to a symbol or list references in a file
+fn cmd_refs(
+    file: Option<&Path>,
+    symbol: Option<&str>,
+    context_lines: usize,
+    format: OutputFormat,
+    quiet: bool,
+    concise: bool,
+) -> Result<u8> {
     let index = load_sqlite_index()?;
+
+    match (file, symbol) {
+        // Symbol mode: find all uses of a symbol across the codebase
+        (None, Some(sym)) => cmd_refs_symbol(&index, sym, context_lines, format, quiet, concise),
+        // File mode: list all references in a file
+        (Some(f), None) => cmd_refs_file(&index, f, format, quiet, concise),
+        // Neither specified
+        (None, None) => {
+            anyhow::bail!("Either --file or --symbol must be specified");
+        }
+        // Both specified (shouldn't happen due to clap conflicts_with)
+        (Some(_), Some(_)) => {
+            anyhow::bail!("Cannot specify both --file and --symbol");
+        }
+    }
+}
+
+/// Find all uses of a symbol across the codebase
+fn cmd_refs_symbol(
+    index: &rocketindex::db::SqliteIndex,
+    symbol: &str,
+    context_lines: usize,
+    format: OutputFormat,
+    quiet: bool,
+    concise: bool,
+) -> Result<u8> {
+    let references = index
+        .find_references(symbol)
+        .context("Failed to find references")?;
+
+    if references.is_empty() {
+        if format == OutputFormat::Json {
+            println!("[]");
+        } else if !quiet {
+            eprintln!("No references found for '{}'", symbol);
+        }
+        return Ok(exit_codes::NOT_FOUND);
+    }
+
+    if format == OutputFormat::Json {
+        let refs: Vec<_> = references
+            .iter()
+            .map(|r| {
+                let mut obj = serde_json::json!({
+                    "name": r.name,
+                    "file": r.location.file.display().to_string(),
+                    "line": r.location.line,
+                    "column": r.location.column,
+                });
+
+                // Add context if requested
+                if context_lines > 0 {
+                    if let Ok(context) =
+                        get_context_lines(&r.location.file, r.location.line, context_lines)
+                    {
+                        obj["context"] = serde_json::Value::String(context);
+                    }
+                }
+
+                obj
+            })
+            .collect();
+
+        println!(
+            "{}",
+            if concise {
+                serde_json::to_string(&refs)?
+            } else {
+                serde_json::to_string_pretty(&refs)?
+            }
+        );
+    } else if !quiet {
+        println!("References to '{}' ({} found):", symbol, references.len());
+        println!();
+
+        for reference in &references {
+            println!(
+                "  {}:{}:{}",
+                reference.location.file.display(),
+                reference.location.line,
+                reference.location.column
+            );
+
+            if context_lines > 0 {
+                if let Ok(context) = get_context_lines(
+                    &reference.location.file,
+                    reference.location.line,
+                    context_lines,
+                ) {
+                    for (i, line) in context.lines().enumerate() {
+                        let line_num =
+                            reference.location.line as i64 - context_lines as i64 + i as i64;
+                        if line_num > 0 {
+                            let marker = if line_num == reference.location.line as i64 {
+                                ">"
+                            } else {
+                                " "
+                            };
+                            println!("    {} {:4} | {}", marker, line_num, line);
+                        }
+                    }
+                    println!();
+                }
+            }
+        }
+    }
+
+    Ok(exit_codes::SUCCESS)
+}
+
+/// List all references in a file
+fn cmd_refs_file(
+    index: &rocketindex::db::SqliteIndex,
+    file: &Path,
+    format: OutputFormat,
+    quiet: bool,
+    concise: bool,
+) -> Result<u8> {
     let file = file.canonicalize().context("Failed to resolve file path")?;
 
     let references = index
@@ -964,6 +1178,18 @@ fn cmd_refs(file: &Path, format: OutputFormat, quiet: bool, concise: bool) -> Re
     }
 
     Ok(exit_codes::SUCCESS)
+}
+
+/// Get context lines around a specific line in a file
+fn get_context_lines(file: &Path, line: u32, context: usize) -> Result<String> {
+    let content = std::fs::read_to_string(file)?;
+    let lines: Vec<&str> = content.lines().collect();
+
+    let line_idx = line.saturating_sub(1) as usize;
+    let start = line_idx.saturating_sub(context);
+    let end = (line_idx + context + 1).min(lines.len());
+
+    Ok(lines[start..end].join("\n"))
 }
 
 /// Spider from an entry point
@@ -1173,6 +1399,88 @@ fn cmd_callers(symbol: &str, format: OutputFormat, quiet: bool, concise: bool) -
     }
 
     Ok(exit_codes::SUCCESS)
+}
+
+/// Find classes that inherit from a parent class
+fn cmd_subclasses(parent: &str, format: OutputFormat, quiet: bool, concise: bool) -> Result<u8> {
+    let cwd = std::env::current_dir()?;
+    let db_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
+    if !db_path.exists() {
+        if format == OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "error": "IndexNotFound",
+                    "message": "No index found. Run 'rkt index' first."
+                })
+            );
+        } else {
+            eprintln!("No index found. Run 'rkt index' first.");
+        }
+        return Ok(exit_codes::ERROR);
+    }
+
+    let db = SqliteIndex::open(&db_path)?;
+    let subclasses = db.find_subclasses(parent)?;
+
+    if format == OutputFormat::Json {
+        let subclass_list: Vec<_> = subclasses
+            .iter()
+            .map(|s| {
+                if concise {
+                    serde_json::json!({
+                        "qualified": s.qualified,
+                        "file": s.location.file.display().to_string(),
+                        "line": s.location.line,
+                    })
+                } else {
+                    serde_json::json!({
+                        "name": s.name,
+                        "qualified": s.qualified,
+                        "kind": format!("{}", s.kind),
+                        "file": s.location.file.display().to_string(),
+                        "line": s.location.line,
+                        "column": s.location.column,
+                        "parent": s.parent,
+                    })
+                }
+            })
+            .collect();
+
+        let output = serde_json::json!({
+            "parent": parent,
+            "subclasses": subclass_list,
+            "count": subclasses.len(),
+        });
+        println!(
+            "{}",
+            if concise {
+                serde_json::to_string(&output)?
+            } else {
+                serde_json::to_string_pretty(&output)?
+            }
+        );
+    } else if !quiet {
+        if subclasses.is_empty() {
+            println!("No subclasses found for: {}", parent);
+        } else {
+            println!("Subclasses of {} ({} found):", parent, subclasses.len());
+            for s in &subclasses {
+                println!(
+                    "  {} ({}:{})",
+                    s.qualified,
+                    s.location.file.display(),
+                    s.location.line
+                );
+            }
+        }
+    }
+
+    if subclasses.is_empty() {
+        Ok(exit_codes::NOT_FOUND)
+    } else {
+        Ok(exit_codes::SUCCESS)
+    }
 }
 
 /// Search for symbols matching a pattern
