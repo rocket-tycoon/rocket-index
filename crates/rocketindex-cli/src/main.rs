@@ -1850,7 +1850,9 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
     let mut created_files = Vec::new();
 
     // Ask about skills installation (interactive mode only, when connected to a terminal)
-    if !quiet && format != OutputFormat::Json && dialoguer::console::Term::stderr().is_term() {
+    // Note: We check is_term() first, then only skip if --quiet was passed
+    // The --format flag doesn't affect interactivity - use --quiet to suppress prompts
+    if !quiet && dialoguer::console::Term::stderr().is_term() {
         // Detect primary language
         let detected_language = detect_primary_language(cwd);
         if let Some(lang) = &detected_language {
