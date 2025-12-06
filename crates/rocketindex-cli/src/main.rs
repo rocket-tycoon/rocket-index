@@ -1847,45 +1847,10 @@ fn count_extensions(
 fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     use dialoguer::MultiSelect;
 
-    let commands_dir = cwd.join(".claude").join("commands");
-    std::fs::create_dir_all(&commands_dir)?;
-
-    // Create RocketIndex slash command
-    let command_content = r#"# RocketIndex Codebase Navigation
-
-Use RocketIndex to navigate and understand this codebase.
-
-## Available Commands
-
-Run these in your terminal:
-
-- `rkt index` - Index the codebase (run first!)
-- `rkt def "SymbolName"` - Find where a symbol is defined
-- `rkt symbols "pattern"` - Search for symbols matching a pattern
-- `rkt spider "Entry.point" -d 3` - Explore dependencies from a symbol
-- `rkt callers "Symbol"` - Find what calls a symbol (impact analysis)
-- `rkt blame "file.fs:42"` - Git blame for a line
-- `rkt history "Symbol"` - Git history for a symbol
-- `rkt doctor` - Check RocketIndex health
-
-## Usage Tips
-
-1. First run `rkt index` to build the index
-2. Use `--concise` for minimal output (saves tokens)
-3. Use `--format json` for machine-readable output (default)
-4. Use `rkt callers` before refactoring to understand impact
-"#;
-
-    let command_path = commands_dir.join("ri.md");
-    std::fs::write(&command_path, command_content)?;
-
-    let mut created_files = vec![command_path.display().to_string()];
+    let mut created_files = Vec::new();
 
     // Ask about skills installation (interactive mode only, when connected to a terminal)
     if !quiet && format != OutputFormat::Json && dialoguer::console::Term::stderr().is_term() {
-        println!("Claude Code setup: /ri command created");
-        println!();
-
         // Detect primary language
         let detected_language = detect_primary_language(cwd);
         if let Some(lang) = &detected_language {
@@ -1955,7 +1920,7 @@ Run these in your terminal:
     let claude_md_path = cwd.join("CLAUDE.md");
     if claude_md_path.exists() {
         let claude_content = std::fs::read_to_string(&claude_md_path).unwrap_or_default();
-        let rocketindex_note = "**Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.\n   For definitions, callers, and dependencies use `rkt`. See `.claude/skills/rocketindex/` for commands.\n";
+        let rocketindex_note = "**Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.\n   For definitions, callers, and dependencies use `rkt`. See `.rocketindex/AGENTS.md` for commands.\n";
 
         // Only add if not already present
         if !claude_content.contains("RocketIndex") {
@@ -1977,8 +1942,11 @@ Run these in your terminal:
         }
     }
 
-    // Create/update AGENTS.md with RocketIndex section
-    let agents_md_path = cwd.join("AGENTS.md");
+    // Create/update .rocketindex/AGENTS.md with RocketIndex section
+    let agents_md_path = cwd.join(".rocketindex").join("AGENTS.md");
+    if let Some(parent) = agents_md_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let agents_section = r#"## Code Navigation with RocketIndex
 
 This project uses **RocketIndex** (`rkt`) for code relationship lookups.
@@ -2091,13 +2059,13 @@ Index: `.rocketindex/index.db`
             serde_json::json!({
                 "editor": "claude-code",
                 "created": created_files,
-                "usage": "Type /ri in Claude Code to see RocketIndex commands"
+                "usage": "See .rocketindex/AGENTS.md for detailed instructions"
             })
         );
     } else if !quiet {
         println!();
         println!("Setup complete! {} file(s) created.", created_files.len());
-        println!("Usage: Type /ri in Claude Code to see RocketIndex commands");
+        println!("See .rocketindex/AGENTS.md for detailed instructions.");
     }
 
     Ok(exit_codes::SUCCESS)

@@ -22,6 +22,7 @@
 
 # fsharp-index artifacts
 .fsharp-index/
+.rocketindex/
 
 # Zed extension build artifacts
 extensions/zed-fsharp/target/
