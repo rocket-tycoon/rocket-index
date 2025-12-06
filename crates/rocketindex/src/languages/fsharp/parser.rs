@@ -432,7 +432,6 @@ fn extract_interfaces(node: &tree_sitter::Node, source: &[u8]) -> Vec<String> {
     find_interfaces_recursive(node, source, &mut interfaces, 0);
     interfaces
 }
-
 fn extract_type_defn(
     node: &tree_sitter::Node,
     source: &[u8],
@@ -620,7 +619,6 @@ fn extract_signature(node: &tree_sitter::Node, source: &[u8]) -> Option<String> 
         Some(sig)
     }
 }
-
 fn handle_function_or_value_defn(
     node: &tree_sitter::Node,
     source: &[u8],
@@ -635,7 +633,6 @@ fn handle_function_or_value_defn(
 
     // Extract type signature if present
     let signature = extract_signature(node, source);
-
     if let Some(decl) = find_child_by_kind(node, "function_declaration_left") {
         if let Some(name_node) = find_child_by_kind(&decl, "identifier") {
             if let Ok(name) = name_node.utf8_text(source) {
@@ -882,7 +879,6 @@ fn extract_attrs_from_node(node: &tree_sitter::Node, source: &[u8], attrs: &mut 
         }
     }
 }
-
 /// Convert a tree-sitter node position to our Location type.
 fn node_to_location(file: &Path, node: &tree_sitter::Node) -> Location {
     let start = node.start_position();

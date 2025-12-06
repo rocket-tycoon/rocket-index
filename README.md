@@ -191,7 +191,6 @@ $ rkt spider "validateInput" --reverse -d 3
 # Find direct callers (single-level reverse spider)
 $ rkt callers "PaymentService.processPayment"
 ```
-
 ### Git Integration
 
 ```bash
@@ -309,6 +308,10 @@ cargo build --release
 
 ## License
 
+<<<<<<< HEAD
 [BSL 1.1](LICENSE) - Copyright (c) 2025 Alastair Dawson
 
 This is source-available software under the Business Source License 1.1. It converts to Apache 2.0 after four years. See LICENSE for details on permitted uses.
+=======
+[MIT](LICENSE) - Copyright (c) 2025 Alastair Dawson
+>>>>>>> origin/main

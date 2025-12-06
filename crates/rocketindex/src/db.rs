@@ -563,27 +563,22 @@ impl SqliteIndex {
             self.fuzzy_search_full_scan(query, language, candidate_limit)?
         };
 
-        // Calculate distance for each symbol and filter
-        let mut matches: Vec<(Symbol, usize)> = symbols
-            .into_iter()
-            .filter_map(|sym| {
-                let name_dist = crate::fuzzy::levenshtein_distance(query, &sym.name);
-                let qualified_dist = crate::fuzzy::levenshtein_distance(query, &sym.qualified);
-                let min_dist = name_dist.min(qualified_dist);
+        // Filter by edit distance and sort
+        let mut results = Vec::new();
+        for symbol in symbols {
+            let name_dist = crate::fuzzy::levenshtein_distance(query, &symbol.name);
+            let qual_dist = crate::fuzzy::levenshtein_distance(query, &symbol.qualified);
+            let dist = std::cmp::min(name_dist, qual_dist);
 
-                if min_dist <= max_distance {
-                    Some((sym, min_dist))
-                } else {
-                    None
-                }
-            })
-            .collect();
+            if dist <= max_distance {
+                results.push((symbol, dist));
+            }
+        }
 
-        // Sort by distance, then by qualified name
-        matches.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.qualified.cmp(&b.0.qualified)));
+        results.sort_by_key(|(_, dist)| *dist);
+        results.truncate(limit);
 
-        matches.truncate(limit);
-        Ok(matches)
+        Ok(results)
     }
 
     /// Full table scan for fuzzy search (fallback when FTS can't help)
@@ -634,7 +629,6 @@ impl SqliteIndex {
 
         Ok(symbols)
     }
-
     /// List all indexed files.
     pub fn list_files(&self) -> Result<Vec<PathBuf>> {
         let mut stmt = self

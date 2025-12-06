@@ -1,36 +1,44 @@
 //! Symbol extraction from Ruby source files using tree-sitter.
 
+use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{find_child_by_kind, node_to_location, LanguageParser, ParseResult};
-use crate::resolve::{ResolutionPath, ResolveResult, SymbolResolver};
-use crate::{CodeIndex, Symbol, SymbolKind, Visibility};
+use crate::{Symbol, SymbolKind, Visibility};
+
+// Thread-local parser reuse - avoids creating a new parser per file
+thread_local! {
+    static RUBY_PARSER: RefCell<tree_sitter::Parser> = RefCell::new({
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_ruby::LANGUAGE.into())
+            .expect("tree-sitter-ruby grammar incompatible with tree-sitter version");
+        parser
+    });
+}
 
 pub struct RubyParser;
 
 impl LanguageParser for RubyParser {
     fn extract_symbols(&self, file: &Path, source: &str, max_depth: usize) -> ParseResult {
-        let mut parser = tree_sitter::Parser::new();
+        RUBY_PARSER.with(|parser| {
+            let mut parser = parser.borrow_mut();
 
-        // Set the Ruby language
-        parser
-            .set_language(&tree_sitter_ruby::LANGUAGE.into())
-            .expect("tree-sitter-ruby grammar incompatible with tree-sitter version");
+            let tree = match parser.parse(source, None) {
+                Some(tree) => tree,
+                None => {
+                    tracing::warn!("Failed to parse file: {:?}", file);
+                    return ParseResult::default();
+                }
+            };
 
-        let tree = match parser.parse(source, None) {
-            Some(tree) => tree,
-            None => {
-                tracing::warn!("Failed to parse file: {:?}", file);
-                return ParseResult::default();
-            }
-        };
+            let mut result = ParseResult::default();
+            let root = tree.root_node();
 
-        let mut result = ParseResult::default();
-        let root = tree.root_node();
+            extract_recursive(&root, source.as_bytes(), file, &mut result, None, max_depth);
 
-        extract_recursive(&root, source.as_bytes(), file, &mut result, None, max_depth);
-
-        result
+            result
+        })
     }
 }
 
@@ -344,48 +352,6 @@ fn qualified_name(name: &str, current_module: Option<&str>) -> String {
     }
 }
 
-pub struct RubyResolver;
-
-impl SymbolResolver for RubyResolver {
-    fn resolve<'a>(
-        &self,
-        index: &'a CodeIndex,
-        name: &str,
-        from_file: &Path,
-    ) -> Option<ResolveResult<'a>> {
-        // 1. Try exact qualified name match
-        if let Some(symbol) = index.get(name) {
-            return Some(ResolveResult {
-                symbol,
-                resolution_path: ResolutionPath::Qualified,
-            });
-        }
-
-        // 2. Try scoping relative to modules defined in the current file
-        let file_symbols = index.symbols_in_file(from_file);
-        for symbol in file_symbols {
-            if symbol.kind == SymbolKind::Module || symbol.kind == SymbolKind::Class {
-                // Try Module::Name
-                let qualified = format!("{}::{}", symbol.qualified, name);
-                if let Some(resolved) = index.get(&qualified) {
-                    return Some(ResolveResult {
-                        symbol: resolved,
-                        resolution_path: ResolutionPath::SameModule,
-                    });
-                }
-            }
-        }
-
-        // 3. Try to find it as a top-level constant (if name doesn't start with ::)
-        if !name.starts_with("::") {
-            // Already checked exact match in step 1, but maybe we want to be explicit here?
-            // For now, step 1 covers top-level if they are fully qualified or just simple names.
-        }
-
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,7 +364,7 @@ class User
   def initialize(name)
     @name = name
   end
-  
+
   def name
     @name
   end
@@ -582,38 +548,5 @@ end
             .find(|s| s.name == "ApiClient")
             .unwrap();
         assert_eq!(api_client.parent.as_deref(), Some("Common::Client::Base"));
-    }
-
-    #[test]
-    fn resolves_ruby_scoping() {
-        use crate::{CodeIndex, Location, Symbol, Visibility};
-        use std::path::PathBuf;
-
-        let mut index = CodeIndex::new();
-        // Define MyApp::Utils::Helper
-        index.add_symbol(Symbol::new(
-            "Helper".to_string(),
-            "MyApp::Utils::Helper".to_string(),
-            SymbolKind::Class,
-            Location::new(PathBuf::from("utils.rb"), 1, 1),
-            Visibility::Public,
-            "ruby".to_string(),
-        ));
-
-        // Define MyApp::Utils (module)
-        index.add_symbol(Symbol::new(
-            "Utils".to_string(),
-            "MyApp::Utils".to_string(),
-            SymbolKind::Module,
-            Location::new(PathBuf::from("utils.rb"), 1, 1),
-            Visibility::Public,
-            "ruby".to_string(),
-        ));
-
-        // From utils.rb, "Helper" should resolve to "MyApp::Utils::Helper"
-        let resolver = RubyResolver;
-        let result = resolver.resolve(&index, "Helper", Path::new("utils.rb"));
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().symbol.qualified, "MyApp::Utils::Helper");
     }
 }
