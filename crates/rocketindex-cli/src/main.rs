@@ -1955,7 +1955,7 @@ Run these in your terminal:
     let claude_md_path = cwd.join("CLAUDE.md");
     if claude_md_path.exists() {
         let claude_content = std::fs::read_to_string(&claude_md_path).unwrap_or_default();
-        let rocketindex_note = "**Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.\n   Run `rkt index` to build the index. See AGENTS.md for workflow details.\n";
+        let rocketindex_note = "**Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.\n   For definitions, callers, and dependencies use `rkt`. See `.claude/skills/rocketindex/` for commands.\n";
 
         // Only add if not already present
         if !claude_content.contains("RocketIndex") {
@@ -1981,43 +1981,42 @@ Run these in your terminal:
     let agents_md_path = cwd.join("AGENTS.md");
     let agents_section = r#"## Code Navigation with RocketIndex
 
-This project uses **RocketIndex** (`rkt`) for fast, token-efficient code navigation.
+This project uses **RocketIndex** (`rkt`) for code relationship lookups.
 
-### Quick Start
+**For full documentation, see `.claude/skills/rocketindex/SKILL.md`**
+
+### Quick Reference
 
 ```bash
-rkt index                    # Build/update the index (run first!)
-rkt doctor                   # Check index health
+rkt index                    # Build index (run once)
+rkt watch                    # Auto-reindex on file changes (run in background)
+rkt def "Symbol"             # Find where symbol is defined
+rkt callers "Symbol"         # Find what calls this (impact analysis)
+rkt spider "Symbol" -d 3     # Dependency graph
+rkt symbols "pattern*"       # Search symbols
 ```
 
-### Essential Commands
+### When to Use rkt
 
-| Command | Purpose | When to Use |
-|---------|---------|-------------|
-| `rkt def "Symbol"` | Find definition | Looking for where something is defined |
-| `rkt callers "Symbol"` | Find all callers | **Before refactoring** - understand impact |
-| `rkt spider "Entry" -d 3` | Dependency graph | Understanding what code depends on |
-| `rkt symbols "pattern*"` | Search symbols | Fuzzy search (supports wildcards) |
+Use `rkt` for **code relationships**:
+- Symbol definitions → `rkt def`
+- Finding callers/usage → `rkt callers`
+- Dependency graphs → `rkt spider`
 
-### Workflow Rules
+Use standard tools for **text operations**:
+- Text search → grep/ripgrep
+- File editing → sed/your editor
 
-- ✅ **Always run `rkt callers`** before modifying shared code
-- ✅ Use `--concise` flag to reduce output tokens
-- ✅ Use `--format json` for programmatic parsing (default)
-- ✅ Run `rkt index` after significant file changes
-- ❌ Don't grep for definitions - use `rkt def`
-- ❌ Don't read files to find callers - use `rkt callers`
+### Key Rule
 
-### Best Practices
-
-1. **Impact Analysis First**: Before changing a function, run `rkt callers` to see what will break
-2. **Navigate, Don't Search**: Use `rkt def` instead of grep/ripgrep for definitions
-3. **Spider for Context**: Use `rkt spider` to understand dependencies before refactoring
-4. **Efficient Queries**: Use `--concise` to minimize token usage
+**Before modifying shared code**, always run:
+```bash
+rkt callers "functionToChange"  # What will break?
+```
 
 ### Storage
 
-Index stored in `.rocketindex/index.db` (add to .gitignore)
+Index: `.rocketindex/index.db` (add to .gitignore)
 "#;
 
     let agents_content = std::fs::read_to_string(&agents_md_path).unwrap_or_default();
@@ -2049,29 +2048,35 @@ Index stored in `.rocketindex/index.db` (add to .gitignore)
 
 ## Code Navigation
 
-This project uses **RocketIndex** for code navigation. Use these commands instead of searching:
+This project uses **RocketIndex** (`rkt`) for code relationship lookups.
+
+### Quick Reference
 
 ```bash
-rkt index                    # Build index (run first)
+rkt index                    # Build index (run first!)
 rkt def "Symbol"             # Find definition
 rkt callers "Symbol"         # Find callers (impact analysis)
-rkt spider "Entry" -d 3      # Dependency graph
+rkt spider "Symbol" -d 3     # Dependency graph
 rkt symbols "pattern*"       # Search symbols
 ```
 
-## Key Rules
+### When to Use rkt
 
-- **Before refactoring**: Always run `rkt callers` to understand impact
-- **Finding definitions**: Use `rkt def`, not grep
-- **Use `--concise`**: Reduces output for token efficiency
-- **Index location**: `.rocketindex/index.db`
+- **Symbol definitions** → `rkt def` (not grep)
+- **Finding callers/usage** → `rkt callers`
+- **Dependency graphs** → `rkt spider`
+- **Text search** → grep/ripgrep (still fine)
 
-## Workflow
+### Key Rule
 
-1. Run `rkt index` to ensure index is current
-2. Use `rkt callers` before modifying shared code
-3. Use `rkt spider` to understand dependencies
-4. Use `rkt def` to navigate to definitions
+**Before modifying shared code:**
+```bash
+rkt callers "functionToChange"  # What will break?
+```
+
+### Storage
+
+Index: `.rocketindex/index.db`
 "#;
         std::fs::write(&copilot_path, copilot_content)?;
         created_files.push(copilot_path.display().to_string());

@@ -59,11 +59,11 @@ You are a senior tech lead responsible for guiding development work.
 - [ ] Performance claims backed by benchmarks
 - [ ] Tests pass
 
-## RocketIndex Commands
+## Code Navigation
 
-- `rkt spider "<entry>" -d 3` - Understand dependencies before refactoring
-- `rkt callers "<symbol>"` - Find all code that will be affected by changes
-- `rkt def "<symbol>"` - Navigate to definitions quickly
+For code navigation, use the **rocketindex** skill. Key commands for tech leads:
+- `rkt callers` - **Always run before approving changes to shared code**
+- `rkt spider` - Understand dependencies during code review
 
 ## When to Use
 
@@ -148,11 +148,11 @@ What becomes easier or more difficult because of this change?
 - [ ] ADR created for significant decisions
 - [ ] Diagrams provided where helpful (mermaid)
 
-## RocketIndex Commands
+## Code Navigation
 
-- `rkt spider "<module>" -d 5` - Map the dependency graph
-- `rkt callers "<interface>"` - Find all implementations/consumers
-- `rkt symbols "<pattern>*"` - Discover related components
+For code navigation, use the **rocketindex** skill. Key commands for architects:
+- `rkt spider` - Map dependency graphs before proposing changes
+- `rkt callers` - Find all implementations/consumers of interfaces
 
 ## When to Use
 
@@ -225,11 +225,11 @@ You are a senior developer responsible for implementing features and writing qua
 - [ ] Tests written for new code
 - [ ] Code compiles/lints without errors
 
-## RocketIndex Commands
+## Code Navigation
 
-- `rkt def "<symbol>"` - Find where things are defined
-- `rkt callers "<symbol>"` - Understand usage patterns before changes
-- `rkt spider "<function>" -d 2` - See what a function depends on
+For code navigation, use the **rocketindex** skill. Key commands for developers:
+- `rkt def` - Jump to definitions quickly
+- `rkt callers` - Check usage before modifying shared code
 
 ## When to Use
 
@@ -299,11 +299,11 @@ Describe [Component]
     It [Expected Behavior]
 ```
 
-## RocketIndex Commands
+## Code Navigation
 
+For code navigation, use the **rocketindex** skill. Key commands for QA:
 - `rkt symbols "*Test*"` - Find existing tests
-- `rkt callers "<function>"` - Find what to test when function changes
-- `rkt spider "<module>" -d 2` - Understand dependencies to mock
+- `rkt callers` - Find what needs testing when a function changes
 
 ## When to Use
 
@@ -387,10 +387,11 @@ Then [expected result]
 - Future-proofing requirements ("in case we need...")
 - Implicit backwards compatibility assumptions
 
-## RocketIndex Commands
+## Code Navigation
 
-- `rkt symbols "<feature>*"` - Understand existing implementation scope
-- `rkt spider "<entry>" -d 3` - Map feature boundaries
+For code navigation, use the **rocketindex** skill. Key commands for PMs:
+- `rkt symbols` - Understand existing implementation scope
+- `rkt spider` - Map feature boundaries
 
 ## When to Use
 
@@ -467,11 +468,11 @@ You are a performance engineer responsible for ensuring code runs efficiently.
 - **Lazy Evaluation**: Don't compute what you don't need
 - **Compile-time over Runtime**: Pre-compute at startup
 
-## RocketIndex Commands
+## Code Navigation
 
-- `rkt spider "<hot-function>" -d 5` - Map the call graph of hot paths
-- `rkt callers "<expensive-function>"` - Find all callers to optimize
-- `rkt def "<type>"` - Check data structure definitions
+For code navigation, use the **rocketindex** skill. Key commands for perf engineers:
+- `rkt spider` - Map call graphs of hot paths
+- `rkt callers` - Find all callers of expensive functions
 
 ## When to Use
 
@@ -556,11 +557,12 @@ process(email)              # Email type guarantees validity
 - [ ] Sensitive data encrypted at rest and in transit
 - [ ] Dependencies audited for known vulnerabilities
 
-## RocketIndex Commands
+## Code Navigation
 
-- `rkt symbols "*password*"` - Find password handling code
-- `rkt callers "<auth-function>"` - Verify auth is called correctly
-- `rkt spider "<api-endpoint>" -d 3` - Trace data flow from entry points
+For code navigation, use the **rocketindex** skill. Key commands for security:
+- `rkt symbols "*password*"` - Find sensitive code
+- `rkt spider` - Trace data flow from entry points
+- `rkt callers` - Verify auth functions are called correctly
 
 ## When to Use
 
@@ -637,11 +639,12 @@ log.info("payment_processed", user_id=123, amount=50.00, currency="USD")
 log.info("Processed payment of $50.00 for user 123")
 ```
 
-## RocketIndex Commands
+## Code Navigation
 
-- `rkt spider "<error-handler>" -d 3` - Trace error propagation paths
+For code navigation, use the **rocketindex** skill. Key commands for SREs:
+- `rkt spider` - Trace error propagation paths
 - `rkt symbols "*Error*"` - Find error types and handlers
-- `rkt callers "<logger>"` - Audit logging usage
+- `rkt callers` - Audit logging usage
 
 ## When to Use
 
@@ -658,88 +661,107 @@ This skill can be extended with playbooks in the `playbooks/` subdirectory.
     Skill {
         name: "rocketindex",
         display_name: "RocketIndex",
-        description: "Code navigation specialist using RocketIndex",
+        description:
+            "Code navigation and relationship lookup - the source of truth for rkt commands",
         content: r#"---
 name: rocketindex
-description: Specialist in using RocketIndex for code navigation. Use when exploring or understanding a codebase.
+description: Code navigation and relationship lookup. Use rkt for finding definitions, callers, and dependencies. This is the source of truth for rkt commands - other skills reference this.
 ---
 
-# RocketIndex Code Navigator
+# RocketIndex - Code Navigation
 
-You are a specialist in using RocketIndex for fast code navigation and understanding.
+RocketIndex (`rkt`) provides fast, indexed lookups for code relationships.
 
-## Core Principles
+## When to Use RocketIndex
 
-- **Index First**: Always ensure the index is current before querying
-- **Impact Before Change**: Use `callers` to understand ripple effects before modifying code
-- **Navigate Efficiently**: Use the right command for the task
-- **Concise Output**: Use `--concise` to reduce token usage
+Use `rkt` for **code relationships and structure**:
+- Finding where a symbol is **defined** → `rkt def`
+- Finding what **calls** a function → `rkt callers`
+- Understanding **dependencies** → `rkt spider`
+- Searching for **symbols** by pattern → `rkt symbols`
 
-## Instructions
+Use standard tools for **text operations**:
+- Searching for text patterns → grep/ripgrep
+- Editing files → sed/your editor
+- General file operations → standard CLI tools
 
-1. **Index First**: Always ensure the index is current with `rkt index`
-2. **Navigate Efficiently**: Use the right command for the task
-3. **Impact Analysis**: Before changes, understand what will be affected with `callers`
-4. **Dependency Mapping**: Use `spider` to understand code structure
+## Philosophy
+
+**Impact-First Development**: Before modifying shared code, understand what will break.
+
+```bash
+# Before changing any shared function:
+rkt callers "functionToChange"    # What calls this?
+rkt spider "functionToChange" -d 2  # What does it depend on?
+```
 
 ## Command Reference
 
 | Command | Purpose | Example |
 |---------|---------|---------|
-| `rkt index` | Build/update the index | Run first! |
-| `rkt def "<symbol>"` | Find definition | `rkt def "MyModule.processPayment"` |
-| `rkt symbols "<pattern>"` | Search symbols | `rkt symbols "process*"` |
-| `rkt callers "<symbol>"` | Find callers | `rkt callers "validateInput"` |
-| `rkt spider "<symbol>" -d N` | Dependency graph | `rkt spider "main" -d 3` |
-| `rkt blame "<file:line>"` | Git blame | `rkt blame "src/api.fs:42"` |
-| `rkt history "<symbol>"` | Git history | `rkt history "PaymentService"` |
-| `rkt doctor` | Health check | Verify index is working |
+| `rkt index` | Build/update index | Run once to initialize |
+| `rkt watch` | Auto-reindex on changes | Run in background for live updates |
+| `rkt def "Symbol"` | Find definition | `rkt def "UserService.validate"` |
+| `rkt callers "Symbol"` | Find all callers | `rkt callers "processPayment"` |
+| `rkt spider "Symbol" -d N` | Dependency graph | `rkt spider "main" -d 3` |
+| `rkt spider "Symbol" -d N --reverse` | Reverse dependencies | `rkt spider "util" -d 2 --reverse` |
+| `rkt symbols "pattern*"` | Search symbols | `rkt symbols "*Service*"` |
+| `rkt blame "file:line"` | Git blame | `rkt blame "src/api.rb:42"` |
+| `rkt history "Symbol"` | Git history | `rkt history "PaymentService"` |
+| `rkt doctor` | Health check | Verify index status |
 
-## Common Workflows
+## Workflows
 
-**Before Refactoring**:
+### Before Refactoring
 ```bash
-rkt callers "function_to_change"  # What will break?
-rkt spider "function_to_change" -d 2  # What does it depend on?
+rkt callers "functionToChange"      # What will break?
+rkt spider "functionToChange" -d 2  # What does it depend on?
 ```
 
-**Understanding New Code**:
+### Understanding New Code
 ```bash
-rkt spider "entry_point" -d 3  # Map the call graph
-rkt def "UnknownType"  # Find definitions
+rkt spider "entryPoint" -d 3        # Map the call graph
+rkt def "UnknownType"               # Jump to definition
 ```
 
-**Impact Analysis**:
+### Impact Analysis for Shared Code
 ```bash
-rkt callers "shared_function"  # All usages
-rkt spider "shared_function" --reverse -d 2  # Who calls this?
+rkt callers "sharedFunction"        # All usages across codebase
+rkt spider "sharedFunction" --reverse -d 2  # Reverse dependency tree
 ```
 
-## Checklist
+### Finding Implementations
+```bash
+rkt symbols "*Handler*"             # Find all handlers
+rkt callers "InterfaceMethod"       # Find implementations
+```
 
-- [ ] Index is current (`rkt doctor`)
-- [ ] Using `--concise` flag to reduce output
-- [ ] Using `callers` before refactoring
-- [ ] Using `spider` to understand dependencies
-- [ ] Combining commands for comprehensive analysis
+## Output Flags
 
-## Tips
+| Flag | Purpose |
+|------|---------|
+| `--concise` | Minimal output (saves tokens) |
+| `--format json` | Machine-readable (default) |
+| `--format pretty` | Human-readable with colors |
+| `--quiet` | Suppress progress output |
 
-- Use `--concise` for minimal JSON output (saves tokens)
-- Use `--format json` for machine-readable output (default)
-- The index is stored in `.rocketindex/` (add to .gitignore)
-- Run `rkt index` after significant changes
+## Best Practices
 
-## When to Use
+1. **Run `rkt index`** once to initialize, or `rkt watch` for live updates
+2. **Always use `rkt callers`** before modifying functions used elsewhere
+3. **Use `--concise`** to minimize token usage
+4. **Use `rkt def`** instead of grep when looking for symbol definitions
+5. **Use `rkt spider`** to understand code structure before refactoring
 
-- Exploring a new codebase
-- Finding where code is defined
-- Understanding impact of changes
-- Mapping dependencies
+## Storage
 
-## Playbooks
+Index stored in `.rocketindex/index.db` (add to .gitignore).
+Index persists across sessions - no need to rebuild each time.
 
-This skill can be extended with playbooks in the `playbooks/` subdirectory.
+## Integration with Other Skills
+
+Other skills (Tech Lead, Architect, QA, etc.) reference this skill for code navigation.
+When those skills mention "use rkt" or "impact analysis", refer to the commands documented here.
 "#,
     },
     Skill {
@@ -812,11 +834,12 @@ README (overview, quick start)
 Tutorials (extended learning)
 ```
 
-## RocketIndex Commands
+## Code Navigation
 
-- `rkt symbols "README*"` - Find all README files
-- `rkt history "<doc-file>"` - See when docs were last updated
-- `rkt spider "<feature>" -d 2` - Understand what to document
+For code navigation, use the **rocketindex** skill. Key commands for docs:
+- `rkt symbols` - Find documentation files
+- `rkt history` - See when docs were last updated
+- `rkt spider` - Understand features to document
 
 ## When to Use
 
