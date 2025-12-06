@@ -2007,49 +2007,29 @@ Index: `.rocketindex/index.db` (add to .gitignore)
         }
     }
 
-    // Create .github/copilot-instructions.md for GitHub Copilot
-    let github_dir = cwd.join(".github");
-    let copilot_path = github_dir.join("copilot-instructions.md");
-    if !copilot_path.exists() {
-        std::fs::create_dir_all(&github_dir)?;
-        let copilot_content = r#"# GitHub Copilot Instructions
+    // Update .github/copilot-instructions.md if it exists
+    let copilot_path = cwd.join(".github").join("copilot-instructions.md");
+    if copilot_path.exists() {
+        let copilot_content = std::fs::read_to_string(&copilot_path).unwrap_or_default();
+        let rocketindex_note = "**Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.\n   For definitions, callers, and dependencies use `rkt`. See `.rocketindex/AGENTS.md` for commands.\n";
 
-## Code Navigation
-
-This project uses **RocketIndex** (`rkt`) for code relationship lookups.
-
-### Quick Reference
-
-```bash
-rkt index                    # Build index (run first!)
-rkt def "Symbol"             # Find definition
-rkt callers "Symbol"         # Find callers (impact analysis)
-rkt spider "Symbol" -d 3     # Dependency graph
-rkt symbols "pattern*"       # Search symbols
-```
-
-### When to Use rkt
-
-- **Symbol definitions** → `rkt def` (not grep)
-- **Finding callers/usage** → `rkt callers`
-- **Dependency graphs** → `rkt spider`
-- **Text search** → grep/ripgrep (still fine)
-
-### Key Rule
-
-**Before modifying shared code:**
-```bash
-rkt callers "functionToChange"  # What will break?
-```
-
-### Storage
-
-Index: `.rocketindex/index.db`
-"#;
-        std::fs::write(&copilot_path, copilot_content)?;
-        created_files.push(copilot_path.display().to_string());
-        if !quiet && format != OutputFormat::Json {
-            println!("  Created: .github/copilot-instructions.md");
+        // Only add if not already present
+        if !copilot_content.contains("RocketIndex") {
+            // Find insertion point after the title/header
+            let updated = if let Some(pos) = copilot_content.find("\n\n") {
+                format!(
+                    "{}\n\n{}\n{}",
+                    &copilot_content[..pos],
+                    rocketindex_note,
+                    &copilot_content[pos + 2..]
+                )
+            } else {
+                format!("{}\n\n{}", copilot_content, rocketindex_note)
+            };
+            std::fs::write(&copilot_path, updated)?;
+            if !quiet && format != OutputFormat::Json {
+                println!("  Updated: .github/copilot-instructions.md");
+            }
         }
     }
 

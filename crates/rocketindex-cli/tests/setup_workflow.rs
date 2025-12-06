@@ -79,8 +79,40 @@ fn setup_claude_creates_correct_files() -> TestResult {
         "CLAUDE.md should reference .rocketindex/AGENTS.md"
     );
 
-    // 4. Verify Copilot instructions
-    workspace.assert_exists(".github/copilot-instructions.md");
+    // 4. Verify Copilot instructions NOT created (only updates if exists)
+    workspace.assert_not_exists(".github/copilot-instructions.md");
+
+    Ok(())
+}
+
+#[test]
+fn setup_claude_updates_existing_copilot_instructions() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Create existing files
+    fs::write(workspace.path("CLAUDE.md"), "# My Project\n\nContent.\n")?;
+    fs::create_dir_all(workspace.path(".github"))?;
+    fs::write(
+        workspace.path(".github/copilot-instructions.md"),
+        "# Copilot Instructions\n\nExisting content.\n",
+    )?;
+
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "claude", "--quiet"])
+        .assert()
+        .success();
+
+    // Verify copilot-instructions.md was updated with note
+    let copilot = workspace.read_file(".github/copilot-instructions.md")?;
+    assert!(
+        copilot.contains(".rocketindex/AGENTS.md"),
+        "copilot-instructions.md should reference AGENTS.md"
+    );
+    assert!(
+        copilot.contains("Existing content"),
+        "Original content should be preserved"
+    );
 
     Ok(())
 }
