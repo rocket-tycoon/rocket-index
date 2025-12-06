@@ -129,11 +129,11 @@ impl FileWatcher {
     }
 }
 
-/// Check if a path is a supported source file (F#, Ruby, or Python).
+/// Check if a path is a supported source file (F#, Ruby, Python, or Rust).
 pub fn is_supported_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| matches!(ext, "fs" | "fsi" | "fsx" | "rb" | "py" | "pyi"))
+        .map(|ext| matches!(ext, "fs" | "fsi" | "fsx" | "rb" | "py" | "pyi" | "rs"))
         .unwrap_or(false)
 }
 
@@ -189,10 +189,10 @@ mod tests {
         assert!(is_supported_file(Path::new("test.fsi")));
         assert!(is_supported_file(Path::new("test.fsx")));
         assert!(is_supported_file(Path::new("test.rb")));
+        assert!(is_supported_file(Path::new("test.rs")));
         assert!(is_supported_file(Path::new("/path/to/Module.fs")));
 
         assert!(!is_supported_file(Path::new("test.cs")));
-        assert!(!is_supported_file(Path::new("test.rs")));
         assert!(!is_supported_file(Path::new("test.txt")));
         assert!(!is_supported_file(Path::new("test")));
     }
