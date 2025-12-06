@@ -425,3 +425,277 @@ fn missing_file_does_not_crash_indexer() -> TestResult {
 
     Ok(())
 }
+
+/// Workspace with inheritance for testing subclasses
+struct InheritanceWorkspace {
+    dir: TempDir,
+}
+
+impl InheritanceWorkspace {
+    fn new() -> TestResult<Self> {
+        let dir = TempDir::new()?;
+        let root = dir.path();
+
+        let src = root.join("src");
+        fs::create_dir_all(&src)?;
+
+        // Create a Ruby file with class inheritance
+        fs::write(
+            src.join("models.rb"),
+            r#"# Base class for all animals
+class Animal
+  def speak
+    raise NotImplementedError
+  end
+end
+
+# A dog is an animal
+class Dog < Animal
+  def speak
+    "Woof!"
+  end
+end
+
+# A cat is also an animal
+class Cat < Animal
+  def speak
+    "Meow!"
+  end
+end
+
+# A poodle is a specific type of dog
+class Poodle < Dog
+  def speak
+    "Fancy woof!"
+  end
+end
+"#,
+        )?;
+
+        // Create another file that references Animal
+        fs::write(
+            src.join("zoo.rb"),
+            r#"# Zoo management
+class Zoo
+  def initialize
+    @animals = []
+  end
+
+  def add_animal(animal)
+    @animals << animal
+  end
+
+  def make_noise
+    @animals.each { |a| puts a.speak }
+  end
+end
+
+# Create some animals
+zoo = Zoo.new
+zoo.add_animal(Dog.new)
+zoo.add_animal(Cat.new)
+"#,
+        )?;
+
+        Ok(Self { dir })
+    }
+
+    fn root(&self) -> &Path {
+        self.dir.path()
+    }
+}
+
+#[test]
+fn subclasses_command_finds_children() -> TestResult {
+    let workspace = InheritanceWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", ".", "--format", "text"])
+        .assert()
+        .success();
+
+    // Find subclasses of Animal
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["subclasses", "Animal", "--format", "text"])
+        .assert()
+        .success()
+        .stdout(contains("Dog"))
+        .stdout(contains("Cat"));
+
+    Ok(())
+}
+
+#[test]
+fn subclasses_command_finds_grandchildren() -> TestResult {
+    let workspace = InheritanceWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", ".", "--format", "text"])
+        .assert()
+        .success();
+
+    // Find subclasses of Dog (should include Poodle)
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["subclasses", "Dog", "--format", "text"])
+        .assert()
+        .success()
+        .stdout(contains("Poodle"));
+
+    Ok(())
+}
+
+#[test]
+fn subclasses_command_returns_empty_for_leaf() -> TestResult {
+    let workspace = InheritanceWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", ".", "--format", "text"])
+        .assert()
+        .success();
+
+    // Poodle has no subclasses - returns NOT_FOUND (exit code 1)
+    // but still outputs valid JSON with empty array
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["subclasses", "Poodle", "--format", "json"])
+        .assert()
+        .code(1) // NOT_FOUND exit code when no results
+        .stdout(contains("\"count\": 0"))
+        .stdout(contains("\"subclasses\": []"));
+
+    Ok(())
+}
+
+#[test]
+fn refs_symbol_finds_usages_across_files() -> TestResult {
+    let workspace = MultiFileWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", ".", "--format", "text"])
+        .assert()
+        .success();
+
+    // Find references to createUser (defined in Domain, used in Services)
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["refs", "--symbol", "createUser", "--format", "text"])
+        .assert()
+        .success()
+        .stdout(contains("createUser"));
+
+    Ok(())
+}
+
+#[test]
+fn refs_symbol_with_context_shows_surrounding_lines() -> TestResult {
+    let workspace = MultiFileWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", ".", "--format", "text"])
+        .assert()
+        .success();
+
+    // Find references with context
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args([
+            "refs",
+            "--symbol",
+            "createUser",
+            "--context",
+            "1",
+            "--format",
+            "text",
+        ])
+        .assert()
+        .success()
+        // Should show the surrounding code
+        .stdout(contains("|"));
+
+    Ok(())
+}
+
+#[test]
+fn refs_symbol_json_includes_location() -> TestResult {
+    let workspace = MultiFileWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", ".", "--format", "text"])
+        .assert()
+        .success();
+
+    // Find references with JSON output
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["refs", "--symbol", "createUser", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(contains("\"file\""))
+        .stdout(contains("\"line\""))
+        .stdout(contains("\"column\""));
+
+    Ok(())
+}
+
+#[test]
+fn refs_file_lists_references_in_file() -> TestResult {
+    let workspace = MultiFileWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", ".", "--format", "text"])
+        .assert()
+        .success();
+
+    // Get references in Services.fs (which uses Domain types)
+    let services_path = workspace.root().join("src").join("Services.fs");
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args([
+            "refs",
+            "--file",
+            services_path.to_str().unwrap(),
+            "--format",
+            "text",
+        ])
+        .assert()
+        .success();
+
+    Ok(())
+}
+
+#[test]
+fn refs_requires_file_or_symbol() -> TestResult {
+    let workspace = MultiFileWorkspace::new()?;
+
+    // Build the index
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["build", "--root", ".", "--format", "text"])
+        .assert()
+        .success();
+
+    // Calling refs without --file or --symbol should fail
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["refs", "--format", "text"])
+        .assert()
+        .failure();
+
+    Ok(())
+}
