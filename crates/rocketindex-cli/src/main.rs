@@ -1882,9 +1882,12 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
             .map(|s| format!("{} - {}", s.display_name, s.description))
             .collect();
 
+        // All skills selected by default (opt-out model)
+        let defaults: Vec<bool> = vec![true; items.len()];
         let selections = MultiSelect::new()
-            .with_prompt("Install additional skills? (space to select, enter to confirm)")
+            .with_prompt("Install skills? (space to toggle, enter to confirm)")
             .items(&items)
+            .defaults(&defaults)
             .interact_opt()?;
 
         if let Some(selected) = selections {
