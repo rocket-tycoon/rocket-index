@@ -30,6 +30,19 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tracing::{error, info, warn};
 use tree_sitter::{Parser, Point};
 
+use std::cell::RefCell;
+
+// Thread-local parser reuse for LSP operations - avoids creating a new parser per request
+thread_local! {
+    static LSP_FSHARP_PARSER: RefCell<Parser> = RefCell::new({
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_fsharp::LANGUAGE_FSHARP.into())
+            .expect("tree-sitter-fsharp grammar incompatible with tree-sitter version");
+        parser
+    });
+}
+
 /// The language server backend
 struct Backend {
     /// LSP client for sending notifications
@@ -327,39 +340,37 @@ impl Backend {
     async fn get_symbol_at_position(&self, file: &PathBuf, pos: Position) -> Option<String> {
         let content = self.documents.get_content(file).await?;
 
-        let mut parser = Parser::new();
-        parser
-            .set_language(&tree_sitter_fsharp::LANGUAGE_FSHARP.into())
-            .ok()?;
+        LSP_FSHARP_PARSER.with(|parser| {
+            let mut parser = parser.borrow_mut();
+            let tree = parser.parse(&content, None)?;
+            let point = Point::new(pos.line as usize, pos.character as usize);
 
-        let tree = parser.parse(&content, None)?;
-        let point = Point::new(pos.line as usize, pos.character as usize);
+            // Find the smallest node containing this position
+            let mut node = tree.root_node().descendant_for_point_range(point, point)?;
 
-        // Find the smallest node containing this position
-        let mut node = tree.root_node().descendant_for_point_range(point, point)?;
-
-        // Walk up to find an identifier or long_identifier
-        loop {
-            match node.kind() {
-                "identifier" | "long_identifier" | "long_identifier_or_op" => {
-                    return node
-                        .utf8_text(content.as_bytes())
-                        .ok()
-                        .map(|s| s.to_string());
-                }
-                // For operators, return the operator text
-                "op_name" | "infix_op" | "prefix_op" => {
-                    return node
-                        .utf8_text(content.as_bytes())
-                        .ok()
-                        .map(|s| s.to_string());
-                }
-                _ => {
-                    // Walk up to parent
-                    node = node.parent()?;
+            // Walk up to find an identifier or long_identifier
+            loop {
+                match node.kind() {
+                    "identifier" | "long_identifier" | "long_identifier_or_op" => {
+                        return node
+                            .utf8_text(content.as_bytes())
+                            .ok()
+                            .map(|s| s.to_string());
+                    }
+                    // For operators, return the operator text
+                    "op_name" | "infix_op" | "prefix_op" => {
+                        return node
+                            .utf8_text(content.as_bytes())
+                            .ok()
+                            .map(|s| s.to_string());
+                    }
+                    _ => {
+                        // Walk up to parent
+                        node = node.parent()?;
+                    }
                 }
             }
-        }
+        })
     }
 }
 
@@ -864,10 +875,16 @@ impl LanguageServer for Backend {
                 .and_then(|f| f.to_str())
                 .unwrap_or("unknown");
 
-            // Try to get type signature from type cache if available
-            let type_info = index
-                .get_symbol_type(&sym.qualified)
-                .map(|t| format!("\n\n**Type:** `{}`", t))
+            // Try to get signature - prefer symbol.signature, fallback to type cache
+            let type_info = sym
+                .signature
+                .as_ref()
+                .map(|s| format!("\n\n**Signature:** `{}`", s))
+                .or_else(|| {
+                    index
+                        .get_symbol_type(&sym.qualified)
+                        .map(|t| format!("\n\n**Type:** `{}`", t))
+                })
                 .unwrap_or_default();
 
             let content = format!(

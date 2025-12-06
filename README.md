@@ -24,7 +24,7 @@ RocketIndex is the "LSP for Agents". It provides a structured, queryable interfa
 *   **Unified Tooling**: Whether your agent is working on F# or Ruby, it uses the exact same commands (`def`, `refs`, `symbols`).
 
 ### 🧑‍💻 For You (The Eyes)
-RocketIndex powers the **"F# Fast"** and **"Ruby Fast"** extensions for Zed.
+RocketIndex powers the **"F# Fast"** extension for Zed (with more languages coming soon).
 
 *   **Instant Feedback**: Go-to-definition and symbol search that feels instantaneous.
 *   **Lightweight**: Uses <50MB RAM, unlike other servers that eat GBs of memory.
@@ -36,7 +36,7 @@ RocketIndex was built to overcome specific limitations of existing tools:
 
 1.  **Unbounded Memory Growth**: Unlike some language servers that load the entire project state into RAM (causing crashes), RocketIndex uses streaming parsing and a SQLite backend to keep memory usage low and constant.
 2.  **File Count Limits**: Unlike servers that cap indexing at ~5000 files, RocketIndex handles large monoliths (like `vets-api` with 7000+ files) with ease.
-3.  **Polyglot Core**: Powered by Tree-sitter, allowing it to support multiple languages (currently F# and Ruby) with a single binary.
+3.  **Polyglot Core**: Powered by Tree-sitter, allowing it to support multiple languages (F#, Ruby, Python, Rust) with a single binary.
 
 ## Performance
 
@@ -142,6 +142,9 @@ $ rkt def "PaymentService" --json
 |----------|------------|----------|
 | **F#** | `.fs`, `.fsi`, `.fsx` | Modules, functions, types, records, unions, interfaces |
 | **Ruby** | `.rb` | Classes, modules, methods, constants |
+| **Python** | `.py` | Classes, functions, methods |
+| **Rust** | `.rs` | Structs, enums, functions, traits, implementation blocks |
+| **Go** | `.go` | Packages, functions, structs, interfaces, methods |
 
 Additional languages can be added via Tree-sitter grammars.
 
@@ -201,6 +204,26 @@ $ rkt blame "src/Services.fs:42"
 $ rkt history "PaymentService"
 ```
 
+### Watch Mode (Essential for AI Coding Sessions)
+
+When working with AI coding agents, **always run watch mode** in a background terminal:
+
+```bash
+# Start watch mode - keeps index fresh as files change
+$ rkt watch
+
+# Or with quiet output
+$ rkt watch --quiet
+```
+
+**Why this matters**: AI agents make rapid file changes. Without watch mode, the index becomes stale and `rkt def`, `rkt callers`, and `rkt spider` return outdated results. Watch mode automatically re-indexes changed files in milliseconds.
+
+**Recommended workflow**:
+1. Terminal 1: `rkt watch` (leave running)
+2. Terminal 2: AI agent session (Claude Code, Aider, etc.)
+
+The agent can then use `rkt` commands knowing the index is always current.
+
 ### Diagnostics
 
 ```bash
@@ -225,9 +248,8 @@ $ rkt setup cursor  # Creates .cursor/rules
 
 RocketIndex powers the following Zed extensions:
 *   **F# Fast** (`extensions/zed-fsharp`)
-*   **Ruby Fast** (`extensions/zed-ruby`)
 
-These provide syntax highlighting, go-to-definition, and symbol search within the editor.
+Extensions for Ruby, Python, and Rust are planned. In the meantime, use the CLI for instant code intelligence in these languages.
 
 ## Installation
 
@@ -300,7 +322,10 @@ cargo build --release
 # 4. Set up your editor (optional)
 ./target/release/rkt setup claude
 
-# 5. Start exploring
+# 5. Start watch mode (essential for AI coding sessions)
+./target/release/rkt watch &  # Run in background
+
+# 6. Start exploring
 ./target/release/rkt symbols "*Service*" --concise
 ./target/release/rkt def "MyModule.myFunction" --git
 ./target/release/rkt callers "validateInput"

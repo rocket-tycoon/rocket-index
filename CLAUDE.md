@@ -1,5 +1,8 @@
 # CLAUDE.md
 
+**Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.
+   For definitions, callers, and dependencies use `rkt`. See `.rocketindex/AGENTS.md` for commands.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 **Note**: This project uses [bd (beads)](https://github.com/steveyegge/beads)
@@ -31,7 +34,11 @@ cargo fmt                       # Format code
 
 ```bash
 # Build index (creates .rocketindex/index.db)
-./target/release/rkt build
+./target/release/rkt index
+
+# IMPORTANT: Start watch mode in a background terminal during coding sessions
+# This keeps the index fresh as files change
+./target/release/rkt watch
 
 # Find symbol definition
 ./target/release/rkt def "PaymentService.processPayment"
@@ -41,9 +48,20 @@ cargo fmt                       # Format code
 
 # Dependency graph from entry point
 ./target/release/rkt spider "Program.main" --depth 5
+```
 
-# Watch mode (auto-reindex on file changes)
+## Watch Mode (Essential for AI Coding)
+
+**Always run `rkt watch` in a background terminal during AI coding sessions.**
+
+Without watch mode, the index becomes stale as the AI agent modifies files, causing
+`rkt def`, `rkt callers`, and `rkt spider` to return outdated results.
+
+```bash
+# Terminal 1: Watch mode (leave running)
 ./target/release/rkt watch
+
+# Terminal 2: AI agent session
 ```
 
 ## Architecture
@@ -104,4 +122,12 @@ Default exclusions: `node_modules`, `bin`, `obj`, `packages`, `.git`, `.vs`, `.i
 
 ## Language Support
 
-Currently supports F# and Ruby via Tree-sitter grammars. Language detected by file extension.
+Currently supports F#, Ruby, Python, Rust, and Go via Tree-sitter grammars. Language detected by file extension.
+
+| Language | Extensions |
+|----------|------------|
+| F# | `.fs`, `.fsi`, `.fsx` |
+| Ruby | `.rb` |
+| Python | `.py`, `.pyi` |
+| Rust | `.rs` |
+| Go | `.go` |

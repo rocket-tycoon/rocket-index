@@ -87,6 +87,7 @@ impl CodeIndex {
         match extension.as_str() {
             "fs" | "fsi" | "fsx" => fsharp::FSharpResolver.resolve(self, name, from_file),
             "rb" => ruby::RubyResolver.resolve(self, name, from_file),
+            // "go" => go::GoResolver.resolve(self, name, from_file), // Incomplete
             _ => None,
         }
     }
@@ -103,6 +104,7 @@ impl CodeIndex {
         match extension.as_str() {
             "fs" | "fsi" | "fsx" => fsharp::FSharpResolver.resolve_dotted(self, name, from_file),
             "rb" => ruby::RubyResolver.resolve_dotted(self, name, from_file),
+            // "go" => go::GoResolver.resolve_dotted(self, name, from_file), // Incomplete
             _ => None,
         }
     }

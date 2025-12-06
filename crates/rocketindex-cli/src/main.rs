@@ -2020,6 +2020,7 @@ fn cmd_setup(editor: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
     match editor.to_lowercase().as_str() {
         "claude" | "claude-code" => setup_claude_code(&cwd, format, quiet),
         "cursor" => setup_cursor(&cwd, format, quiet),
+        "copilot" | "github-copilot" => setup_copilot(&cwd, format, quiet),
         "vscode" => {
             if format == OutputFormat::Json {
                 println!(
@@ -2037,12 +2038,12 @@ fn cmd_setup(editor: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
                     "{}",
                     serde_json::json!({
                         "error": "Unknown editor",
-                        "supported": ["claude", "cursor", "vscode"]
+                        "supported": ["claude", "cursor", "copilot", "vscode"]
                     })
                 );
             } else {
                 eprintln!("Unknown editor: {}", editor);
-                eprintln!("Supported editors: claude, cursor, vscode");
+                eprintln!("Supported editors: claude, cursor, copilot, vscode");
             }
             Ok(exit_codes::ERROR)
         }
@@ -2387,6 +2388,82 @@ Tips:
         println!("  Created: {}", rules_path.display());
         println!();
         println!("Cursor will now see RocketIndex guidance in .cursor/rules");
+    }
+
+    Ok(exit_codes::SUCCESS)
+}
+
+/// Set up GitHub Copilot instructions
+fn setup_copilot(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
+    let mut created_files = Vec::new();
+
+    let copilot_path = cwd.join(".github").join("copilot-instructions.md");
+    if let Some(parent) = copilot_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let copilot_content = std::fs::read_to_string(&copilot_path).unwrap_or_default();
+    let rocketindex_section = r#"## RocketIndex Code Navigation
+
+This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for fast code navigation.
+
+**Before exploring the codebase:**
+1. Run `rkt index` to build/update the symbol index
+2. Use `rkt def "Symbol"` to find definitions
+3. Use `rkt callers "Symbol"` before refactoring to understand impact
+4. Use `rkt spider "Entry.point" -d 3` to explore dependencies
+
+**Key commands:**
+- `rkt def "MyModule.myFunction"` - Jump to definition
+- `rkt symbols "pattern*"` - Search symbols (supports wildcards)
+- `rkt callers "Symbol"` - Find all callers (impact analysis)
+- `rkt spider "Entry.point" -d 3` - Dependency graph from entry point
+- `rkt blame "src/file.fs:42"` - Git blame for a line
+- `rkt doctor` - Check index health
+
+**Tips:**
+- Use `--concise` flag for minimal JSON output
+- The index is stored in `.rocketindex/` (add to .gitignore)
+- Run `rkt index` after significant changes
+"#;
+
+    // Only add if not already present (idempotent)
+    if !copilot_content.contains("RocketIndex") {
+        if copilot_content.is_empty() {
+            // Create new file with header
+            let new_content = format!("# Copilot Instructions\n\n{}\n", rocketindex_section);
+            std::fs::write(&copilot_path, new_content)?;
+            created_files.push(copilot_path.display().to_string());
+        } else {
+            // Append to existing file
+            let updated = format!("{}\n\n{}", copilot_content.trim_end(), rocketindex_section);
+            std::fs::write(&copilot_path, updated)?;
+        }
+    }
+
+    if format == OutputFormat::Json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "editor": "copilot",
+                "file": copilot_path.display().to_string(),
+                "created": created_files,
+                "updated": copilot_content.is_empty() || !copilot_content.contains("RocketIndex"),
+                "usage": "GitHub Copilot will now see RocketIndex guidance"
+            })
+        );
+    } else if !quiet {
+        if !created_files.is_empty() {
+            println!("GitHub Copilot setup complete!");
+            println!("  Created: {}", copilot_path.display());
+        } else if copilot_content.contains("RocketIndex") {
+            println!("GitHub Copilot already configured with RocketIndex guidance.");
+        } else {
+            println!("GitHub Copilot setup complete!");
+            println!("  Updated: {}", copilot_path.display());
+        }
+        println!();
+        println!("GitHub Copilot will now see RocketIndex guidance.");
     }
 
     Ok(exit_codes::SUCCESS)
