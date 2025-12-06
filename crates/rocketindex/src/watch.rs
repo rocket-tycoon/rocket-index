@@ -129,11 +129,11 @@ impl FileWatcher {
     }
 }
 
-/// Check if a path is a supported source file (F# or Ruby).
+/// Check if a path is a supported source file (F#, Ruby, or Python).
 pub fn is_supported_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| matches!(ext, "fs" | "fsi" | "fsx" | "rb"))
+        .map(|ext| matches!(ext, "fs" | "fsi" | "fsx" | "rb" | "py" | "pyi"))
         .unwrap_or(false)
 }
 
