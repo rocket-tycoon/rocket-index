@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -58,10 +59,6 @@ struct Cli {
     #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Json)]
     format: OutputFormat,
 
-    /// Output results as JSON (deprecated, use --format json)
-    #[arg(long, global = true, hide = true)]
-    json: bool,
-
     /// Suppress progress output
     #[arg(short, long, global = true)]
     quiet: bool,
@@ -75,18 +72,6 @@ struct Cli {
 enum Commands {
     /// Index the codebase (build or rebuild the symbol database)
     Index {
-        /// Root directory to index (defaults to current directory)
-        #[arg(short, long, default_value = ".")]
-        root: PathBuf,
-
-        /// Also extract type information (requires dotnet fsi)
-        #[arg(long)]
-        extract_types: bool,
-    },
-
-    /// Alias for 'index' (deprecated, use 'index' instead)
-    #[command(hide = true)]
-    Build {
         /// Root directory to index (defaults to current directory)
         #[arg(short, long, default_value = ".")]
         root: PathBuf,
@@ -236,17 +221,10 @@ fn main() -> ExitCode {
 
     let cli = Cli::parse();
 
-    // Handle deprecated --json flag
-    let format = if cli.json {
-        OutputFormat::Json
-    } else {
-        cli.format
-    };
-
-    match run(cli.command, format, cli.quiet, cli.concise) {
+    match run(cli.command, cli.format, cli.quiet, cli.concise) {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
-            if format == OutputFormat::Json {
+            if cli.format == OutputFormat::Json {
                 let error_json = serde_json::json!({
                     "error": "CommandFailed",
                     "message": e.to_string(),
@@ -263,10 +241,6 @@ fn main() -> ExitCode {
 fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> Result<u8> {
     match command {
         Commands::Index {
-            root,
-            extract_types,
-        }
-        | Commands::Build {
             root,
             extract_types,
         } => cmd_index(&root, extract_types, format, quiet),
@@ -2152,11 +2126,54 @@ fn count_extensions(
     }
 }
 
+fn should_show_index_feedback(format: OutputFormat, quiet: bool) -> bool {
+    if quiet {
+        return false;
+    }
+
+    if format == OutputFormat::Json {
+        return dialoguer::console::Term::stderr().is_term();
+    }
+
+    true
+}
+
+/// Ensure an index exists before installing editor tooling
+fn ensure_initial_index(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<()> {
+    let index_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
+    if index_path.exists() {
+        return Ok(());
+    }
+
+    let show_feedback = should_show_index_feedback(format, quiet);
+    let started = Instant::now();
+
+    if show_feedback {
+        println!("Building initial RocketIndex index (rkt index)...");
+    }
+
+    match cmd_index(cwd, false, format, quiet) {
+        Ok(code) if code == exit_codes::SUCCESS => {
+            if show_feedback {
+                println!(
+                    "Initial RocketIndex index ready in {:.1?}",
+                    started.elapsed()
+                );
+            }
+            Ok(())
+        }
+        Ok(code) => anyhow::bail!("rkt index failed during setup (exit code {})", code),
+        Err(err) => Err(err),
+    }
+}
+
 /// Set up Claude Code slash commands and optional skills
 fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     use dialoguer::MultiSelect;
 
     let mut created_files = Vec::new();
+
+    ensure_initial_index(cwd, format, quiet)?;
 
     // Always install the rocketindex skill (core functionality)
     let skills_dir = cwd.join(".claude").join("skills");
@@ -2346,6 +2363,8 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
 
 /// Set up Cursor rules
 fn setup_cursor(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
+    ensure_initial_index(cwd, format, quiet)?;
+
     let rules_path = cwd.join(".cursor").join("rules");
     std::fs::create_dir_all(rules_path.parent().unwrap())?;
 
@@ -2396,6 +2415,8 @@ Tips:
 /// Set up GitHub Copilot instructions
 fn setup_copilot(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     let mut created_files = Vec::new();
+
+    ensure_initial_index(cwd, format, quiet)?;
 
     let copilot_path = cwd.join(".github").join("copilot-instructions.md");
     if let Some(parent) = copilot_path.parent() {

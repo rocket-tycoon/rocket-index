@@ -1,4 +1,4 @@
-#![allow(deprecated)] // cargo_bin is deprecated but still works
+#![allow(deprecated)] // cargo_bin is deprecated in assert_cmd but replacement not yet stable
 
 use assert_cmd::Command;
 use std::error::Error;
@@ -61,6 +61,8 @@ fn setup_claude_creates_correct_files() -> TestResult {
         .assert()
         .success();
 
+    workspace.assert_exists(".rocketindex/index.db");
+
     // 1. Verify AGENTS.md creation in .rocketindex/
     workspace.assert_exists(".rocketindex/AGENTS.md");
     let agents_content = workspace.read_file(".rocketindex/AGENTS.md")?;
@@ -103,6 +105,8 @@ fn setup_claude_updates_existing_copilot_instructions() -> TestResult {
         .assert()
         .success();
 
+    workspace.assert_exists(".rocketindex/index.db");
+
     // Verify copilot-instructions.md was updated with note
     let copilot = workspace.read_file(".github/copilot-instructions.md")?;
     assert!(
@@ -128,6 +132,8 @@ fn setup_cursor_creates_rules() -> TestResult {
         .assert()
         .success();
 
+    workspace.assert_exists(".rocketindex/index.db");
+
     // Verify .cursor/rules creation
     workspace.assert_exists(".cursor/rules");
     let rules = workspace.read_file(".cursor/rules")?;
@@ -150,6 +156,8 @@ fn setup_copilot_creates_correct_files() -> TestResult {
         .args(["setup", "copilot", "--quiet"])
         .assert()
         .success();
+
+    workspace.assert_exists(".rocketindex/index.db");
 
     // Verify .github/copilot-instructions.md creation
     workspace.assert_exists(".github/copilot-instructions.md");
@@ -184,6 +192,8 @@ fn setup_copilot_updates_existing_file() -> TestResult {
         .assert()
         .success();
 
+    workspace.assert_exists(".rocketindex/index.db");
+
     // Verify content was appended, not replaced
     let copilot = workspace.read_file(".github/copilot-instructions.md")?;
     assert!(
@@ -209,6 +219,8 @@ fn setup_copilot_idempotent() -> TestResult {
         .assert()
         .success();
 
+    workspace.assert_exists(".rocketindex/index.db");
+
     let first_content = workspace.read_file(".github/copilot-instructions.md")?;
 
     Command::cargo_bin("rkt")?
@@ -216,6 +228,8 @@ fn setup_copilot_idempotent() -> TestResult {
         .args(["setup", "copilot", "--quiet"])
         .assert()
         .success();
+
+    workspace.assert_exists(".rocketindex/index.db");
 
     let second_content = workspace.read_file(".github/copilot-instructions.md")?;
 

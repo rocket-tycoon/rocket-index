@@ -1,4 +1,4 @@
-#![allow(deprecated)] // cargo_bin is deprecated but still works
+#![allow(deprecated)] // cargo_bin is deprecated in assert_cmd but replacement not yet stable
 
 use assert_cmd::Command;
 use predicates::str::contains;
@@ -76,7 +76,7 @@ fn blame_command_shows_commit_info() -> TestResult {
     // Build index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", "."])
+        .args(["index", "--root", "."])
         .assert()
         .success();
 
@@ -112,7 +112,7 @@ fn history_command_shows_log() -> TestResult {
     // Build index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", "."])
+        .args(["index", "--root", "."])
         .assert()
         .success();
 
@@ -141,7 +141,7 @@ fn def_git_flag_shows_provenance() -> TestResult {
     // Build index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", "."])
+        .args(["index", "--root", "."])
         .assert()
         .success();
 

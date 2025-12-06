@@ -1,4 +1,4 @@
-#![allow(deprecated)]
+#![allow(deprecated)] // cargo_bin is deprecated in assert_cmd but replacement not yet stable
 
 use assert_cmd::Command;
 use predicates::str::contains;
@@ -51,13 +51,13 @@ impl SampleWorkspace {
 }
 
 #[test]
-fn build_creates_sqlite_index_with_metadata() -> TestResult {
+fn index_creates_sqlite_index_with_metadata() -> TestResult {
     let workspace = SampleWorkspace::new("BuildSmoke")?;
     workspace.write_entry_file()?;
 
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success()
         .stdout(contains("Indexed"));
@@ -79,7 +79,7 @@ fn def_command_reads_from_sqlite_index() -> TestResult {
 
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -164,7 +164,7 @@ fn multi_file_project_indexes_all_symbols() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success()
         .stdout(contains("3 files"))
@@ -180,7 +180,7 @@ fn symbol_search_finds_types_and_functions() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -211,7 +211,7 @@ fn def_resolves_across_modules() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -240,7 +240,7 @@ fn spider_traverses_dependencies() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -270,7 +270,7 @@ fn spider_reverse_finds_callers() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -302,7 +302,7 @@ fn callers_command_finds_direct_callers() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -325,7 +325,7 @@ fn json_output_format_works() -> TestResult {
     // Build with JSON output
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--json"])
+        .args(["index", "--root", ".", "--format", "json"])
         .assert()
         .success()
         .stdout(contains("\"files\""))
@@ -334,7 +334,7 @@ fn json_output_format_works() -> TestResult {
     // Symbols with JSON output
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["symbols", "*User*", "--json"])
+        .args(["symbols", "*User*", "--format", "json"])
         .assert()
         .success()
         .stdout(contains("\"name\""))
@@ -348,10 +348,10 @@ fn incremental_indexing_updates_symbols() -> TestResult {
     let workspace = SampleWorkspace::new("Incremental")?;
     let file_path = workspace.write_entry_file()?;
 
-    // Initial build
+    // Initial index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -367,10 +367,10 @@ fn incremental_indexing_updates_symbols() -> TestResult {
     let new_content = "module Incremental\n\nlet goodbye() = \"world\"\n";
     fs::write(&file_path, new_content)?;
 
-    // Rebuild (incremental)
+    // Reindex (incremental)
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -405,7 +405,7 @@ fn syntax_error_is_handled_gracefully() -> TestResult {
     // If it fails, we'll adjust expectation.
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success(); // Assuming it logs error but doesn't crash
 
@@ -415,11 +415,11 @@ fn syntax_error_is_handled_gracefully() -> TestResult {
 #[test]
 fn missing_file_does_not_crash_indexer() -> TestResult {
     let workspace = SampleWorkspace::new("MissingFile")?;
-    // Don't write any files, but try to build
+    // Don't write any files, but try to index
 
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -512,7 +512,7 @@ fn subclasses_command_finds_children() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -535,7 +535,7 @@ fn subclasses_command_finds_grandchildren() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -557,7 +557,7 @@ fn subclasses_command_returns_empty_for_leaf() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -581,7 +581,7 @@ fn refs_symbol_finds_usages_across_files() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -603,7 +603,7 @@ fn refs_symbol_with_context_shows_surrounding_lines() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -634,7 +634,7 @@ fn refs_symbol_json_includes_location() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -658,7 +658,7 @@ fn refs_file_lists_references_in_file() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
@@ -686,7 +686,7 @@ fn refs_requires_file_or_symbol() -> TestResult {
     // Build the index
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["build", "--root", ".", "--format", "text"])
+        .args(["index", "--root", ".", "--format", "text"])
         .assert()
         .success();
 
