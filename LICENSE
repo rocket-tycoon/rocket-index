@@ -1,21 +1,62 @@
-MIT License
+Business Source License 1.1
 
-Copyright (c) 2025 Alastair Dawson
+Licensor: Alastair Dawson
+Licensed Work: RocketIndex
+Copyright: 2025 Alastair Dawson
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Change Date: Four years from the release date of each version
+Change License: Apache License 2.0
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+-----------------------------------------------------------------------------
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Terms
+
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work.
+
+Additional Use Grant:
+
+You may use the Licensed Work in production, provided your use does not
+include any of the following:
+
+1. Offering the Licensed Work as a commercial hosted service where the
+   service provides users with access to any substantial portion of the
+   Licensed Work's functionality.
+
+2. Distributing the Licensed Work as a component of a commercial product
+   that provides AI-assisted code editing, code generation, or code
+   navigation functionality.
+
+For clarity, the following uses ARE permitted without additional license:
+
+- Personal use on your own machine
+- Internal use within your organization as a development tool
+- Use alongside (not bundled with) any AI coding assistant you operate
+- Non-commercial, academic, and research use
+- Building internal tools that incorporate the Licensed Work
+
+If your use case is not clearly covered above, please contact the Licensor
+to discuss licensing options.
+
+Change Date:
+
+On the Change Date, or the fourth anniversary of the first publicly
+available distribution of a specific version of the Licensed Work under
+this License, whichever comes first, the Licensor hereby grants you rights
+under the terms of the Change License, and this License terminates.
+
+-----------------------------------------------------------------------------
+
+Notice
+
+This license is based on the Business Source License 1.1, which was
+created by MariaDB Corporation. This is not open source software, but
+source-available software with specific use restrictions.
+
+THE LICENSED WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE LICENSED WORK OR THE USE OR OTHER
+DEALINGS IN THE LICENSED WORK.

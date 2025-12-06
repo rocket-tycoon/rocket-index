@@ -309,4 +309,6 @@ cargo build --release
 
 ## License
 
-[MIT](LICENSE) - Copyright (c) 2025 Alastair Dawson
+[BSL 1.1](LICENSE) - Copyright (c) 2025 Alastair Dawson
+
+This is source-available software under the Business Source License 1.1. It converts to Apache 2.0 after four years. See LICENSE for details on permitted uses.
