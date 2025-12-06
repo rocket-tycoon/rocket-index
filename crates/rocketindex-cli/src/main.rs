@@ -48,7 +48,7 @@ enum OutputFormat {
 /// Rocket-fast F# codebase indexing and navigation tool
 #[derive(Parser)]
 #[command(name = "rkt")]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = env!("RKT_VERSION"), about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
