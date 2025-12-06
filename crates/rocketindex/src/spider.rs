@@ -316,6 +316,12 @@ mod tests {
             location: Location::new(PathBuf::from(file), line, 1),
             visibility: Visibility::Public,
             language: "fsharp".to_string(),
+            parent: None,
+            mixins: None,
+            attributes: None,
+            implements: None,
+            doc: None,
+            signature: None,
         }
     }
 

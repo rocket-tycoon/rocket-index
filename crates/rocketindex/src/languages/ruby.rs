@@ -34,6 +34,54 @@ impl LanguageParser for RubyParser {
     }
 }
 
+/// Extract mixin modules (include/extend/prepend) from a class/module body
+fn extract_mixins(node: &tree_sitter::Node, source: &[u8]) -> Vec<String> {
+    let mut mixins = Vec::new();
+
+    // Recursively search for include/extend/prepend calls in the class body
+    fn collect_mixins(node: &tree_sitter::Node, source: &[u8], mixins: &mut Vec<String>) {
+        if node.kind() == "call" {
+            if let Some(method) = node.child_by_field_name("method") {
+                if let Ok(name) = method.utf8_text(source) {
+                    if name == "include" || name == "extend" || name == "prepend" {
+                        // Get the module name from arguments
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            for i in 0..args.child_count() {
+                                if let Some(arg) = args.child(i) {
+                                    // Skip parentheses and commas
+                                    if arg.kind() == "(" || arg.kind() == ")" || arg.kind() == "," {
+                                        continue;
+                                    }
+                                    // Handle constant (module name) or scope_resolution
+                                    if arg.kind() == "constant" || arg.kind() == "scope_resolution"
+                                    {
+                                        if let Ok(module_name) = arg.utf8_text(source) {
+                                            mixins.push(module_name.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Recurse into children (but not too deep - just immediate class body)
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                // Don't recurse into nested classes/modules
+                if child.kind() != "class" && child.kind() != "module" {
+                    collect_mixins(&child, source, mixins);
+                }
+            }
+        }
+    }
+
+    collect_mixins(node, source, &mut mixins);
+    mixins
+}
+
 fn extract_recursive(
     node: &tree_sitter::Node,
     source: &[u8],
@@ -57,6 +105,19 @@ fn extract_recursive(
                         SymbolKind::Module
                     };
 
+                    // Extract superclass if present (class Foo < Bar)
+                    // The superclass field includes "< ClassName", so we trim the "< " prefix
+                    let parent = if node.kind() == "class" {
+                        node.child_by_field_name("superclass")
+                            .and_then(|sc| sc.utf8_text(source).ok())
+                            .map(|s| s.trim_start_matches('<').trim().to_string())
+                    } else {
+                        None
+                    };
+
+                    // Extract mixins (include/extend/prepend) from the class/module body
+                    let mixins = extract_mixins(node, source);
+
                     result.symbols.push(Symbol {
                         name: name.to_string(),
                         qualified: qualified.clone(),
@@ -64,6 +125,16 @@ fn extract_recursive(
                         location: node_to_location(file, &name_node),
                         visibility: Visibility::Public,
                         language: "ruby".to_string(),
+                        parent,
+                        mixins: if mixins.is_empty() {
+                            None
+                        } else {
+                            Some(mixins)
+                        },
+                        attributes: None,
+                        implements: None,
+                        doc: None,
+                        signature: None,
                     });
 
                     // Process children with this module context
@@ -107,6 +178,12 @@ fn extract_recursive(
                         location: node_to_location(file, &name_node),
                         visibility: Visibility::Public, // TODO: Track visibility (public/private/protected)
                         language: "ruby".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: None,
+                        implements: None,
+                        doc: None,
+                        signature: None,
                     });
                 }
             }
@@ -128,6 +205,12 @@ fn extract_recursive(
                         location: node_to_location(file, &name_node),
                         visibility: Visibility::Public,
                         language: "ruby".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: None,
+                        implements: None,
+                        doc: None,
+                        signature: None,
                     });
                 }
             }
@@ -146,6 +229,12 @@ fn extract_recursive(
                             location: node_to_location(file, &left),
                             visibility: Visibility::Public,
                             language: "ruby".to_string(),
+                            parent: None,
+                            mixins: None,
+                            attributes: None,
+                            implements: None,
+                            doc: None,
+                            signature: None,
                         });
                     }
                 }
@@ -221,6 +310,12 @@ fn extract_recursive(
                                             location: node_to_location(file, &arg),
                                             visibility: Visibility::Public,
                                             language: "ruby".to_string(),
+                                            parent: None,
+                                            mixins: None,
+                                            attributes: None,
+                                            implements: None,
+                                            doc: None,
+                                            signature: None,
                                         });
                                     }
                                 }
@@ -422,6 +517,71 @@ end
             .find(|s| s.name == "password")
             .unwrap();
         assert_eq!(password.kind, SymbolKind::Member);
+    }
+
+    #[test]
+    fn extracts_ruby_mixins() {
+        let source = r#"
+class User
+  include Comparable
+  include ActiveModel::Validations
+  extend ClassMethods
+  prepend Logging
+end
+
+module Service
+  include Enumerable
+end
+"#;
+        let result = extract_symbols(Path::new("user.rb"), source, 500);
+
+        let user = result.symbols.iter().find(|s| s.name == "User").unwrap();
+        assert_eq!(user.kind, SymbolKind::Class);
+
+        // Check mixins are captured
+        let mixins = user.mixins.as_ref().expect("User should have mixins");
+        assert!(mixins.contains(&"Comparable".to_string()));
+        assert!(mixins.contains(&"ActiveModel::Validations".to_string()));
+        assert!(mixins.contains(&"ClassMethods".to_string()));
+        assert!(mixins.contains(&"Logging".to_string()));
+
+        let service = result.symbols.iter().find(|s| s.name == "Service").unwrap();
+        let svc_mixins = service.mixins.as_ref().expect("Service should have mixins");
+        assert!(svc_mixins.contains(&"Enumerable".to_string()));
+    }
+
+    #[test]
+    fn extracts_ruby_superclass() {
+        let source = r#"
+class Admin < User
+  def admin?
+    true
+  end
+end
+
+class Guest < User
+end
+
+module MyApp
+  class ApiClient < Common::Client::Base
+  end
+end
+"#;
+        let result = extract_symbols(Path::new("admin.rb"), source, 500);
+
+        let admin = result.symbols.iter().find(|s| s.name == "Admin").unwrap();
+        assert_eq!(admin.kind, SymbolKind::Class);
+        assert_eq!(admin.parent.as_deref(), Some("User"));
+
+        let guest = result.symbols.iter().find(|s| s.name == "Guest").unwrap();
+        assert_eq!(guest.parent.as_deref(), Some("User"));
+
+        let api_client = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "ApiClient")
+            .unwrap();
+        assert_eq!(api_client.parent.as_deref(), Some("Common::Client::Base"));
     }
 
     #[test]

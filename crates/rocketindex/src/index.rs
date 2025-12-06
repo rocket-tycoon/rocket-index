@@ -575,6 +575,12 @@ mod tests {
             location: Location::new(PathBuf::from(file), 1, 1),
             visibility: Visibility::Public,
             language: "fsharp".to_string(),
+            parent: None,
+            mixins: None,
+            attributes: None,
+            implements: None,
+            doc: None,
+            signature: None,
         }
     }
 
@@ -690,6 +696,12 @@ mod tests {
             location: Location::new(PathBuf::from("src/Parser.fs"), 10, 1),
             visibility: Visibility::Public,
             language: "fsharp".to_string(),
+            parent: None,
+            mixins: None,
+            attributes: None,
+            implements: None,
+            doc: None,
+            signature: None,
         };
         let sym2 = Symbol {
             name: "parse".to_string(),
@@ -698,6 +710,12 @@ mod tests {
             location: Location::new(PathBuf::from("src/Parser.fs"), 20, 1),
             visibility: Visibility::Public,
             language: "fsharp".to_string(),
+            parent: None,
+            mixins: None,
+            attributes: None,
+            implements: None,
+            doc: None,
+            signature: None,
         };
 
         index.add_symbol(sym1);
@@ -729,6 +747,12 @@ mod tests {
             location: Location::new(PathBuf::from("src/Config.fs"), 5, 1),
             visibility: Visibility::Public,
             language: "fsharp".to_string(),
+            parent: None,
+            mixins: None,
+            attributes: None,
+            implements: None,
+            doc: None,
+            signature: None,
         };
         let sym2 = Symbol {
             name: "config".to_string(),
@@ -737,6 +761,12 @@ mod tests {
             location: Location::new(PathBuf::from("src/Override.fs"), 10, 1),
             visibility: Visibility::Public,
             language: "fsharp".to_string(),
+            parent: None,
+            mixins: None,
+            attributes: None,
+            implements: None,
+            doc: None,
+            signature: None,
         };
 
         index.add_symbol(sym1);

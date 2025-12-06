@@ -243,6 +243,12 @@ fn extract_recursive_with_depth(
                         location: node_to_location(file, &name_node),
                         visibility: Visibility::Public,
                         language: "fsharp".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: None,
+                        implements: None,
+                        doc: None,
+                        signature: None,
                     };
                     if result.module_path.is_none() {
                         result.module_path = Some(qualified.clone());
@@ -285,9 +291,11 @@ fn extract_recursive_with_depth(
         }
 
         "type_definition" => {
+            // Doc comments are siblings of type_definition
+            let doc = extract_doc_comment(node, source);
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i) {
-                    extract_type_defn(&child, source, file, result, current_module);
+                    extract_type_defn(&child, source, file, result, current_module, doc.as_deref());
                 }
             }
         }
@@ -322,17 +330,121 @@ fn extract_recursive_with_depth(
     }
 }
 
+/// Extract documentation comment from preceding sibling nodes.
+/// F# uses `/// comment` style which becomes `line_comment` nodes.
+fn extract_doc_comment(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    // Get the parent node to find siblings
+    let parent = node.parent()?;
+
+    // Find our position in the parent's children
+    let mut our_index = None;
+    for i in 0..parent.child_count() {
+        if let Some(child) = parent.child(i) {
+            if child.id() == node.id() {
+                our_index = Some(i);
+                break;
+            }
+        }
+    }
+
+    let our_index = our_index?;
+    if our_index == 0 {
+        return None;
+    }
+
+    // Collect preceding line_comment nodes that are doc comments (start with ///)
+    let mut doc_lines = Vec::new();
+
+    // Walk backwards from our position, collecting consecutive doc comments
+    let mut i = our_index;
+    while i > 0 {
+        i -= 1;
+        if let Some(sibling) = parent.child(i) {
+            match sibling.kind() {
+                "line_comment" => {
+                    if let Ok(text) = sibling.utf8_text(source) {
+                        let text = text.trim();
+                        if text.starts_with("///") {
+                            // Strip the /// prefix and any leading space
+                            let doc_text = text.trim_start_matches('/').trim();
+                            doc_lines.push(doc_text.to_string());
+                        } else {
+                            // Not a doc comment, stop looking
+                            break;
+                        }
+                    }
+                }
+                "attributes" | "attribute" => {
+                    // Skip over attribute blocks (single or grouped) between docs and declarations
+                    continue;
+                }
+                _ => {
+                    // Not a comment, stop looking
+                    break;
+                }
+            }
+        }
+    }
+
+    if doc_lines.is_empty() {
+        return None;
+    }
+
+    // Reverse to get original order (we collected backwards)
+    doc_lines.reverse();
+    Some(doc_lines.join("\n"))
+}
+
+/// Extract implemented interfaces from a type definition node.
+/// Looks for interface_implementation children in type_extension_elements.
+fn extract_interfaces(node: &tree_sitter::Node, source: &[u8]) -> Vec<String> {
+    let mut interfaces = Vec::new();
+
+    fn find_interfaces_recursive(
+        node: &tree_sitter::Node,
+        source: &[u8],
+        interfaces: &mut Vec<String>,
+        depth: usize,
+    ) {
+        if depth > 20 {
+            return;
+        }
+
+        if node.kind() == "interface_implementation" {
+            // interface_implementation -> simple_type -> long_identifier -> identifier
+            if let Some(simple_type) = find_child_by_kind(node, "simple_type") {
+                if let Some(long_id) = find_child_by_kind(&simple_type, "long_identifier") {
+                    if let Ok(name) = long_id.utf8_text(source) {
+                        interfaces.push(name.trim().to_string());
+                    }
+                }
+            }
+        }
+
+        // Look in type_extension_elements and other children
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                find_interfaces_recursive(&child, source, interfaces, depth + 1);
+            }
+        }
+    }
+
+    find_interfaces_recursive(node, source, &mut interfaces, 0);
+    interfaces
+}
+
 fn extract_type_defn(
     node: &tree_sitter::Node,
     source: &[u8],
     file: &Path,
     result: &mut ParseResult,
     current_module: Option<&str>,
+    doc: Option<&str>,
 ) {
     let kind = match node.kind() {
         "record_type_defn" => SymbolKind::Record,
         "union_type_defn" => SymbolKind::Union,
-        "class_type_defn" => SymbolKind::Class,
+        "class_type_defn" | "anon_type_defn" => SymbolKind::Class, // anon_type_defn = class with primary constructor
         "interface_type_defn" => SymbolKind::Interface,
         "type_abbrev_defn" | "type_extension" => SymbolKind::Type,
         _ => return,
@@ -352,6 +464,8 @@ fn extract_type_defn(
 
         if let Ok(name) = name_node.utf8_text(source) {
             let trimmed = name.trim();
+            let attrs = extract_attributes(node, source);
+            let interfaces = extract_interfaces(node, source);
             let symbol = Symbol {
                 name: trimmed.to_string(),
                 qualified: qualified_name(trimmed, current_module),
@@ -359,6 +473,16 @@ fn extract_type_defn(
                 location: node_to_location(file, &name_node),
                 visibility: Visibility::Public,
                 language: "fsharp".to_string(),
+                parent: None,
+                mixins: None,
+                attributes: if attrs.is_empty() { None } else { Some(attrs) },
+                implements: if interfaces.is_empty() {
+                    None
+                } else {
+                    Some(interfaces)
+                },
+                doc: doc.map(|d| d.to_string()),
+                signature: None,
             };
             result.symbols.push(symbol);
 
@@ -375,6 +499,8 @@ fn extract_type_defn(
     {
         if let Ok(name) = name_node.utf8_text(source) {
             let trimmed = name.trim();
+            let attrs = extract_attributes(node, source);
+            let interfaces = extract_interfaces(node, source);
             let symbol = Symbol {
                 name: trimmed.to_string(),
                 qualified: qualified_name(trimmed, current_module),
@@ -382,6 +508,16 @@ fn extract_type_defn(
                 location: node_to_location(file, &name_node),
                 visibility: Visibility::Public,
                 language: "fsharp".to_string(),
+                parent: None,
+                mixins: None,
+                attributes: if attrs.is_empty() { None } else { Some(attrs) },
+                implements: if interfaces.is_empty() {
+                    None
+                } else {
+                    Some(interfaces)
+                },
+                doc: doc.map(|d| d.to_string()),
+                signature: None,
             };
             result.symbols.push(symbol);
         }
@@ -418,6 +554,12 @@ fn extract_members(
                             location: node_to_location(file, &name_node),
                             visibility: extract_visibility(&child, source),
                             language: "fsharp".to_string(),
+                            parent: None,
+                            mixins: None,
+                            attributes: None,
+                            implements: None,
+                            doc: None,
+                            signature: None,
                         };
                         result.symbols.push(symbol);
                     }
@@ -425,6 +567,57 @@ fn extract_members(
             }
             extract_members(&child, source, file, result, current_module, depth + 1);
         }
+    }
+}
+
+/// Extract type signature from a function or value definition.
+/// Returns signatures like "int -> int -> int" for functions or "int" for values.
+fn extract_signature(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut param_types = Vec::new();
+    let mut return_type = None;
+
+    // Look for function_declaration_left with argument_patterns
+    if let Some(func_decl) = find_child_by_kind(node, "function_declaration_left") {
+        if let Some(args) = find_child_by_kind(&func_decl, "argument_patterns") {
+            for i in 0..args.child_count() {
+                if let Some(child) = args.child(i) {
+                    if child.kind() == "typed_pattern" {
+                        // Find simple_type in typed_pattern
+                        if let Some(type_node) = find_child_by_kind(&child, "simple_type") {
+                            if let Ok(type_text) = type_node.utf8_text(source) {
+                                param_types.push(type_text.trim().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Look for return type (simple_type directly under function_or_value_defn)
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "simple_type" {
+                if let Ok(type_text) = child.utf8_text(source) {
+                    return_type = Some(type_text.trim().to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    // Build the signature
+    if param_types.is_empty() {
+        // Value or function without typed parameters
+        return_type
+    } else {
+        // Function with typed parameters
+        let sig = if let Some(ret) = return_type {
+            format!("{} -> {}", param_types.join(" -> "), ret)
+        } else {
+            param_types.join(" -> ")
+        };
+        Some(sig)
     }
 }
 
@@ -436,6 +629,12 @@ fn handle_function_or_value_defn(
     current_module: Option<&str>,
 ) {
     let mut handled = false;
+
+    // Doc comments are siblings of the parent value_declaration, not function_or_value_defn
+    let doc = node.parent().and_then(|p| extract_doc_comment(&p, source));
+
+    // Extract type signature if present
+    let signature = extract_signature(node, source);
 
     if let Some(decl) = find_child_by_kind(node, "function_declaration_left") {
         if let Some(name_node) = find_child_by_kind(&decl, "identifier") {
@@ -449,6 +648,7 @@ fn handle_function_or_value_defn(
                     SymbolKind::Value
                 };
 
+                let attrs = extract_attributes(node, source);
                 let symbol = Symbol {
                     name: trimmed.to_string(),
                     qualified,
@@ -456,6 +656,12 @@ fn handle_function_or_value_defn(
                     location: node_to_location(file, &name_node),
                     visibility: extract_visibility(node, source),
                     language: "fsharp".to_string(),
+                    parent: None,
+                    mixins: None,
+                    attributes: if attrs.is_empty() { None } else { Some(attrs) },
+                    implements: None,
+                    doc: doc.clone(),
+                    signature: signature.clone(),
                 };
                 result.symbols.push(symbol);
                 handled = true;
@@ -474,6 +680,7 @@ fn handle_function_or_value_defn(
             if let Some(name_node) = name_node {
                 if let Ok(name) = name_node.utf8_text(source) {
                     let trimmed = name.trim();
+                    let attrs = extract_attributes(node, source);
                     let symbol = Symbol {
                         name: trimmed.to_string(),
                         qualified: qualified_name(trimmed, current_module),
@@ -481,6 +688,12 @@ fn handle_function_or_value_defn(
                         location: node_to_location(file, &name_node),
                         visibility: extract_visibility(node, source),
                         language: "fsharp".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: if attrs.is_empty() { None } else { Some(attrs) },
+                        implements: None,
+                        doc,
+                        signature,
                     };
                     result.symbols.push(symbol);
                 }
@@ -631,6 +844,45 @@ fn find_child_by_kind<'a>(
     None
 }
 
+/// Extract F# attributes from a node.
+/// Looks for `attributes` sibling in the parent node (for value_declaration, type_definition, etc.)
+fn extract_attributes(node: &tree_sitter::Node, source: &[u8]) -> Vec<String> {
+    let mut attrs = Vec::new();
+
+    // Look in parent node for `attributes` sibling
+    if let Some(parent) = node.parent() {
+        if let Some(attributes_node) = find_child_by_kind(&parent, "attributes") {
+            extract_attrs_from_node(&attributes_node, source, &mut attrs);
+        }
+    }
+
+    attrs
+}
+
+/// Recursively extract attribute names from an attributes node.
+fn extract_attrs_from_node(node: &tree_sitter::Node, source: &[u8], attrs: &mut Vec<String>) {
+    if node.kind() == "attribute" {
+        // Find the simple_type -> long_identifier -> identifier
+        if let Some(simple_type) = find_child_by_kind(node, "simple_type") {
+            if let Some(long_id) = find_child_by_kind(&simple_type, "long_identifier") {
+                // Get the first identifier (the attribute name)
+                if let Some(id_node) = find_child_by_kind(&long_id, "identifier") {
+                    if let Ok(name) = id_node.utf8_text(source) {
+                        attrs.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Recurse into children
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            extract_attrs_from_node(&child, source, attrs);
+        }
+    }
+}
+
 /// Convert a tree-sitter node position to our Location type.
 fn node_to_location(file: &Path, node: &tree_sitter::Node) -> Location {
     let start = node.start_position();
@@ -736,5 +988,240 @@ let defaultFn () = ()
         let default_fn = result.symbols.iter().find(|s| s.name == "defaultFn");
         assert!(default_fn.is_some());
         assert_eq!(default_fn.unwrap().visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn extracts_fsharp_attributes() {
+        let source = r#"
+[<Obsolete("Use new API")>]
+[<HttpGet("/users")>]
+let myFunction x = x + 1
+
+[<Struct>]
+type Point = { X: int; Y: int }
+"#;
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
+
+        let func = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "myFunction")
+            .expect("myFunction should be found");
+        let attrs = func
+            .attributes
+            .as_ref()
+            .expect("myFunction should have attributes");
+        assert!(
+            attrs.contains(&"Obsolete".to_string()),
+            "Should have Obsolete attribute"
+        );
+        assert!(
+            attrs.contains(&"HttpGet".to_string()),
+            "Should have HttpGet attribute"
+        );
+
+        let point = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Point")
+            .expect("Point should be found");
+        let point_attrs = point
+            .attributes
+            .as_ref()
+            .expect("Point should have attributes");
+        assert!(
+            point_attrs.contains(&"Struct".to_string()),
+            "Should have Struct attribute"
+        );
+    }
+
+    #[test]
+    fn extracts_interface_implementations() {
+        let source = r#"
+type MyType() =
+    interface IComparable with
+        member x.CompareTo(obj) = 0
+    interface IDisposable with
+        member x.Dispose() = ()
+"#;
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
+
+        let my_type = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "MyType")
+            .expect("MyType should be found");
+        let interfaces = my_type
+            .implements
+            .as_ref()
+            .expect("MyType should implement interfaces");
+        assert!(
+            interfaces.contains(&"IComparable".to_string()),
+            "Should implement IComparable"
+        );
+        assert!(
+            interfaces.contains(&"IDisposable".to_string()),
+            "Should implement IDisposable"
+        );
+    }
+
+    #[test]
+    fn extracts_doc_comments() {
+        let source = r#"
+/// This is a doc comment for the function.
+/// It can span multiple lines.
+let myFunction x = x + 1
+
+/// Summary about the type
+type MyRecord = { X: int; Y: int }
+"#;
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
+
+        let func = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "myFunction")
+            .expect("myFunction should be found");
+        let doc = func
+            .doc
+            .as_ref()
+            .expect("myFunction should have doc comment");
+        assert!(
+            doc.contains("doc comment for the function"),
+            "Should contain doc comment text: {}",
+            doc
+        );
+
+        let record = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "MyRecord")
+            .expect("MyRecord should be found");
+        let record_doc = record
+            .doc
+            .as_ref()
+            .expect("MyRecord should have doc comment");
+        assert!(
+            record_doc.contains("Summary about the type"),
+            "Should contain type doc: {}",
+            record_doc
+        );
+    }
+
+    #[test]
+    fn extracts_type_signatures() {
+        let source = r#"
+let add (x: int) (y: int): int = x + y
+let value: int = 42
+let noType x y = x + y
+"#;
+        let result = extract_symbols(Path::new("test.fs"), source, 500);
+
+        let add_fn = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "add")
+            .expect("add should be found");
+        let sig = add_fn
+            .signature
+            .as_ref()
+            .expect("add should have a signature");
+        assert_eq!(
+            sig, "int -> int -> int",
+            "add signature should be int -> int -> int"
+        );
+
+        let value = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "value")
+            .expect("value should be found");
+        let value_sig = value
+            .signature
+            .as_ref()
+            .expect("value should have a signature");
+        assert_eq!(value_sig, "int", "value signature should be int");
+
+        let no_type = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "noType")
+            .expect("noType should be found");
+        assert!(
+            no_type.signature.is_none(),
+            "noType should not have a signature"
+        );
+    }
+
+    #[test]
+    #[ignore] // Debug test - run with: cargo test debug_type_signature_ast -- --ignored --nocapture
+    fn debug_type_signature_ast() {
+        let source = r#"
+let add (x: int) (y: int): int = x + y
+let value: int = 42
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_fsharp::LANGUAGE_FSHARP.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        fn print_tree(node: &tree_sitter::Node, source: &str, indent: usize) {
+            let indent_str = "  ".repeat(indent);
+            let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+            let short_text = if text.len() > 40 { &text[..40] } else { text };
+            println!(
+                "{}[{}] {:?} = {:?}",
+                indent_str,
+                node.kind(),
+                node.byte_range(),
+                short_text.replace("\n", "\\n")
+            );
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    print_tree(&child, source, indent + 1);
+                }
+            }
+        }
+
+        print_tree(&tree.root_node(), source, 0);
+    }
+
+    #[test]
+    #[ignore] // Debug test - run with: cargo test debug_inherit_ast -- --ignored --nocapture
+    fn debug_inherit_ast() {
+        let source = r#"
+type Base() =
+    member _.Foo() = ()
+
+type Derived() =
+    inherit Base()
+"#;
+
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_fsharp::LANGUAGE_FSHARP.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        fn print_tree(node: &tree_sitter::Node, source: &str, indent: usize) {
+            let indent_str = "  ".repeat(indent);
+            let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+            let short_text = if text.len() > 60 { &text[..60] } else { text };
+            println!(
+                "{}[{}] {:?} = {:?}",
+                indent_str,
+                node.kind(),
+                node.byte_range(),
+                short_text.replace("\n", "\\n")
+            );
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    print_tree(&child, source, indent + 1);
+                }
+            }
+        }
+
+        print_tree(&tree.root_node(), source, 0);
     }
 }

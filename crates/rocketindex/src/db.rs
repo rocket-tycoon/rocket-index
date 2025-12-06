@@ -17,7 +17,11 @@ use crate::type_cache::{MemberKind, TypeMember};
 use crate::{IndexError, Location, Result, Symbol, SymbolKind, Visibility};
 
 /// Current schema version. Increment when making breaking changes.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
+
+/// Standard columns selected when querying symbols.
+/// Must match the order expected by `row_to_symbol`.
+const SYMBOL_COLUMNS: &str = "name, qualified, kind, file, line, column, end_line, end_column, visibility, language, parent, mixins, attributes, implements, doc, signature";
 
 /// Default database filename within .rocketindex/
 pub const DEFAULT_DB_NAME: &str = "index.db";
@@ -52,10 +56,13 @@ impl SqliteIndex {
 
         let conn = Connection::open(path)?;
 
-        // Enable WAL mode and normal sync for performance
+        // Aggressive performance tuning for read-heavy workloads
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;",
+             PRAGMA synchronous = NORMAL;
+             PRAGMA cache_size = -64000;
+             PRAGMA mmap_size = 268435456;
+             PRAGMA temp_store = MEMORY;",
         )?;
 
         let index = Self { conn };
@@ -98,10 +105,14 @@ impl SqliteIndex {
 
     /// Initialize the database schema.
     fn init_schema(&self) -> Result<()> {
-        // Enable WAL mode for better concurrency and performance
+        // Aggressive performance tuning for write-heavy indexing
         self.conn.execute_batch(
             "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;",
+             PRAGMA synchronous = OFF;
+             PRAGMA cache_size = -64000;
+             PRAGMA mmap_size = 268435456;
+             PRAGMA temp_store = MEMORY;
+             PRAGMA locking_mode = EXCLUSIVE;",
         )?;
         self.conn.execute_batch(SCHEMA_SQL)?;
         self.set_metadata("schema_version", &SCHEMA_VERSION.to_string())?;
@@ -159,8 +170,8 @@ impl SqliteIndex {
     /// Insert a symbol into the database. Returns the inserted row ID.
     pub fn insert_symbol(&self, symbol: &Symbol) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO symbols (name, qualified, kind, file, line, column, end_line, end_column, visibility, source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'syntactic')",
+            "INSERT INTO symbols (name, qualified, kind, file, line, column, end_line, end_column, visibility, source, language, parent, mixins, attributes, implements, doc, signature)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'syntactic', ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 symbol.name,
                 symbol.qualified,
@@ -171,6 +182,13 @@ impl SqliteIndex {
                 symbol.location.end_line,
                 symbol.location.end_column,
                 visibility_to_str(symbol.visibility),
+                symbol.language,
+                symbol.parent,
+                symbol.mixins.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()),
+                symbol.attributes.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()),
+                symbol.implements.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()),
+                symbol.doc,
+                symbol.signature,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -179,8 +197,8 @@ impl SqliteIndex {
     /// Insert a symbol with type signature.
     pub fn insert_symbol_with_type(&self, symbol: &Symbol, type_signature: &str) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO symbols (name, qualified, kind, type_signature, file, line, column, end_line, end_column, visibility, source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'semantic')",
+            "INSERT INTO symbols (name, qualified, kind, type_signature, file, line, column, end_line, end_column, visibility, source, language, parent, mixins, attributes, implements, doc, signature)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'semantic', ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 symbol.name,
                 symbol.qualified,
@@ -192,6 +210,13 @@ impl SqliteIndex {
                 symbol.location.end_line,
                 symbol.location.end_column,
                 visibility_to_str(symbol.visibility),
+                symbol.language,
+                symbol.parent,
+                symbol.mixins.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()),
+                symbol.attributes.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()),
+                symbol.implements.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()),
+                symbol.doc,
+                symbol.signature,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -202,8 +227,8 @@ impl SqliteIndex {
         let tx = self.conn.unchecked_transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO symbols (name, qualified, kind, file, line, column, end_line, end_column, visibility, language, source)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'syntactic')",
+                "INSERT INTO symbols (name, qualified, kind, file, line, column, end_line, end_column, visibility, language, source, parent, mixins, attributes, implements, doc, signature)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'syntactic', ?11, ?12, ?13, ?14, ?15, ?16)",
             )?;
 
             for symbol in symbols {
@@ -218,6 +243,21 @@ impl SqliteIndex {
                     symbol.location.end_column,
                     visibility_to_str(symbol.visibility),
                     symbol.language,
+                    symbol.parent,
+                    symbol
+                        .mixins
+                        .as_ref()
+                        .map(|v| serde_json::to_string(v).unwrap_or_default()),
+                    symbol
+                        .attributes
+                        .as_ref()
+                        .map(|v| serde_json::to_string(v).unwrap_or_default()),
+                    symbol
+                        .implements
+                        .as_ref()
+                        .map(|v| serde_json::to_string(v).unwrap_or_default()),
+                    symbol.doc,
+                    symbol.signature,
                 ])?;
             }
         }
@@ -228,24 +268,24 @@ impl SqliteIndex {
     /// Find a symbol by its qualified name. Returns the first match.
     #[must_use = "query results should not be ignored"]
     pub fn find_by_qualified(&self, qualified: &str) -> Result<Option<Symbol>> {
+        let query = format!(
+            "SELECT {} FROM symbols WHERE qualified = ?1 LIMIT 1",
+            SYMBOL_COLUMNS
+        );
         let symbol = self
             .conn
-            .query_row(
-                "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
-                 FROM symbols WHERE qualified = ?1 LIMIT 1",
-                params![qualified],
-                row_to_symbol,
-            )
+            .query_row(&query, params![qualified], row_to_symbol)
             .optional()?;
         Ok(symbol)
     }
 
     /// Find all symbols with the given qualified name (for overloads).
     pub fn find_all_by_qualified(&self, qualified: &str) -> Result<Vec<Symbol>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
-             FROM symbols WHERE qualified = ?1",
-        )?;
+        let query = format!(
+            "SELECT {} FROM symbols WHERE qualified = ?1",
+            SYMBOL_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&query)?;
 
         let symbols = stmt
             .query_map(params![qualified], row_to_symbol)?
@@ -265,17 +305,18 @@ impl SqliteIndex {
         // Convert glob-style wildcards to SQL LIKE
         let sql_pattern = pattern.replace('*', "%").replace('?', "_");
 
-        let mut stmt = self.conn.prepare(if language.is_some() {
-            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
-             FROM symbols
-             WHERE (name LIKE ?1 OR qualified LIKE ?1) AND language = ?2
-             LIMIT ?3"
+        let query = if language.is_some() {
+            format!(
+                "SELECT {} FROM symbols WHERE (name LIKE ?1 OR qualified LIKE ?1) AND language = ?2 LIMIT ?3",
+                SYMBOL_COLUMNS
+            )
         } else {
-            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
-             FROM symbols
-             WHERE (name LIKE ?1 OR qualified LIKE ?1)
-             LIMIT ?2"
-        })?;
+            format!(
+                "SELECT {} FROM symbols WHERE (name LIKE ?1 OR qualified LIKE ?1) LIMIT ?2",
+                SYMBOL_COLUMNS
+            )
+        };
+        let mut stmt = self.conn.prepare(&query)?;
 
         let symbols = if let Some(lang) = language {
             stmt.query_map(params![sql_pattern, lang, limit as i64], row_to_symbol)?
@@ -354,19 +395,23 @@ impl SqliteIndex {
         limit: usize,
         language: Option<&str>,
     ) -> Result<Vec<Symbol>> {
-        let mut stmt = self.conn.prepare(if language.is_some() {
-            "SELECT s.name, s.qualified, s.kind, s.file, s.line, s.column, s.end_line, s.end_column, s.visibility, s.language
-             FROM symbols s
-             JOIN symbols_fts fts ON s.id = fts.rowid
-             WHERE symbols_fts MATCH ?1 AND s.language = ?2
-             ORDER BY rank LIMIT ?3"
+        let prefixed_cols = SYMBOL_COLUMNS
+            .split(", ")
+            .map(|c| format!("s.{}", c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query = if language.is_some() {
+            format!(
+                "SELECT {} FROM symbols s JOIN symbols_fts fts ON s.id = fts.rowid WHERE symbols_fts MATCH ?1 AND s.language = ?2 ORDER BY rank LIMIT ?3",
+                prefixed_cols
+            )
         } else {
-            "SELECT s.name, s.qualified, s.kind, s.file, s.line, s.column, s.end_line, s.end_column, s.visibility, s.language
-             FROM symbols s
-             JOIN symbols_fts fts ON s.id = fts.rowid
-             WHERE symbols_fts MATCH ?1
-             ORDER BY rank LIMIT ?2"
-        })?;
+            format!(
+                "SELECT {} FROM symbols s JOIN symbols_fts fts ON s.id = fts.rowid WHERE symbols_fts MATCH ?1 ORDER BY rank LIMIT ?2",
+                prefixed_cols
+            )
+        };
+        let mut stmt = self.conn.prepare(&query)?;
 
         let symbols = if let Some(lang) = language {
             stmt.query_map(params![fts_query, lang, limit as i64], row_to_symbol)?
@@ -382,10 +427,8 @@ impl SqliteIndex {
     /// Get all symbols defined in a file.
     pub fn symbols_in_file(&self, file: &Path) -> Result<Vec<Symbol>> {
         let file_str = file.to_string_lossy();
-        let mut stmt = self.conn.prepare(
-            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
-             FROM symbols WHERE file = ?1",
-        )?;
+        let query = format!("SELECT {} FROM symbols WHERE file = ?1", SYMBOL_COLUMNS);
+        let mut stmt = self.conn.prepare(&query)?;
 
         let symbols = stmt
             .query_map(params![file_str.as_ref()], row_to_symbol)?
@@ -468,21 +511,57 @@ impl SqliteIndex {
         limit: usize,
         language: Option<&str>,
     ) -> Result<Vec<(Symbol, usize)>> {
-        // Get all symbols (we need to compare each one)
-        let mut stmt = self.conn.prepare(if language.is_some() {
-            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
-             FROM symbols WHERE language = ?1"
-        } else {
-            "SELECT name, qualified, kind, file, line, column, end_line, end_column, visibility, language
-             FROM symbols"
-        })?;
+        // OPTIMIZATION: Use FTS to get candidates first, then filter by edit distance.
+        // This avoids loading all 36k+ symbols into memory for every fuzzy search.
+        // We search for prefix matches which are likely to have low edit distance.
 
-        let symbols: Vec<Symbol> = if let Some(lang) = language {
-            stmt.query_map(params![lang], row_to_symbol)?
+        // Generate candidate prefixes from the query (first N chars)
+        let candidate_limit = limit * 20; // Get more candidates than needed for filtering
+        let symbols = if query.len() >= 2 {
+            // Use FTS prefix search for candidate generation
+            let prefix = &query[..query.len().min(4)];
+            let fts_query = format!("{}*", prefix);
+
+            let prefixed_cols = SYMBOL_COLUMNS
+                .split(", ")
+                .map(|c| format!("s.{}", c))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let sql = if language.is_some() {
+                format!(
+                    "SELECT {} FROM symbols s JOIN symbols_fts fts ON s.id = fts.rowid WHERE symbols_fts MATCH ?1 AND s.language = ?2 LIMIT ?3",
+                    prefixed_cols
+                )
+            } else {
+                format!(
+                    "SELECT {} FROM symbols s JOIN symbols_fts fts ON s.id = fts.rowid WHERE symbols_fts MATCH ?1 LIMIT ?2",
+                    prefixed_cols
+                )
+            };
+
+            let mut stmt = self.conn.prepare(&sql)?;
+            let result: Vec<Symbol> = if let Some(lang) = language {
+                stmt.query_map(
+                    params![fts_query, lang, candidate_limit as i64],
+                    row_to_symbol,
+                )?
+            } else {
+                stmt.query_map(params![fts_query, candidate_limit as i64], row_to_symbol)?
+            }
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            // If FTS found enough candidates, use them; otherwise fall back to full scan
+            if result.len() >= limit {
+                result
+            } else {
+                // Fall back to scanning (for very short queries or no FTS matches)
+                self.fuzzy_search_full_scan(query, language, candidate_limit)?
+            }
         } else {
-            stmt.query_map([], row_to_symbol)?
-        }
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+            // Query too short for FTS, do full scan
+            self.fuzzy_search_full_scan(query, language, candidate_limit)?
+        };
 
         // Calculate distance for each symbol and filter
         let mut matches: Vec<(Symbol, usize)> = symbols
@@ -505,6 +584,55 @@ impl SqliteIndex {
 
         matches.truncate(limit);
         Ok(matches)
+    }
+
+    /// Full table scan for fuzzy search (fallback when FTS can't help)
+    fn fuzzy_search_full_scan(
+        &self,
+        _query: &str,
+        language: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Symbol>> {
+        let sql = if language.is_some() {
+            format!(
+                "SELECT {} FROM symbols WHERE language = ?1 LIMIT ?2",
+                SYMBOL_COLUMNS
+            )
+        } else {
+            format!("SELECT {} FROM symbols LIMIT ?1", SYMBOL_COLUMNS)
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
+
+        let symbols: Vec<Symbol> = if let Some(lang) = language {
+            stmt.query_map(params![lang, limit as i64], row_to_symbol)?
+        } else {
+            stmt.query_map(params![limit as i64], row_to_symbol)?
+        }
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(symbols)
+    }
+
+    /// Find all classes/modules that inherit from the given parent.
+    /// Uses index on parent column for exact matches, with optimized suffix matching.
+    pub fn find_subclasses(&self, parent: &str) -> Result<Vec<Symbol>> {
+        // First try exact match using the index (fast path)
+        let query = format!("SELECT {} FROM symbols WHERE parent = ?1", SYMBOL_COLUMNS);
+        let mut stmt = self.conn.prepare(&query)?;
+        let mut symbols: Vec<Symbol> = stmt
+            .query_map(params![parent], row_to_symbol)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // Also match with leading :: (e.g., "::Common::Client::Base")
+        let prefixed = format!("::{}", parent);
+        let query2 = format!("SELECT {} FROM symbols WHERE parent = ?1", SYMBOL_COLUMNS);
+        let mut stmt2 = self.conn.prepare(&query2)?;
+        let prefixed_symbols: Vec<Symbol> = stmt2
+            .query_map(params![prefixed], row_to_symbol)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        symbols.extend(prefixed_symbols);
+
+        Ok(symbols)
     }
 
     /// List all indexed files.
@@ -819,13 +947,20 @@ CREATE TABLE IF NOT EXISTS symbols (
     end_column INTEGER,
     visibility TEXT DEFAULT 'public',
     source TEXT DEFAULT 'syntactic',
-    language TEXT DEFAULT 'fsharp'
+    language TEXT DEFAULT 'fsharp',
+    parent TEXT,
+    mixins TEXT,
+    attributes TEXT,
+    implements TEXT,
+    doc TEXT,
+    signature TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbols_qualified ON symbols(qualified);
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
+CREATE INDEX IF NOT EXISTS idx_symbols_parent ON symbols(parent);
 
 -- FTS5 virtual table for fast full-text search on symbol names
 -- Uses content= to make it an "external content" table linked to symbols
@@ -907,6 +1042,16 @@ fn row_to_symbol(row: &rusqlite::Row<'_>) -> rusqlite::Result<Symbol> {
     let language: String = row
         .get::<_, Option<String>>(9)?
         .unwrap_or_else(|| "fsharp".to_string());
+    let parent: Option<String> = row.get(10)?;
+    let mixins_json: Option<String> = row.get(11)?;
+    let attributes_json: Option<String> = row.get(12)?;
+    let implements_json: Option<String> = row.get(13)?;
+    let doc: Option<String> = row.get(14)?;
+    let signature: Option<String> = row.get(15)?;
+
+    let mixins = mixins_json.and_then(|j| serde_json::from_str(&j).ok());
+    let attributes = attributes_json.and_then(|j| serde_json::from_str(&j).ok());
+    let implements = implements_json.and_then(|j| serde_json::from_str(&j).ok());
 
     Ok(Symbol {
         name,
@@ -915,6 +1060,12 @@ fn row_to_symbol(row: &rusqlite::Row<'_>) -> rusqlite::Result<Symbol> {
         location: Location::with_end(PathBuf::from(file), line, column, end_line, end_column),
         visibility: str_to_visibility(&visibility_str),
         language,
+        parent,
+        mixins,
+        attributes,
+        implements,
+        doc,
+        signature,
     })
 }
 
@@ -1013,6 +1164,12 @@ mod tests {
             location: Location::new(PathBuf::from(file), line, 1),
             visibility: Visibility::Public,
             language: "fsharp".to_string(),
+            parent: None,
+            mixins: None,
+            attributes: None,
+            implements: None,
+            doc: None,
+            signature: None,
         }
     }
 

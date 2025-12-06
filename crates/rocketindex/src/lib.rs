@@ -123,6 +123,24 @@ pub struct Symbol {
     /// Language of the symbol (e.g., "fsharp", "ruby")
     #[serde(default = "default_language")]
     pub language: String,
+    /// Parent class/type (for inheritance relationships)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// Included/extended/prepended modules (for Ruby mixins)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mixins: Option<Vec<String>>,
+    /// Decorators/attributes applied to the symbol (e.g., F# [<Obsolete>], Python @decorator)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attributes: Option<Vec<String>>,
+    /// Interfaces/protocols this type implements (e.g., F# interface IComparable)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implements: Option<Vec<String>>,
+    /// Documentation comment (e.g., F# /// comment, Ruby # comment)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// Type signature (e.g., "int -> int -> int" for F# functions)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 impl Symbol {
@@ -141,7 +159,49 @@ impl Symbol {
             location,
             visibility,
             language,
+            parent: None,
+            mixins: None,
+            attributes: None,
+            implements: None,
+            doc: None,
+            signature: None,
         }
+    }
+
+    /// Create a symbol with a parent class/type
+    pub fn with_parent(mut self, parent: Option<String>) -> Self {
+        self.parent = parent;
+        self
+    }
+
+    /// Create a symbol with mixins (include/extend/prepend)
+    pub fn with_mixins(mut self, mixins: Option<Vec<String>>) -> Self {
+        self.mixins = mixins;
+        self
+    }
+
+    /// Create a symbol with attributes/decorators
+    pub fn with_attributes(mut self, attributes: Option<Vec<String>>) -> Self {
+        self.attributes = attributes;
+        self
+    }
+
+    /// Create a symbol with interface implementations
+    pub fn with_implements(mut self, implements: Option<Vec<String>>) -> Self {
+        self.implements = implements;
+        self
+    }
+
+    /// Create a symbol with documentation
+    pub fn with_doc(mut self, doc: Option<String>) -> Self {
+        self.doc = doc;
+        self
+    }
+
+    /// Create a symbol with type signature
+    pub fn with_signature(mut self, signature: Option<String>) -> Self {
+        self.signature = signature;
+        self
     }
 }
 
