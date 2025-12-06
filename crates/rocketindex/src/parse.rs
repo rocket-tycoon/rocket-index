@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::languages::{fsharp, ruby};
+use crate::languages::{fsharp, python, ruby};
 use crate::{Location, Reference, Symbol};
 
 /// A syntax error detected during parsing.
@@ -69,6 +69,7 @@ pub fn extract_symbols(file: &Path, source: &str, max_depth: usize) -> ParseResu
     match extension.as_str() {
         "fs" | "fsi" | "fsx" => fsharp::FSharpParser.extract_symbols(file, source, max_depth),
         "rb" => ruby::RubyParser.extract_symbols(file, source, max_depth),
+        "py" => python::parser::PythonParser.extract_symbols(file, source, max_depth),
         _ => {
             tracing::warn!("Unsupported file extension: {}", extension);
             ParseResult::default()
