@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Note**: This project uses [bd (beads)](https://github.com/steveyegge/beads)
    for issue tracking. Use `bd` commands instead of markdown TODOs.
-   See AGENTS.md for workflow details.
+   See .rocketindex/AGENTS.md for workflow details.
    
 ## Coding Guidelines
 

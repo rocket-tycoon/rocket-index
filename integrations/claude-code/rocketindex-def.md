@@ -1,5 +1,5 @@
 ---
-description: Find definition of F# symbol
+description: Find definition of symbol
 ---
 Use rkt to find the definition of the specified symbol.
 

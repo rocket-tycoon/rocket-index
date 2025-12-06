@@ -1,7 +1,7 @@
 ---
-description: Trace F# call graph from entry point
+description: Trace call graph from entry point
 ---
-Spider the F# codebase from the specified entry point to understand dependencies.
+Spider the codebase from the specified entry point to understand dependencies.
 
 Run: `rkt spider $ARGUMENTS --depth 3`
 
