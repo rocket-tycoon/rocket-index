@@ -40,6 +40,104 @@ mod exit_codes {
 mod guidelines;
 mod skills;
 
+// File change tracking utilities (used by setup wizards)
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileChangeKind {
+    Created,
+    Updated,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct FileChange {
+    path: String,
+    description: String,
+    kind: FileChangeKind,
+}
+
+#[allow(dead_code)]
+impl FileChange {
+    fn created<P: Into<String>, D: Into<String>>(path: P, description: D) -> Self {
+        Self {
+            path: path.into(),
+            description: description.into(),
+            kind: FileChangeKind::Created,
+        }
+    }
+
+    fn updated<P: Into<String>, D: Into<String>>(path: P, description: D) -> Self {
+        Self {
+            path: path.into(),
+            description: description.into(),
+            kind: FileChangeKind::Updated,
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn workspace_relative_path(path: &Path, cwd: &Path) -> String {
+    match path.strip_prefix(cwd) {
+        Ok(relative) => relative.display().to_string(),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+#[allow(dead_code)]
+fn record_file_change(
+    file_changes: &mut Vec<FileChange>,
+    cwd: &Path,
+    path: &Path,
+    description: impl Into<String>,
+    kind: FileChangeKind,
+) {
+    let description = description.into();
+    let relative = workspace_relative_path(path, cwd);
+    let change = match kind {
+        FileChangeKind::Created => FileChange::created(relative, description),
+        FileChangeKind::Updated => FileChange::updated(relative, description),
+    };
+    file_changes.push(change);
+}
+
+#[allow(dead_code)]
+fn print_file_changes(file_changes: &[FileChange]) {
+    if file_changes.is_empty() {
+        println!("  No files were created or updated.");
+        return;
+    }
+
+    let mut created: Vec<&FileChange> = file_changes
+        .iter()
+        .filter(|change| change.kind == FileChangeKind::Created)
+        .collect();
+    let mut updated: Vec<&FileChange> = file_changes
+        .iter()
+        .filter(|change| change.kind == FileChangeKind::Updated)
+        .collect();
+
+    created.sort_by(|a, b| a.path.cmp(&b.path));
+    updated.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let has_created = !created.is_empty();
+    if has_created {
+        println!("  Created:");
+        for change in created {
+            println!("    • {} — {}", change.path, change.description);
+        }
+    }
+
+    if !updated.is_empty() {
+        if has_created {
+            println!();
+        }
+        println!("  Updated:");
+        for change in updated {
+            println!("    • {} — {}", change.path, change.description);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum OutputFormat {
     Json,
@@ -207,8 +305,14 @@ enum Commands {
 
     /// Set up editor integrations (slash commands, rules, etc.)
     Setup {
-        /// Editor to set up: claude, cursor, vscode
+        /// Editor to set up: claude, cursor, copilot
         editor: String,
+    },
+
+    /// Start a coding session (runs setup if needed, then starts watch mode)
+    Start {
+        /// Target agent: claude, cursor, copilot
+        agent: String,
     },
 }
 
@@ -292,6 +396,7 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
         Commands::History { symbol } => cmd_history(&symbol, format, quiet, concise),
         Commands::Doctor => cmd_doctor(format, quiet),
         Commands::Setup { editor } => cmd_setup(&editor, format, quiet),
+        Commands::Start { agent } => cmd_start(&agent, format, quiet),
     }
 }
 
@@ -786,7 +891,7 @@ fn cmd_update(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
         if format == OutputFormat::Json {
             println!(
                 "{}",
-                serde_json::json!({"error": "Index not found. Run 'build' first."})
+                serde_json::json!({"error": "Index not found. Run 'rkt index' first."})
             );
         } else {
             eprintln!("Index not found. Run 'rkt index' first.");
@@ -2027,6 +2132,145 @@ fn cmd_setup(editor: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
             Ok(exit_codes::ERROR)
         }
     }
+}
+
+/// Start a coding session - runs setup if needed, then starts watch mode
+fn cmd_start(agent: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
+    let cwd = std::env::current_dir()?;
+    let db_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
+
+    // Validate agent name
+    let agent_lower = agent.to_lowercase();
+    let valid_agents = [
+        "claude",
+        "claude-code",
+        "cursor",
+        "copilot",
+        "github-copilot",
+    ];
+    if !valid_agents.contains(&agent_lower.as_str()) {
+        if format == OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "error": "Unknown agent",
+                    "supported": ["claude", "cursor", "copilot"]
+                })
+            );
+        } else {
+            eprintln!("Unknown agent: {}", agent);
+            eprintln!("Supported agents: claude, cursor, copilot");
+        }
+        return Ok(exit_codes::ERROR);
+    }
+
+    // Check if watch is already running
+    if let Some(pid) = find_watch_process(&cwd) {
+        if format == OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "already_running",
+                    "pid": pid,
+                    "message": "Watch mode is already running"
+                })
+            );
+        } else {
+            println!("Watch mode is already running (pid {})", pid);
+        }
+        return Ok(exit_codes::SUCCESS);
+    }
+
+    // Check if setup has been done (index exists)
+    let needs_setup = !db_path.exists();
+
+    if needs_setup {
+        // Run full setup wizard
+        if !quiet {
+            println!("First time setup - running wizard...\n");
+        }
+        cmd_setup(agent, format, quiet)?;
+    } else {
+        // Index exists, just ensure it's fresh and start watch
+        if !quiet {
+            println!("Starting watch mode...\n");
+        }
+    }
+
+    // Start watch mode (this will also rebuild/update index if needed)
+    cmd_watch(&cwd, format, quiet)
+}
+
+/// Find a running rkt watch process for the given directory
+fn find_watch_process(cwd: &Path) -> Option<u32> {
+    use std::process::Command;
+
+    // Use pgrep to find rkt watch processes
+    let output = Command::new("pgrep")
+        .args(["-f", "rkt watch"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Ok(pid) = line.trim().parse::<u32>() {
+            // Verify this process is watching our directory by checking /proc or lsof
+            // For simplicity, just return the first match
+            // A more robust check would verify the working directory
+            if is_watch_for_directory(pid, cwd) {
+                return Some(pid);
+            }
+        }
+    }
+
+    None
+}
+
+/// Check if a watch process is for the given directory
+fn is_watch_for_directory(pid: u32, cwd: &Path) -> bool {
+    use std::process::Command;
+
+    // On macOS, use lsof to check the process's current working directory
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("lsof")
+            .args(["-p", &pid.to_string(), "-Fn"])
+            .output()
+            .ok();
+
+        if let Some(output) = output {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // lsof output includes "ncwd" for current working directory
+            if stdout.contains(&cwd.display().to_string()) {
+                return true;
+            }
+        }
+    }
+
+    // On Linux, check /proc/{pid}/cwd
+    #[cfg(target_os = "linux")]
+    {
+        let proc_cwd = PathBuf::from(format!("/proc/{}/cwd", pid));
+        if let Ok(link_target) = std::fs::read_link(&proc_cwd) {
+            if link_target == cwd {
+                return true;
+            }
+        }
+    }
+
+    // Fallback: assume it's for our directory if we found a match
+    // This is less precise but better than nothing
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (pid, cwd);
+        return true;
+    }
+
+    false
 }
 
 /// Detect the primary programming language of a project by counting file extensions
