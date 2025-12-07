@@ -26,6 +26,10 @@ pub struct Config {
     /// Maximum recursion depth for parsing (default: 500).
     #[serde(default = "default_recursion_depth")]
     pub max_recursion_depth: usize,
+
+    /// Whether to respect .gitignore files when indexing (default: true).
+    #[serde(default = "default_respect_gitignore")]
+    pub respect_gitignore: bool,
 }
 
 impl Default for Config {
@@ -33,12 +37,17 @@ impl Default for Config {
         Self {
             exclude_dirs: Vec::new(),
             max_recursion_depth: default_recursion_depth(),
+            respect_gitignore: default_respect_gitignore(),
         }
     }
 }
 
 fn default_recursion_depth() -> usize {
     500
+}
+
+fn default_respect_gitignore() -> bool {
+    true
 }
 
 impl Config {

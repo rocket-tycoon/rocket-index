@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use crate::languages::{fsharp, ruby};
+use crate::languages::{fsharp, javascript, ruby, typescript};
 use crate::type_cache::TypeMember;
 use crate::{CodeIndex, Symbol};
 
@@ -87,6 +87,10 @@ impl CodeIndex {
         match extension.as_str() {
             "fs" | "fsi" | "fsx" => fsharp::FSharpResolver.resolve(self, name, from_file),
             "rb" => ruby::RubyResolver.resolve(self, name, from_file),
+            "ts" | "tsx" => typescript::TypeScriptResolver.resolve(self, name, from_file),
+            "js" | "jsx" | "mjs" | "cjs" => {
+                javascript::JavaScriptResolver.resolve(self, name, from_file)
+            }
             // "go" => go::GoResolver.resolve(self, name, from_file), // Incomplete
             _ => None,
         }
@@ -104,6 +108,10 @@ impl CodeIndex {
         match extension.as_str() {
             "fs" | "fsi" | "fsx" => fsharp::FSharpResolver.resolve_dotted(self, name, from_file),
             "rb" => ruby::RubyResolver.resolve_dotted(self, name, from_file),
+            "ts" | "tsx" => typescript::TypeScriptResolver.resolve_dotted(self, name, from_file),
+            "js" | "jsx" | "mjs" | "cjs" => {
+                javascript::JavaScriptResolver.resolve_dotted(self, name, from_file)
+            }
             // "go" => go::GoResolver.resolve_dotted(self, name, from_file), // Incomplete
             _ => None,
         }

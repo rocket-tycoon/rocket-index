@@ -147,41 +147,82 @@ pub fn find_source_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     find_source_files_with_exclusions(root, crate::config::DEFAULT_EXCLUDE_DIRS)
 }
 
-/// Find all supported source files in a directory tree with custom exclusions.
+/// Find all supported source files respecting .gitignore and custom exclusions.
+///
+/// This is the preferred method for indexing as it:
+/// - Respects .gitignore files (including nested ones) when `respect_gitignore` is true
+/// - Respects global gitignore (~/.gitignore)
+/// - Respects .git/info/exclude
+/// - Applies custom directory exclusions on top
 pub fn find_source_files_with_exclusions(
     root: &Path,
     exclude_dirs: &[&str],
 ) -> std::io::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    find_source_files_recursive(root, &mut files, exclude_dirs)?;
-    Ok(files)
+    find_source_files_with_config(root, exclude_dirs, true)
 }
 
-fn find_source_files_recursive(
-    dir: &Path,
-    files: &mut Vec<PathBuf>,
+/// Find all supported source files with full configuration control.
+///
+/// # Arguments
+/// * `root` - Root directory to search
+/// * `exclude_dirs` - Additional directories to exclude
+/// * `respect_gitignore` - Whether to respect .gitignore files
+pub fn find_source_files_with_config(
+    root: &Path,
     exclude_dirs: &[&str],
-) -> std::io::Result<()> {
-    if !dir.is_dir() {
-        return Ok(());
+    respect_gitignore: bool,
+) -> std::io::Result<Vec<PathBuf>> {
+    use ignore::overrides::OverrideBuilder;
+    use ignore::WalkBuilder;
+
+    let mut files = Vec::new();
+
+    // Build overrides for custom exclusions (these take precedence)
+    let mut override_builder = OverrideBuilder::new(root);
+    for dir in exclude_dirs {
+        // Exclude pattern: !dir/ means "do not include this directory"
+        let pattern = format!("!{}/", dir);
+        if let Err(e) = override_builder.add(&pattern) {
+            tracing::warn!("Invalid exclude pattern '{}': {}", pattern, e);
+        }
     }
+    let overrides = match override_builder.build() {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!("Failed to build overrides: {}", e);
+            // Fall back to empty overrides - continue without custom exclusions
+            OverrideBuilder::new(root)
+                .build()
+                .expect("empty override should succeed")
+        }
+    };
 
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(true) // Skip hidden files/dirs (like .git)
+        .git_ignore(respect_gitignore) // Respect .gitignore
+        .git_global(respect_gitignore) // Respect global gitignore
+        .git_exclude(respect_gitignore) // Respect .git/info/exclude
+        .require_git(false) // Still work in non-git directories
+        .ignore(respect_gitignore) // Respect .ignore files
+        .parents(respect_gitignore) // Check parent directories for ignore files
+        .overrides(overrides); // Apply custom exclusions
 
-        if path.is_dir() {
-            // Skip hidden directories and excluded directories
-            let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !dir_name.starts_with('.') && !exclude_dirs.contains(&dir_name) {
-                find_source_files_recursive(&path, files, exclude_dirs)?;
+    for entry in builder.build() {
+        match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                if path.is_file() && is_supported_file(path) {
+                    files.push(path.to_path_buf());
+                }
             }
-        } else if is_supported_file(&path) {
-            files.push(path);
+            Err(err) => {
+                tracing::warn!("Error walking directory: {}", err);
+            }
         }
     }
 
-    Ok(())
+    Ok(files)
 }
 
 #[cfg(test)]
