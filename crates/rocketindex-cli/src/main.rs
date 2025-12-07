@@ -954,6 +954,7 @@ fn cmd_def(
     quiet: bool,
     concise: bool,
 ) -> Result<u8> {
+    warn_if_no_session(quiet);
     let index = load_sqlite_index()?;
 
     // Try exact match first
@@ -1100,6 +1101,7 @@ fn cmd_refs(
     quiet: bool,
     concise: bool,
 ) -> Result<u8> {
+    warn_if_no_session(quiet);
     let index = load_sqlite_index()?;
 
     match (file, symbol) {
@@ -1285,6 +1287,7 @@ fn cmd_spider(
     quiet: bool,
     concise: bool,
 ) -> Result<u8> {
+    warn_if_no_session(quiet);
     // Spider still uses CodeIndex for now since it has complex resolution logic
     // TODO: Update spider to use SqliteIndex
     let index = load_code_index()?;
@@ -1382,6 +1385,7 @@ fn cmd_spider(
 
 /// Find direct callers of a symbol (single-level reverse spider)
 fn cmd_callers(symbol: &str, format: OutputFormat, quiet: bool, concise: bool) -> Result<u8> {
+    warn_if_no_session(quiet);
     let index = load_code_index()?;
 
     // First try to find the symbol
@@ -1487,6 +1491,7 @@ fn cmd_callers(symbol: &str, format: OutputFormat, quiet: bool, concise: bool) -
 
 /// Find classes that inherit from a parent class
 fn cmd_subclasses(parent: &str, format: OutputFormat, quiet: bool, concise: bool) -> Result<u8> {
+    warn_if_no_session(quiet);
     let cwd = std::env::current_dir()?;
     let db_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
     if !db_path.exists() {
@@ -1576,6 +1581,7 @@ fn cmd_symbols(
     quiet: bool,
     concise: bool,
 ) -> Result<u8> {
+    warn_if_no_session(quiet);
     let index = load_sqlite_index()?;
 
     if fuzzy {
@@ -1836,6 +1842,7 @@ fn remove_file_from_index(root: &Path, file: &Path) -> Result<()> {
 
 /// Show git blame for a symbol or file location
 fn cmd_blame(target: &str, format: OutputFormat, quiet: bool, _concise: bool) -> Result<u8> {
+    warn_if_no_session(quiet);
     // Check if target is file:line
     let (file, line) = if let Some((f, l)) = target.rsplit_once(':') {
         if let Ok(line_num) = l.parse::<u32>() {
@@ -1890,6 +1897,7 @@ fn resolve_symbol_location(symbol: &str) -> Result<(PathBuf, u32)> {
 
 /// Show git history for a symbol
 fn cmd_history(symbol: &str, format: OutputFormat, quiet: bool, _concise: bool) -> Result<u8> {
+    warn_if_no_session(quiet);
     let index = load_sqlite_index()?;
 
     let sym = if let Ok(Some(s)) = index.find_by_qualified(symbol) {
@@ -2271,6 +2279,24 @@ fn is_watch_for_directory(pid: u32, cwd: &Path) -> bool {
     }
 
     false
+}
+
+/// Warn if no active session (watch mode) is running
+/// Called by query commands to remind users to start a session
+fn warn_if_no_session(quiet: bool) {
+    if quiet {
+        return;
+    }
+
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(_) => return,
+    };
+
+    if find_watch_process(&cwd).is_none() {
+        eprintln!("Warning: No active session. Run 'rkt start <agent>' in a separate terminal for live index updates.");
+        eprintln!();
+    }
 }
 
 /// Detect the primary programming language of a project by counting file extensions
