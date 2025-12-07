@@ -150,6 +150,7 @@ pub fn is_supported_file(path: &Path) -> bool {
                     | "jsx"
                     | "mjs"
                     | "cjs"
+                    | "java"
             )
         })
         .unwrap_or(false)

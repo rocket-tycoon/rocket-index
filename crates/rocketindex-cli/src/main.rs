@@ -12,7 +12,8 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use rocketindex::git;
@@ -179,13 +180,6 @@ enum Commands {
         extract_types: bool,
     },
 
-    /// Incrementally update the index for changed files
-    Update {
-        /// Root directory (defaults to current directory)
-        #[arg(short, long, default_value = ".")]
-        root: PathBuf,
-    },
-
     /// Find the definition of a symbol
     Def {
         /// Symbol name (can be qualified like "MyModule.myFunction")
@@ -303,6 +297,12 @@ enum Commands {
     /// Check RocketIndex health and configuration
     Doctor,
 
+    /// Show documentation for a symbol
+    Doc {
+        /// Symbol name (qualified name like "MyModule.myFunction")
+        symbol: String,
+    },
+
     /// Set up editor integrations (slash commands, rules, etc.)
     Setup {
         /// Editor to set up: claude, cursor, copilot
@@ -313,6 +313,13 @@ enum Commands {
     Start {
         /// Target agent: claude, cursor, copilot
         agent: String,
+    },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
     },
 }
 
@@ -350,10 +357,7 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
             root,
             extract_types,
         } => cmd_index(&root, extract_types, format, quiet),
-        Commands::Update { root } => {
-            eprintln!("Warning: 'rkt update' is deprecated. Use 'rkt watch' for continuous updates or 'rkt index' to rebuild.");
-            cmd_update(&root, format, quiet)
-        }
+
         Commands::Def {
             symbol,
             context,
@@ -395,8 +399,13 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
         Commands::Blame { target } => cmd_blame(&target, format, quiet, concise),
         Commands::History { symbol } => cmd_history(&symbol, format, quiet, concise),
         Commands::Doctor => cmd_doctor(format, quiet),
+        Commands::Doc { symbol } => cmd_doc(&symbol, format, quiet),
         Commands::Setup { editor } => cmd_setup(&editor, format, quiet),
         Commands::Start { agent } => cmd_start(&agent, format, quiet),
+        Commands::Completions { shell } => {
+            generate(shell, &mut Cli::command(), "rkt", &mut std::io::stdout());
+            Ok(exit_codes::SUCCESS)
+        }
     }
 }
 
@@ -875,71 +884,6 @@ fn cmd_type_info(
             println!("  Symbols: {}", symbol_count);
             println!("  Files: {}", file_count);
         }
-    }
-
-    Ok(exit_codes::SUCCESS)
-}
-
-/// Update the index incrementally
-fn cmd_update(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
-    let root = root
-        .canonicalize()
-        .context("Failed to resolve root directory")?;
-
-    let db_path = root.join(".rocketindex").join(DEFAULT_DB_NAME);
-    if !db_path.exists() {
-        if format == OutputFormat::Json {
-            println!(
-                "{}",
-                serde_json::json!({"error": "Index not found. Run 'rkt index' first."})
-            );
-        } else {
-            eprintln!("Index not found. Run 'rkt index' first.");
-        }
-        return Ok(exit_codes::NOT_FOUND);
-    }
-
-    let index = SqliteIndex::open(&db_path).context("Failed to open SQLite index")?;
-
-    // Load configuration for exclusions
-    let config = Config::load(&root);
-    let exclude_dirs = config.excluded_dirs();
-
-    // Find files that have changed (simplified: just re-index all files for now)
-    // TODO: Use file modification times or a proper incremental strategy
-    let files = find_source_files_with_config(&root, &exclude_dirs, config.respect_gitignore)?;
-    let mut updated_count = 0;
-
-    for file in &files {
-        if let Ok(source) = std::fs::read_to_string(file) {
-            // Clear existing data for this file
-            index.clear_file(file)?;
-
-            let result = rocketindex::extract_symbols(file, &source, config.max_recursion_depth);
-
-            for symbol in &result.symbols {
-                index.insert_symbol(symbol)?;
-            }
-            for reference in &result.references {
-                index.insert_reference(file, reference)?;
-            }
-            for (line, open) in result.opens.iter().enumerate() {
-                index.insert_open(file, open, line as u32 + 1)?;
-            }
-            updated_count += 1;
-        }
-    }
-
-    if format == OutputFormat::Json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "updated": updated_count,
-                "symbols": index.count_symbols().unwrap_or(0),
-            })
-        );
-    } else if !quiet {
-        println!("Updated {} files", updated_count);
     }
 
     Ok(exit_codes::SUCCESS)
@@ -2115,6 +2059,65 @@ fn cmd_doctor(format: OutputFormat, quiet: bool) -> Result<u8> {
             println!("All checks passed!");
         } else {
             println!("Some checks failed. See suggestions above.");
+        }
+    }
+
+    Ok(exit_codes::SUCCESS)
+}
+
+/// Show documentation for a symbol
+fn cmd_doc(symbol: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
+    warn_if_no_session(quiet);
+    let index = load_sqlite_index()?;
+
+    // Try exact match first
+    let sym = if let Ok(Some(s)) = index.find_by_qualified(symbol) {
+        s
+    } else if let Ok(matches) = index.search(symbol, 1, None) {
+        if let Some(s) = matches.first() {
+            s.clone()
+        } else {
+            if format == OutputFormat::Json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "error": "Symbol not found",
+                        "symbol": symbol
+                    })
+                );
+            } else {
+                eprintln!("Symbol not found: {}", symbol);
+            }
+            return Ok(exit_codes::NOT_FOUND);
+        }
+    } else {
+        if format == OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "error": "Symbol not found",
+                    "symbol": symbol
+                })
+            );
+        } else {
+            eprintln!("Symbol not found: {}", symbol);
+        }
+        return Ok(exit_codes::NOT_FOUND);
+    };
+
+    if format == OutputFormat::Json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "symbol": sym.qualified,
+                "doc": sym.doc,
+            })
+        );
+    } else if !quiet {
+        if let Some(doc) = &sym.doc {
+            println!("{}", doc);
+        } else {
+            println!("No documentation found for: {}", sym.qualified);
         }
     }
 

@@ -22,6 +22,7 @@ rayon.workspace = true
 dialoguer.workspace = true
 indicatif = "0.17"
 ctrlc = "3.4"
+clap_complete = "4.5"
 
 [dev-dependencies]
 assert_cmd = "2.0"

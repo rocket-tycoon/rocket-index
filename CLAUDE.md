@@ -123,7 +123,7 @@ Default exclusions: `node_modules`, `bin`, `obj`, `packages`, `.git`, `.vs`, `.i
 
 ## Language Support
 
-Currently supports F#, Ruby, Python, Rust, Go, TypeScript, and JavaScript via Tree-sitter grammars. Language detected by file extension.
+Currently supports F#, Ruby, Python, Rust, Go, TypeScript, JavaScript, and Java via Tree-sitter grammars. Language detected by file extension.
 
 | Language | Extensions |
 |----------|------------|
@@ -134,3 +134,4 @@ Currently supports F#, Ruby, Python, Rust, Go, TypeScript, and JavaScript via Tr
 | Go | `.go` |
 | TypeScript | `.ts`, `.tsx` |
 | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |
+| Java | `.java` |
