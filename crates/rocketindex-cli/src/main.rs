@@ -303,6 +303,12 @@ enum Commands {
         symbol: String,
     },
 
+    /// Enrich a symbol with debugging context (for stacktrace analysis)
+    Enrich {
+        /// Symbol name (qualified or partial)
+        symbol: String,
+    },
+
     /// Set up editor integrations (slash commands, rules, etc.)
     Setup {
         /// Editor to set up: claude, cursor, copilot
@@ -400,6 +406,7 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
         Commands::History { symbol } => cmd_history(&symbol, format, quiet, concise),
         Commands::Doctor => cmd_doctor(format, quiet),
         Commands::Doc { symbol } => cmd_doc(&symbol, format, quiet),
+        Commands::Enrich { symbol } => cmd_enrich(&symbol, format, quiet),
         Commands::Setup { editor } => cmd_setup(&editor, format, quiet),
         Commands::Start { agent } => cmd_start(&agent, format, quiet),
         Commands::Completions { shell } => {
@@ -2118,6 +2125,153 @@ fn cmd_doc(symbol: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
             println!("{}", doc);
         } else {
             println!("No documentation found for: {}", sym.qualified);
+        }
+    }
+
+    Ok(exit_codes::SUCCESS)
+}
+
+/// Enrich a symbol with debugging context (callers, dependencies, blame, docs)
+/// Designed for stacktrace analysis workflows
+fn cmd_enrich(symbol: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
+    warn_if_no_session(quiet);
+
+    let sqlite_index = load_sqlite_index()?;
+    let code_index = load_code_index()?;
+
+    // Find the symbol
+    let sym = if let Ok(Some(s)) = sqlite_index.find_by_qualified(symbol) {
+        s
+    } else if let Ok(matches) = sqlite_index.search(symbol, 1, None) {
+        if let Some(s) = matches.first() {
+            s.clone()
+        } else {
+            if format == OutputFormat::Json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "error": "Symbol not found",
+                        "symbol": symbol
+                    })
+                );
+            } else {
+                eprintln!("Symbol not found: {}", symbol);
+            }
+            return Ok(exit_codes::NOT_FOUND);
+        }
+    } else {
+        if format == OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "error": "Symbol not found",
+                    "symbol": symbol
+                })
+            );
+        } else {
+            eprintln!("Symbol not found: {}", symbol);
+        }
+        return Ok(exit_codes::NOT_FOUND);
+    };
+
+    // Get callers (reverse spider depth=1)
+    let callers_result = reverse_spider(&code_index, &sym.qualified, 1);
+    let callers: Vec<_> = callers_result
+        .nodes
+        .iter()
+        .filter(|n| n.depth == 1)
+        .collect();
+
+    // Get dependencies (spider depth=1)
+    let deps_result = spider(&code_index, &sym.qualified, 1);
+    let dependencies: Vec<_> = deps_result.nodes.iter().filter(|n| n.depth == 1).collect();
+
+    // Get blame info (best effort)
+    let blame = git::get_blame(&sym.location.file, sym.location.line).ok();
+
+    if format == OutputFormat::Json {
+        let caller_names: Vec<&str> = callers
+            .iter()
+            .map(|c| c.symbol.qualified.as_str())
+            .collect();
+        let dep_names: Vec<&str> = dependencies
+            .iter()
+            .map(|d| d.symbol.qualified.as_str())
+            .collect();
+
+        let mut output = serde_json::json!({
+            "symbol": sym.qualified,
+            "kind": format!("{}", sym.kind),
+            "file": sym.location.file.display().to_string(),
+            "line": sym.location.line,
+            "callers_count": callers.len(),
+            "callers": caller_names,
+            "dependencies_count": dependencies.len(),
+            "dependencies": dep_names,
+        });
+
+        if let Some(doc) = &sym.doc {
+            output["doc"] = serde_json::json!(doc);
+        }
+        if let Some(sig) = &sym.signature {
+            output["signature"] = serde_json::json!(sig);
+        }
+        if let Some(b) = &blame {
+            output["blame"] = serde_json::json!({
+                "commit": b.commit,
+                "author": b.author,
+                "date_relative": b.date_relative,
+                "message": b.message,
+            });
+        }
+
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if !quiet {
+        println!("{} ({})", sym.qualified, sym.kind);
+        println!(
+            "  Location: {}:{}",
+            sym.location.file.display(),
+            sym.location.line
+        );
+
+        if let Some(sig) = &sym.signature {
+            println!("  Signature: {}", sig);
+        }
+
+        println!("  Callers: {} call sites", callers.len());
+        if !callers.is_empty() {
+            for c in callers.iter().take(5) {
+                println!("    - {}", c.symbol.qualified);
+            }
+            if callers.len() > 5 {
+                println!("    ... and {} more", callers.len() - 5);
+            }
+        }
+
+        println!("  Dependencies: {} symbols", dependencies.len());
+        if !dependencies.is_empty() {
+            for d in dependencies.iter().take(5) {
+                println!("    - {}", d.symbol.qualified);
+            }
+            if dependencies.len() > 5 {
+                println!("    ... and {} more", dependencies.len() - 5);
+            }
+        }
+
+        if let Some(b) = &blame {
+            println!(
+                "  Last change: {} ({}) - {}",
+                b.date_relative, b.author, b.message
+            );
+        }
+
+        if let Some(doc) = &sym.doc {
+            let truncated = if doc.len() > 100 {
+                format!("{}...", &doc[..100])
+            } else {
+                doc.clone()
+            };
+            println!("  Doc: {}", truncated);
         }
     }
 

@@ -659,6 +659,7 @@ rkt refs "Symbol"            # Find all references (usages)
 rkt callers "Symbol"         # Find what calls this (impact analysis)
 rkt spider "Symbol" -d 3     # Dependency graph
 rkt symbols "pattern*"       # Search symbols
+rkt enrich "Symbol"          # Get debugging context (callers, deps, blame)
 ```
 
 ### Instead of grep, use rkt
@@ -678,6 +679,30 @@ Use grep/ripgrep only for **literal text search** (comments, strings, non-code c
 ```bash
 rkt callers "functionToChange"  # What will break?
 ```
+
+### Debugging Stacktraces
+
+When debugging a stacktrace, use `rkt enrich` to get context for each frame:
+
+```bash
+rkt enrich "UserService.getUser"
+```
+
+This returns callers count, dependencies, recent blame, and documentation - everything needed to understand the error context.
+
+**Workflow:**
+
+1. **Identify user-code frames** - Skip framework/library lines (node_modules, java.*, etc.)
+2. **Enrich the top user frame**:
+   ```bash
+   rkt enrich "Symbol"     # Get full context for debugging
+   rkt callers "Symbol"    # Other call sites with same bug?
+   rkt blame "Symbol"      # Recent changes that might have caused this?
+   ```
+3. **After fixing, check impact**:
+   ```bash
+   rkt callers "FixedFunction"   # Do other callers need the same fix?
+   ```
 
 ### Storage
 
