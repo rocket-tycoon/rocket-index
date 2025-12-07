@@ -1,34 +1,34 @@
-//! Embedded skill templates for Claude Code integration
+//! Embedded agent templates for Claude Code integration
 //!
-//! Skills are role-based prompts that help AI coding assistants frame their work.
-//! Each skill has a bounded checklist and integrates with RocketIndex commands.
+//! Agents are role-based prompts that help AI coding assistants frame their work.
+//! Each agent has a bounded checklist and integrates with RocketIndex commands.
 
-/// A skill template that can be installed into a codebase
-pub struct Skill {
+/// An agent template that can be installed into a codebase
+pub struct Agent {
     /// Directory name (e.g., "tech-lead")
     pub name: &'static str,
     /// Display name for selection UI (e.g., "Tech Lead")
     pub display_name: &'static str,
     /// Brief description for selection UI
     pub description: &'static str,
-    /// Full SKILL.md content
+    /// Full SKILL.md content (installed to .claude/skills/)
     pub content: &'static str,
     /// Optional summary for AGENTS.md (only rocketindex has this)
     pub agents_summary: Option<&'static str>,
 }
 
-/// Get the AGENTS.md summary from the rocketindex skill
+/// Get the AGENTS.md summary from the rocketindex agent
 pub fn get_agents_summary() -> &'static str {
-    SKILLS
+    AGENTS
         .iter()
-        .find(|s| s.name == "rocketindex")
-        .and_then(|s| s.agents_summary)
+        .find(|a| a.name == "rocketindex")
+        .and_then(|a| a.agents_summary)
         .unwrap_or("## RocketIndex\n\nUse `rkt` for code navigation.")
 }
 
-/// All available skills
-pub const SKILLS: &[Skill] = &[
-    Skill {
+/// All available agents
+pub const AGENTS: &[Agent] = &[
+    Agent {
         name: "lead-engineer",
         display_name: "Lead Engineer",
         description: "Design, implementation, and code quality",
@@ -115,11 +115,11 @@ Use `.rocketindex/AGENTS.md` for quick reference, or `rkt` commands directly:
 
 ## Playbooks
 
-This skill can be extended with playbooks in the `playbooks/` subdirectory.
+This agent can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
         agents_summary: None,
     },
-    Skill {
+    Agent {
         name: "qa-engineer",
         display_name: "QA Engineer",
         description: "Testing, verification, quality assurance",
@@ -177,7 +177,7 @@ Describe [Component]
 
 ## Code Navigation
 
-For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** skill. Key commands:
+For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** agent. Key commands:
 - `rkt symbols "*Test*"` - Find existing tests
 - `rkt refs "Symbol"` - Find all usages of a symbol
 - `rkt callers` - Find what needs testing when a function changes
@@ -191,11 +191,11 @@ For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** ski
 
 ## Playbooks
 
-This skill can be extended with playbooks in the `playbooks/` subdirectory.
+This agent can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
         agents_summary: None,
     },
-    Skill {
+    Agent {
         name: "product-manager",
         display_name: "Product Manager",
         description: "Requirements, user stories, acceptance criteria",
@@ -267,7 +267,7 @@ Then [expected result]
 
 ## Code Navigation
 
-For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** skill. Key commands:
+For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** agent. Key commands:
 - `rkt symbols` - Understand existing implementation scope
 - `rkt spider` - Map feature boundaries
 
@@ -280,11 +280,11 @@ For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** ski
 
 ## Playbooks
 
-This skill can be extended with playbooks in the `playbooks/` subdirectory.
+This agent can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
         agents_summary: None,
     },
-    Skill {
+    Agent {
         name: "security-engineer",
         display_name: "Security Engineer",
         description: "Vulnerability analysis, security review",
@@ -357,7 +357,7 @@ process(email)              # Email type guarantees validity
 
 ## Code Navigation
 
-For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** skill. Key commands:
+For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** agent. Key commands:
 - `rkt symbols "*password*"` - Find sensitive code
 - `rkt spider` - Trace data flow from entry points
 - `rkt refs` - Find all usages of sensitive types
@@ -372,11 +372,11 @@ For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** ski
 
 ## Playbooks
 
-This skill can be extended with playbooks in the `playbooks/` subdirectory.
+This agent can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
         agents_summary: None,
     },
-    Skill {
+    Agent {
         name: "sre",
         display_name: "SRE",
         description: "Reliability, performance, observability, error handling",
@@ -467,7 +467,7 @@ log.info("Processed payment of $50.00 for user 123")
 
 ## Code Navigation
 
-For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** skill. Key commands:
+For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** agent. Key commands:
 - `rkt spider --reverse` - Trace error propagation / stacktrace analysis
 - `rkt symbols "*Error*"` - Find error types and handlers
 - `rkt refs` - Find all usages of error types
@@ -483,18 +483,18 @@ For code navigation, see `.rocketindex/AGENTS.md` or use the **rocketindex** ski
 
 ## Playbooks
 
-This skill can be extended with playbooks in the `playbooks/` subdirectory.
+This agent can be extended with playbooks in the `playbooks/` subdirectory.
 "#,
         agents_summary: None,
     },
-    Skill {
+    Agent {
         name: "rocketindex",
         display_name: "RocketIndex",
         description:
             "Code navigation and relationship lookup - the source of truth for rkt commands",
         content: r#"---
 name: rocketindex
-description: Code navigation and relationship lookup. Use rkt for finding definitions, callers, and dependencies. This is the source of truth for rkt commands - other skills reference this.
+description: Code navigation and relationship lookup. Use rkt for finding definitions, callers, and dependencies. This is the source of truth for rkt commands - other agents reference this.
 ---
 
 # RocketIndex - Code Navigation
@@ -605,10 +605,10 @@ rkt refs "InterfaceName"            # Find all references (implementations + usa
 Index stored in `.rocketindex/index.db` (add to .gitignore).
 Index persists across sessions - no need to rebuild each time.
 
-## Integration with Other Skills
+## Integration with Other Agents
 
-Other skills (Lead Engineer, QA, SRE, etc.) reference this skill for code navigation.
-When those skills mention "use rkt" or "impact analysis", refer to the commands documented here.
+Other agents (Lead Engineer, QA, SRE, etc.) reference this agent for code navigation.
+When those agents mention "use rkt" or "impact analysis", refer to the commands documented here.
 "#,
         agents_summary: Some(
             r#"## Code Navigation with RocketIndex
