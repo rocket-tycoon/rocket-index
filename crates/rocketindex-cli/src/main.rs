@@ -165,6 +165,7 @@ enum Commands {
     },
 
     /// Extract type information from a project (requires dotnet fsi)
+    #[command(hide = true)]
     ExtractTypes {
         /// Path to .fsproj file
         project: PathBuf,
@@ -179,6 +180,7 @@ enum Commands {
     },
 
     /// Show type cache information
+    #[command(hide = true)]
     TypeInfo {
         /// Symbol qualified name to look up
         symbol: Option<String>,
@@ -244,7 +246,10 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
             root,
             extract_types,
         } => cmd_index(&root, extract_types, format, quiet),
-        Commands::Update { root } => cmd_update(&root, format, quiet),
+        Commands::Update { root } => {
+            eprintln!("Warning: 'rkt update' is deprecated. Use 'rkt watch' for continuous updates or 'rkt index' to rebuild.");
+            cmd_update(&root, format, quiet)
+        }
         Commands::Def {
             symbol,
             context,
