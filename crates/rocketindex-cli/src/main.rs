@@ -1691,6 +1691,8 @@ fn cmd_symbols(
 /// Watch for file changes
 fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     use rocketindex::watch::FileWatcher;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     let root = root
         .canonicalize()
@@ -1709,10 +1711,20 @@ fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     let mut watcher = FileWatcher::new(&root).context("Failed to create file watcher")?;
     watcher.start().context("Failed to start watching")?;
 
+    // Set up graceful shutdown handler
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = Arc::clone(&running);
+
+    ctrlc::set_handler(move || {
+        running_clone.store(false, Ordering::SeqCst);
+    })
+    .context("Failed to set Ctrl+C handler")?;
+
     println!("Watching for changes... (Ctrl+C to stop)");
 
-    loop {
-        if let Some(event) = watcher.wait() {
+    while running.load(Ordering::SeqCst) {
+        // Use timeout to periodically check shutdown flag
+        if let Some(event) = watcher.wait_timeout(std::time::Duration::from_millis(500)) {
             match event {
                 rocketindex::watch::WatchEvent::Created(path)
                 | rocketindex::watch::WatchEvent::Modified(path) => {
@@ -1739,6 +1751,10 @@ fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
             }
         }
     }
+
+    println!("\nShutting down watch mode...");
+    watcher.stop().ok(); // Best effort cleanup
+    Ok(exit_codes::SUCCESS)
 }
 
 /// Load the SQLite index from disk

@@ -21,6 +21,7 @@ tracing-subscriber.workspace = true
 rayon.workspace = true
 dialoguer.workspace = true
 indicatif = "0.17"
+ctrlc = "3.4"
 
 [dev-dependencies]
 assert_cmd = "2.0"

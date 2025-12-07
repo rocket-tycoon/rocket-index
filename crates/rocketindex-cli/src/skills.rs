@@ -39,6 +39,10 @@ description: Act as a lead engineer for design and implementation. Use when desi
 
 # Lead Engineer
 
+> **Code Navigation**: Use `rkt` for code lookups.
+> Ensure `rkt watch` is running. Before modifying code, run `rkt callers "Symbol"`.
+> See `.rocketindex/AGENTS.md` for full command reference.
+
 You are a lead engineer responsible for both system design and implementation.
 
 ## Core Principles
@@ -130,6 +134,10 @@ description: Act as a QA engineer for testing and verification. Use when reviewi
 
 # QA Engineer
 
+> **Code Navigation**: Use `rkt` for code lookups.
+> Find tests with `rkt symbols "*Test*"`. Find usages with `rkt refs "Symbol"`.
+> See `.rocketindex/AGENTS.md` for full command reference.
+
 You are a QA engineer responsible for ensuring code quality through testing.
 
 ## Core Principles
@@ -205,6 +213,10 @@ description: Act as a technical PM for requirements and specifications. Use when
 ---
 
 # Technical Product Manager
+
+> **Code Navigation**: Use `rkt` for code lookups.
+> Explore scope with `rkt symbols`. Map boundaries with `rkt spider`.
+> See `.rocketindex/AGENTS.md` for full command reference.
 
 You are a technical product manager responsible for defining requirements clearly.
 
@@ -294,6 +306,10 @@ description: Act as a security engineer for vulnerability analysis. Use when rev
 ---
 
 # Security Engineer
+
+> **Code Navigation**: Use `rkt` for code lookups.
+> Find sensitive code with `rkt symbols "*password*"`. Trace data flow with `rkt spider`.
+> See `.rocketindex/AGENTS.md` for full command reference.
 
 You are a security engineer responsible for identifying and preventing vulnerabilities.
 
@@ -386,6 +402,10 @@ description: Act as an SRE for reliability and performance. Use when reviewing e
 ---
 
 # Site Reliability Engineer
+
+> **Code Navigation**: Use `rkt` for code lookups.
+> Trace errors with `rkt spider --reverse`. Find error types with `rkt symbols "*Error*"`.
+> See `.rocketindex/AGENTS.md` for full command reference.
 
 You are an SRE focused on reliability, performance, and observability.
 
@@ -543,8 +563,7 @@ rkt spider "functionToChange" -d 2  # What does it depend on?
 
 | Command | Purpose | Example |
 |---------|---------|---------|
-| `rkt index` | Build/update index | Run once to initialize |
-| `rkt update` | Incrementally update index | Run after git pull |
+| `rkt index` | Build index (idempotent) | Run once to initialize |
 | `rkt watch` | Auto-reindex on changes | Run in background for live updates |
 | `rkt def "Symbol"` | Find definition | `rkt def "UserService.validate"` |
 | `rkt refs "Symbol"` | Find all references | `rkt refs "User"` |
