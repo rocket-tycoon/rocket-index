@@ -2025,6 +2025,7 @@ fn cmd_setup(editor: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
 }
 
 /// Detect the primary programming language of a project by counting file extensions
+#[allow(dead_code)]
 fn detect_primary_language(cwd: &Path) -> Option<String> {
     use std::collections::HashMap;
 
@@ -2083,6 +2084,7 @@ fn detect_primary_language(cwd: &Path) -> Option<String> {
 }
 
 /// Recursively count file extensions up to a certain depth
+#[allow(dead_code)]
 fn count_extensions(
     path: &Path,
     counts: &mut std::collections::HashMap<&'static str, usize>,
@@ -2138,6 +2140,390 @@ fn should_show_index_feedback(format: OutputFormat, quiet: bool) -> bool {
     true
 }
 
+// =============================================================================
+// Setup Wizard Screens
+// =============================================================================
+
+/// Screen 1: Welcome
+fn setup_screen_welcome() -> Result<()> {
+    println!(
+        r#"
+RocketIndex Setup for Claude Code
+══════════════════════════════════
+
+RocketIndex gives AI agents fast, indexed code navigation - the same
+"go to definition" and "find callers" you have in your IDE, but via CLI.
+
+This setup will:
+  1. Index your codebase (build symbol database)
+  2. Configure agents (optional)
+  3. Create .rocketindex/AGENTS.md (command reference)
+  4. Update CLAUDE.md (project instructions)
+
+Press Enter to continue..."#
+    );
+
+    let _ = dialoguer::Input::<String>::new()
+        .allow_empty(true)
+        .interact_text()?;
+
+    Ok(())
+}
+
+/// Screen 2: Code Indexing - returns true if indexing was performed
+fn setup_screen_indexing(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<bool> {
+    use dialoguer::Confirm;
+
+    let index_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
+    if index_path.exists() {
+        // Index already exists, skip this screen
+        return Ok(false);
+    }
+
+    println!(
+        r#"
+Code Indexing
+─────────────
+
+RocketIndex will scan your codebase to build a symbol database for
+fast code navigation. This enables `rkt def`, `rkt callers`, `rkt spider`,
+and other commands.
+
+What it does:
+  • Parses source files to extract symbols (functions, classes, types)
+  • Creates .rocketindex/index.db (add to .gitignore)
+  • Respects .gitignore - ignored files are not indexed
+
+Supported languages: F#, Ruby, Python, Rust, Go, TypeScript, JavaScript
+
+Estimated time: ~1-3 seconds per 1,000 files
+"#
+    );
+
+    let proceed = Confirm::new()
+        .with_prompt("Proceed with indexing?")
+        .default(true)
+        .interact_opt()?;
+
+    if proceed != Some(true) {
+        println!("\nSkipping indexing. Run `rkt index` later to build the index.\n");
+        return Ok(false);
+    }
+
+    let started = Instant::now();
+    println!("\nIndexing codebase...");
+
+    match cmd_index(cwd, false, format, quiet) {
+        Ok(code) if code == exit_codes::SUCCESS => {
+            if !quiet {
+                println!("Indexed in {:.1?}\n", started.elapsed());
+            }
+            println!("Press Enter to continue...");
+            let _ = dialoguer::Input::<String>::new()
+                .allow_empty(true)
+                .interact_text()?;
+            Ok(true)
+        }
+        Ok(code) => anyhow::bail!("Indexing failed (exit code {})", code),
+        Err(err) => Err(err),
+    }
+}
+
+/// Agent setup choice
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentSetupChoice {
+    InstallAgents,
+    IntegrationNotes,
+    Skip,
+}
+
+/// Screen 3: Agent Setup
+fn setup_screen_agents(cwd: &Path, quiet: bool) -> Result<Vec<String>> {
+    use dialoguer::{MultiSelect, Select};
+
+    let mut created_files = Vec::new();
+    let skills_dir = cwd.join(".claude").join("skills");
+
+    println!(
+        r#"
+Agent Setup
+───────────
+
+RocketIndex includes role-based agents that help Claude Code work more
+effectively. Each agent has domain expertise and knows how to use `rkt`
+for code navigation.
+
+How would you like to configure agents?
+"#
+    );
+
+    let choices = &[
+        "Install RocketIndex agents (Lead Engineer, QA, Security, SRE, Product Manager)",
+        "Add RocketIndex to an existing/alternate agent library",
+        "Skip agent setup",
+    ];
+
+    let selection = Select::new().items(choices).default(0).interact_opt()?;
+
+    let choice = match selection {
+        Some(0) => AgentSetupChoice::InstallAgents,
+        Some(1) => AgentSetupChoice::IntegrationNotes,
+        _ => AgentSetupChoice::Skip,
+    };
+
+    match choice {
+        AgentSetupChoice::InstallAgents => {
+            // Always install rocketindex agent first
+            if let Some(rocketindex_skill) = skills::SKILLS.iter().find(|s| s.name == "rocketindex")
+            {
+                let skill_dir = skills_dir.join(rocketindex_skill.name);
+                std::fs::create_dir_all(&skill_dir)?;
+                let skill_path = skill_dir.join("SKILL.md");
+                std::fs::write(&skill_path, rocketindex_skill.content)?;
+                created_files.push(skill_path.display().to_string());
+            }
+
+            println!(
+                r#"
+Select Agents to Install
+────────────────────────
+
+Use Space to toggle, Enter to confirm.
+"#
+            );
+
+            let optional_skills: Vec<_> = skills::SKILLS
+                .iter()
+                .filter(|s| s.name != "rocketindex")
+                .collect();
+
+            let items: Vec<String> = optional_skills
+                .iter()
+                .map(|s| format!("{:<18} {}", s.display_name, s.description))
+                .collect();
+
+            let defaults: Vec<bool> = vec![true; items.len()];
+            let selections = MultiSelect::new()
+                .with_prompt("Select agents")
+                .items(&items)
+                .defaults(&defaults)
+                .interact_opt()?;
+
+            if let Some(selected) = selections {
+                println!("\nInstalling agents...");
+                for idx in selected {
+                    let skill = optional_skills[idx];
+                    let skill_dir = skills_dir.join(skill.name);
+                    std::fs::create_dir_all(&skill_dir)?;
+
+                    let skill_path = skill_dir.join("SKILL.md");
+                    std::fs::write(&skill_path, skill.content)?;
+                    created_files.push(skill_path.display().to_string());
+
+                    if !quiet {
+                        println!("  * .claude/skills/{}/SKILL.md", skill.name);
+                    }
+                }
+            }
+        }
+
+        AgentSetupChoice::IntegrationNotes => {
+            println!(
+                r#"
+Add RocketIndex to Your Agents
+──────────────────────────────
+
+Add the following to the TOP of each agent file, right after the title.
+Choose the snippet that matches each agent's role:
+
++-- For Engineering/Coding Agents ------------------------------------+
+|                                                                     |
+| > **Code Navigation**: Use `rkt` for code lookups.                  |
+| > - Before writing: `rkt symbols "pattern*"` to find existing code  |
+| > - Before changing: `rkt callers "Symbol"` for impact analysis     |
+| > - Run `rkt watch` in a background terminal.                       |
+| > See `.rocketindex/AGENTS.md` for full command reference.          |
+|                                                                     |
++---------------------------------------------------------------------+
+
++-- For QA/Testing Agents --------------------------------------------+
+|                                                                     |
+| > **Code Navigation**: Use `rkt` for finding tests and usages.      |
+| > - Find tests: `rkt symbols "*Test*"`                              |
+| > - Find usages: `rkt refs "Symbol"`                                |
+| > - Run `rkt watch` in a background terminal.                       |
+| > See `.rocketindex/AGENTS.md` for full command reference.          |
+|                                                                     |
++---------------------------------------------------------------------+
+
++-- For Security/Review Agents ---------------------------------------+
+|                                                                     |
+| > **Code Navigation**: Use `rkt` for tracing data flow.             |
+| > - Trace paths: `rkt spider "handler" -d 3`                        |
+| > - Find sensitive code: `rkt symbols "*password*"`                 |
+| > - Run `rkt watch` in a background terminal.                       |
+| > See `.rocketindex/AGENTS.md` for full command reference.          |
+|                                                                     |
++---------------------------------------------------------------------+
+
++-- For SRE/Debugging Agents -----------------------------------------+
+|                                                                     |
+| > **Code Navigation**: Use `rkt` for stacktrace analysis.           |
+| > - Trace errors: `rkt spider "failingFn" --reverse -d 3`           |
+| > - Find error types: `rkt symbols "*Error*"`                       |
+| > - Run `rkt watch` in a background terminal.                       |
+| > See `.rocketindex/AGENTS.md` for full command reference.          |
+|                                                                     |
++---------------------------------------------------------------------+
+
+Press Enter to continue..."#
+            );
+
+            let _ = dialoguer::Input::<String>::new()
+                .allow_empty(true)
+                .interact_text()?;
+        }
+
+        AgentSetupChoice::Skip => {
+            // Do nothing, proceed to configuration
+        }
+    }
+
+    Ok(created_files)
+}
+
+/// Screen 4: Configuration Files
+fn setup_screen_configuration(
+    cwd: &Path,
+    _format: OutputFormat,
+    _quiet: bool,
+    created_files: &mut Vec<String>,
+) -> Result<()> {
+    println!(
+        r#"
+Configuration Files
+───────────────────
+
+Creating project configuration...
+"#
+    );
+
+    // Create/update .rocketindex/AGENTS.md
+    let agents_md_path = cwd.join(".rocketindex").join("AGENTS.md");
+    if let Some(parent) = agents_md_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let agents_section = skills::get_agents_summary();
+    let agents_content = std::fs::read_to_string(&agents_md_path).unwrap_or_default();
+
+    if !agents_content.contains("RocketIndex") {
+        if agents_content.is_empty() {
+            let new_content = format!("# Agent Instructions\n\n{}", agents_section);
+            std::fs::write(&agents_md_path, new_content)?;
+            created_files.push(agents_md_path.display().to_string());
+        } else {
+            let updated = format!("{}\n\n{}", agents_content.trim_end(), agents_section);
+            std::fs::write(&agents_md_path, updated)?;
+        }
+    }
+    println!("  * .rocketindex/AGENTS.md    Command reference for AI agents");
+
+    // Update CLAUDE.md if it exists
+    let claude_md_path = cwd.join("CLAUDE.md");
+    if claude_md_path.exists() {
+        let claude_content = std::fs::read_to_string(&claude_md_path).unwrap_or_default();
+        let rocketindex_note = "**Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.\n   For definitions, callers, and dependencies use `rkt`. See `.rocketindex/AGENTS.md` for commands.\n";
+
+        if !claude_content.contains("RocketIndex") {
+            let updated = if let Some(pos) = claude_content.find("\n\n") {
+                format!(
+                    "{}\n\n{}\n{}",
+                    &claude_content[..pos],
+                    rocketindex_note,
+                    &claude_content[pos + 2..]
+                )
+            } else {
+                format!("{}\n\n{}", claude_content, rocketindex_note)
+            };
+            std::fs::write(&claude_md_path, updated)?;
+        }
+        println!("  * CLAUDE.md                 Updated with RocketIndex note");
+    }
+
+    // Update .github/copilot-instructions.md if it exists
+    let copilot_path = cwd.join(".github").join("copilot-instructions.md");
+    if copilot_path.exists() {
+        let copilot_content = std::fs::read_to_string(&copilot_path).unwrap_or_default();
+        let rocketindex_note = "**Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.\n   For definitions, callers, and dependencies use `rkt`. See `.rocketindex/AGENTS.md` for commands.\n";
+
+        if !copilot_content.contains("RocketIndex") {
+            let updated = if let Some(pos) = copilot_content.find("\n\n") {
+                format!(
+                    "{}\n\n{}\n{}",
+                    &copilot_content[..pos],
+                    rocketindex_note,
+                    &copilot_content[pos + 2..]
+                )
+            } else {
+                format!("{}\n\n{}", copilot_content, rocketindex_note)
+            };
+            std::fs::write(&copilot_path, updated)?;
+            println!("  * .github/copilot-instructions.md");
+        }
+    }
+
+    // Add to .gitignore
+    let gitignore_path = cwd.join(".gitignore");
+    let gitignore_entry = ".rocketindex/index.db";
+    if gitignore_path.exists() {
+        let content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+        if !content.contains(gitignore_entry) {
+            let updated = format!("{}\n{}\n", content.trim_end(), gitignore_entry);
+            std::fs::write(&gitignore_path, updated)?;
+            println!("  * .gitignore                Added .rocketindex/index.db");
+        }
+    }
+
+    println!("\nPress Enter to continue...");
+    let _ = dialoguer::Input::<String>::new()
+        .allow_empty(true)
+        .interact_text()?;
+
+    Ok(())
+}
+
+/// Screen 5: Complete
+fn setup_screen_complete() {
+    println!(
+        r#"
+Setup Complete!
+───────────────
+
+RocketIndex is ready. Here's how to get started:
+
+  Start watch mode (run in background terminal):
+  $ rkt watch
+
+  Find a definition:
+  $ rkt def "MyFunction"
+
+  Find callers (before refactoring):
+  $ rkt callers "MyFunction"
+
+  Check health:
+  $ rkt doctor
+
+For full documentation, see .rocketindex/AGENTS.md
+
+Happy coding! 🚀
+"#
+    );
+}
+
+// =============================================================================
+// Legacy Setup Helpers
+// =============================================================================
+
 /// Ensure an index exists before installing editor tooling
 fn ensure_initial_index(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<()> {
     let index_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
@@ -2167,15 +2553,41 @@ fn ensure_initial_index(cwd: &Path, format: OutputFormat, quiet: bool) -> Result
     }
 }
 
-/// Set up Claude Code slash commands and optional skills
+/// Set up Claude Code with 5-screen wizard flow
 fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
-    use dialoguer::MultiSelect;
+    let is_interactive = !quiet && dialoguer::console::Term::stderr().is_term();
 
+    // For non-interactive mode, use legacy behavior
+    if !is_interactive {
+        return setup_claude_code_non_interactive(cwd, format, quiet);
+    }
+
+    // Screen 1: Welcome
+    setup_screen_welcome()?;
+
+    // Screen 2: Code Indexing
+    setup_screen_indexing(cwd, format, quiet)?;
+
+    // Screen 3: Agent Setup
+    let mut created_files = setup_screen_agents(cwd, quiet)?;
+
+    // Screen 4: Configuration Files
+    setup_screen_configuration(cwd, format, quiet, &mut created_files)?;
+
+    // Screen 5: Complete
+    setup_screen_complete();
+
+    Ok(exit_codes::SUCCESS)
+}
+
+/// Non-interactive setup for CI/scripts (legacy behavior)
+fn setup_claude_code_non_interactive(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     let mut created_files = Vec::new();
 
+    // Ensure index exists
     ensure_initial_index(cwd, format, quiet)?;
 
-    // Always install the rocketindex skill (core functionality)
+    // Install rocketindex agent
     let skills_dir = cwd.join(".claude").join("skills");
     if let Some(rocketindex_skill) = skills::SKILLS.iter().find(|s| s.name == "rocketindex") {
         let skill_dir = skills_dir.join(rocketindex_skill.name);
@@ -2183,83 +2595,24 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
         let skill_path = skill_dir.join("SKILL.md");
         std::fs::write(&skill_path, rocketindex_skill.content)?;
         created_files.push(skill_path.display().to_string());
-        if !quiet && dialoguer::console::Term::stderr().is_term() {
-            println!("Installed: RocketIndex skill");
-        }
     }
 
-    // Ask about optional skills (interactive mode only)
-    // Note: We check is_term() first, then only skip if --quiet was passed
-    if !quiet && dialoguer::console::Term::stderr().is_term() {
-        // Detect primary language
-        let detected_language = detect_primary_language(cwd);
-        if let Some(lang) = &detected_language {
-            println!("Detected: {} project", lang);
-        }
+    // Create AGENTS.md
+    let agents_md_path = cwd.join(".rocketindex").join("AGENTS.md");
+    if let Some(parent) = agents_md_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let agents_section = skills::get_agents_summary();
+    let agents_content = std::fs::read_to_string(&agents_md_path).unwrap_or_default();
 
-        // Build the selection items for optional skills (exclude rocketindex - already installed)
-        let optional_skills: Vec<_> = skills::SKILLS
-            .iter()
-            .filter(|s| s.name != "rocketindex")
-            .collect();
-
-        let items: Vec<String> = optional_skills
-            .iter()
-            .map(|s| format!("{} - {}", s.display_name, s.description))
-            .collect();
-
-        // All skills selected by default (opt-out model)
-        let defaults: Vec<bool> = vec![true; items.len()];
-        let selections = MultiSelect::new()
-            .with_prompt("Install skills? (space to toggle, enter to confirm)")
-            .items(&items)
-            .defaults(&defaults)
-            .interact_opt()?;
-
-        if let Some(selected) = selections {
-            if !selected.is_empty() {
-                for idx in selected {
-                    let skill = optional_skills[idx];
-                    let skill_dir = skills_dir.join(skill.name);
-                    std::fs::create_dir_all(&skill_dir)?;
-
-                    let skill_path = skill_dir.join("SKILL.md");
-                    std::fs::write(&skill_path, skill.content)?;
-                    created_files.push(skill_path.display().to_string());
-
-                    if !quiet {
-                        println!("  Installed: {}", skill.display_name);
-                    }
-                }
-            }
-        }
-
-        // Offer to install coding guidelines for detected language
-        if let Some(lang_name) = &detected_language {
-            if let Some(guideline) = guidelines::GUIDELINES
-                .iter()
-                .find(|g| g.display_name == lang_name.as_str())
-            {
-                println!();
-                let install_guidelines = dialoguer::Confirm::new()
-                    .with_prompt(format!(
-                        "Install {} coding guidelines (coding-guidelines.md)?",
-                        guideline.display_name
-                    ))
-                    .default(true)
-                    .interact_opt()?;
-
-                if install_guidelines == Some(true) {
-                    let guidelines_path = cwd.join("coding-guidelines.md");
-                    std::fs::write(&guidelines_path, guideline.content)?;
-                    created_files.push(guidelines_path.display().to_string());
-
-                    if !quiet {
-                        println!("  Installed: coding-guidelines.md");
-                    }
-                }
-            }
-        }
+    if !agents_content.contains("RocketIndex") {
+        let new_content = if agents_content.is_empty() {
+            format!("# Agent Instructions\n\n{}", agents_section)
+        } else {
+            format!("{}\n\n{}", agents_content.trim_end(), agents_section)
+        };
+        std::fs::write(&agents_md_path, new_content)?;
+        created_files.push(agents_md_path.display().to_string());
     }
 
     // Update CLAUDE.md if it exists
@@ -2268,9 +2621,7 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
         let claude_content = std::fs::read_to_string(&claude_md_path).unwrap_or_default();
         let rocketindex_note = "**Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.\n   For definitions, callers, and dependencies use `rkt`. See `.rocketindex/AGENTS.md` for commands.\n";
 
-        // Only add if not already present
         if !claude_content.contains("RocketIndex") {
-            // Find insertion point after the title/header
             let updated = if let Some(pos) = claude_content.find("\n\n") {
                 format!(
                     "{}\n\n{}\n{}",
@@ -2282,36 +2633,6 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
                 format!("{}\n\n{}", claude_content, rocketindex_note)
             };
             std::fs::write(&claude_md_path, updated)?;
-            if !quiet && format != OutputFormat::Json {
-                println!("  Updated: CLAUDE.md");
-            }
-        }
-    }
-
-    // Create/update .rocketindex/AGENTS.md with RocketIndex section
-    let agents_md_path = cwd.join(".rocketindex").join("AGENTS.md");
-    if let Some(parent) = agents_md_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let agents_section = skills::get_agents_summary();
-
-    let agents_content = std::fs::read_to_string(&agents_md_path).unwrap_or_default();
-    if !agents_content.contains("RocketIndex") {
-        if agents_content.is_empty() {
-            // Create new AGENTS.md
-            let new_content = format!("# Agent Instructions\n\n{}", agents_section);
-            std::fs::write(&agents_md_path, new_content)?;
-            created_files.push(agents_md_path.display().to_string());
-            if !quiet && format != OutputFormat::Json {
-                println!("  Created: AGENTS.md");
-            }
-        } else {
-            // Append to existing
-            let updated = format!("{}\n\n{}", agents_content.trim_end(), agents_section);
-            std::fs::write(&agents_md_path, updated)?;
-            if !quiet && format != OutputFormat::Json {
-                println!("  Updated: AGENTS.md");
-            }
         }
     }
 
@@ -2321,9 +2642,7 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
         let copilot_content = std::fs::read_to_string(&copilot_path).unwrap_or_default();
         let rocketindex_note = "**Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.\n   For definitions, callers, and dependencies use `rkt`. See `.rocketindex/AGENTS.md` for commands.\n";
 
-        // Only add if not already present
         if !copilot_content.contains("RocketIndex") {
-            // Find insertion point after the title/header
             let updated = if let Some(pos) = copilot_content.find("\n\n") {
                 format!(
                     "{}\n\n{}\n{}",
@@ -2335,15 +2654,11 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
                 format!("{}\n\n{}", copilot_content, rocketindex_note)
             };
             std::fs::write(&copilot_path, updated)?;
-            if !quiet && format != OutputFormat::Json {
-                println!("  Updated: .github/copilot-instructions.md");
-            }
         }
     }
 
-    // Use text output if interactive (terminal), JSON only if explicitly requested or non-interactive
-    let is_interactive = dialoguer::console::Term::stderr().is_term();
-    if format == OutputFormat::Json && !is_interactive {
+    // JSON output for non-interactive
+    if format == OutputFormat::Json {
         println!(
             "{}",
             serde_json::json!({
@@ -2352,10 +2667,6 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
                 "usage": "See .rocketindex/AGENTS.md for detailed instructions"
             })
         );
-    } else if !quiet {
-        println!();
-        println!("Setup complete! {} file(s) created.", created_files.len());
-        println!("See .rocketindex/AGENTS.md for detailed instructions.");
     }
 
     Ok(exit_codes::SUCCESS)

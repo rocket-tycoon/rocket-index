@@ -18,6 +18,7 @@ pub struct Guidelines {
 }
 
 /// All available coding guidelines
+#[allow(dead_code)]
 pub const GUIDELINES: &[Guidelines] = &[
     Guidelines {
         language: "rust",
