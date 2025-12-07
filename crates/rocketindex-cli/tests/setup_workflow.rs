@@ -241,3 +241,85 @@ fn setup_copilot_idempotent() -> TestResult {
 
     Ok(())
 }
+
+// ============================================================================
+// rkt start tests
+// ============================================================================
+
+#[test]
+fn start_rejects_invalid_agent() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Run start with invalid agent
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["start", "invalid-agent", "--quiet"])
+        .assert()
+        .code(2); // ERROR exit code
+
+    Ok(())
+}
+
+#[test]
+fn start_rejects_invalid_agent_json_output() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Run start with invalid agent, JSON format
+    let output = Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["start", "invalid-agent", "--format", "json"])
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"error\"") && stdout.contains("Unknown agent"),
+        "Should output JSON error for invalid agent"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn start_accepts_valid_agent_names() -> TestResult {
+    // Test that valid agent names are accepted (command starts but we can't
+    // test the blocking watch, so we just verify setup runs)
+    let valid_agents = [
+        "claude",
+        "claude-code",
+        "cursor",
+        "copilot",
+        "github-copilot",
+    ];
+
+    for agent in valid_agents {
+        let workspace = SetupWorkspace::new()?;
+
+        // Create an index so it doesn't run full setup wizard
+        // Then start will try to run watch, which will block
+        // We use timeout to kill it after setup verification
+        fs::create_dir_all(workspace.path(".rocketindex"))?;
+
+        // We can't easily test the full flow since watch blocks,
+        // but we can at least verify the agent name is accepted
+        // by checking it doesn't immediately fail with "Unknown agent"
+        let output = Command::cargo_bin("rkt")?
+            .current_dir(workspace.root())
+            .args(["start", agent, "--format", "json"])
+            .timeout(std::time::Duration::from_millis(500))
+            .output();
+
+        // Either it times out (watch started) or fails for another reason
+        // but NOT because of invalid agent name
+        if let Ok(out) = output {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                !stdout.contains("Unknown agent"),
+                "Agent '{}' should be recognized as valid",
+                agent
+            );
+        }
+        // Timeout is expected and acceptable - means watch tried to start
+    }
+
+    Ok(())
+}
