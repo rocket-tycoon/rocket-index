@@ -129,14 +129,27 @@ impl FileWatcher {
     }
 }
 
-/// Check if a path is a supported source file (F#, Ruby, Python, Rust, or Go).
+/// Check if a path is a supported source file.
+/// Supported: F#, Ruby, Python, Rust, Go, TypeScript, JavaScript.
 pub fn is_supported_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| {
             matches!(
                 ext,
-                "fs" | "fsi" | "fsx" | "rb" | "py" | "pyi" | "rs" | "go"
+                "fs" | "fsi"
+                    | "fsx"
+                    | "rb"
+                    | "py"
+                    | "pyi"
+                    | "rs"
+                    | "go"
+                    | "ts"
+                    | "tsx"
+                    | "js"
+                    | "jsx"
+                    | "mjs"
+                    | "cjs"
             )
         })
         .unwrap_or(false)
@@ -231,14 +244,28 @@ mod tests {
 
     #[test]
     fn test_is_supported_file() {
+        // F#
         assert!(is_supported_file(Path::new("test.fs")));
         assert!(is_supported_file(Path::new("test.fsi")));
         assert!(is_supported_file(Path::new("test.fsx")));
+        // Ruby
         assert!(is_supported_file(Path::new("test.rb")));
+        // Rust
         assert!(is_supported_file(Path::new("test.rs")));
+        // Go
         assert!(is_supported_file(Path::new("test.go")));
+        // TypeScript
+        assert!(is_supported_file(Path::new("test.ts")));
+        assert!(is_supported_file(Path::new("test.tsx")));
+        // JavaScript
+        assert!(is_supported_file(Path::new("test.js")));
+        assert!(is_supported_file(Path::new("test.jsx")));
+        assert!(is_supported_file(Path::new("test.mjs")));
+        assert!(is_supported_file(Path::new("test.cjs")));
+        // Paths
         assert!(is_supported_file(Path::new("/path/to/Module.fs")));
         assert!(is_supported_file(Path::new("/path/to/main.go")));
+        assert!(is_supported_file(Path::new("/path/to/app.ts")));
 
         assert!(!is_supported_file(Path::new("test.cs")));
         assert!(!is_supported_file(Path::new("test.txt")));
