@@ -21,7 +21,7 @@ use rocketindex::{
     db::DEFAULT_DB_NAME,
     find_fsproj_files, parse_fsproj,
     spider::{format_spider_result, reverse_spider, spider},
-    watch::{find_source_files_with_exclusions, is_supported_file},
+    watch::{find_source_files_with_config, is_supported_file},
     CodeIndex, SqliteIndex,
 };
 
@@ -414,7 +414,7 @@ fn cmd_index(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
         eprintln!("Custom exclusions: {}", config.exclude_dirs.join(", "));
     }
 
-    let files = find_source_files_with_exclusions(&root, &exclude_dirs)
+    let files = find_source_files_with_config(&root, &exclude_dirs, config.respect_gitignore)
         .context("Failed to find source files")?;
 
     // Try to find and parse .fsproj files for compilation order
@@ -907,7 +907,7 @@ fn cmd_update(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
 
     // Find files that have changed (simplified: just re-index all files for now)
     // TODO: Use file modification times or a proper incremental strategy
-    let files = find_source_files_with_exclusions(&root, &exclude_dirs)?;
+    let files = find_source_files_with_config(&root, &exclude_dirs, config.respect_gitignore)?;
     let mut updated_count = 0;
 
     for file in &files {

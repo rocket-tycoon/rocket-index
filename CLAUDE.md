@@ -84,7 +84,7 @@ crates/
 | `db.rs` | SQLite persistence (`SqliteIndex`) |
 | `resolve.rs` | Name resolution with scope rules and `open` statements |
 | `spider.rs` | Dependency graph traversal |
-| `languages/` | Language-specific resolution (F#, Ruby) |
+| `languages/` | Language-specific parsing and resolution |
 | `config.rs` | `.rocketindex.toml` configuration loading |
 | `type_cache.rs` | Optional type information from `dotnet fsi` |
 
@@ -122,7 +122,7 @@ Default exclusions: `node_modules`, `bin`, `obj`, `packages`, `.git`, `.vs`, `.i
 
 ## Language Support
 
-Currently supports F#, Ruby, Python, Rust, and Go via Tree-sitter grammars. Language detected by file extension.
+Currently supports F#, Ruby, Python, Rust, Go, TypeScript, and JavaScript via Tree-sitter grammars. Language detected by file extension.
 
 | Language | Extensions |
 |----------|------------|
@@ -131,3 +131,5 @@ Currently supports F#, Ruby, Python, Rust, and Go via Tree-sitter grammars. Lang
 | Python | `.py`, `.pyi` |
 | Rust | `.rs` |
 | Go | `.go` |
+| TypeScript | `.ts`, `.tsx` |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |

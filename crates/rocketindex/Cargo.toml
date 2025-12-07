@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Rocket-fast F# code indexer - symbol extraction, indexing, and name resolution"
+description = "Rocket-fast multi-language code indexer - symbol extraction, indexing, and name resolution"
 
 [dependencies]
 serde = { workspace = true }
@@ -28,10 +28,15 @@ rusqlite = { workspace = true }
 
 # TOML parsing for config files
 toml = "0.8"
+
+# Gitignore-aware file walking (same library ripgrep uses)
+ignore = "0.4"
 tree-sitter-ruby = "0.23.1"
 tree-sitter-python = "0.23.2"
 tree-sitter-rust = "0.23.2"
 tree-sitter-go = "0.23.4"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-javascript = "0.23.1"
 
 [dev-dependencies]
 criterion = "0.5"
