@@ -2178,12 +2178,12 @@ fn cmd_start(agent: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
                 "{}",
                 serde_json::json!({
                     "error": "Unknown agent",
-                    "supported": ["claude", "cursor", "copilot"]
+                    "supported": valid_agents
                 })
             );
         } else {
             eprintln!("Unknown agent: {}", agent);
-            eprintln!("Supported agents: claude, cursor, copilot");
+            eprintln!("Supported agents: {}", valid_agents.join(", "));
         }
         return Ok(exit_codes::ERROR);
     }
@@ -2229,6 +2229,9 @@ fn cmd_start(agent: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
 fn find_watch_process(cwd: &Path) -> Option<u32> {
     use std::process::Command;
 
+    // Get our own PID to filter it out (pgrep -f can match the grep pattern in our cmdline)
+    let our_pid = std::process::id();
+
     // Use pgrep to find rkt watch processes
     let output = Command::new("pgrep")
         .args(["-f", "rkt watch"])
@@ -2242,9 +2245,11 @@ fn find_watch_process(cwd: &Path) -> Option<u32> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
         if let Ok(pid) = line.trim().parse::<u32>() {
-            // Verify this process is watching our directory by checking /proc or lsof
-            // For simplicity, just return the first match
-            // A more robust check would verify the working directory
+            // Skip our own process
+            if pid == our_pid {
+                continue;
+            }
+            // Verify this process is watching our directory
             if is_watch_for_directory(pid, cwd) {
                 return Some(pid);
             }
@@ -2255,6 +2260,8 @@ fn find_watch_process(cwd: &Path) -> Option<u32> {
 }
 
 /// Check if a watch process is for the given directory
+/// Returns true if we can confirm it's for this directory, OR if we can't verify (fallback)
+/// Returns false only if we can confirm it's for a DIFFERENT directory
 fn is_watch_for_directory(pid: u32, cwd: &Path) -> bool {
     use std::process::Command;
 
@@ -2268,11 +2275,23 @@ fn is_watch_for_directory(pid: u32, cwd: &Path) -> bool {
 
         if let Some(output) = output {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            // lsof output includes "ncwd" for current working directory
-            if stdout.contains(&cwd.display().to_string()) {
-                return true;
+            let cwd_str = cwd.display().to_string();
+
+            // Look for the cwd line in lsof output (format: "ncwd" followed by path)
+            for line in stdout.lines() {
+                if line.starts_with('n') && line.len() > 1 {
+                    let path = &line[1..];
+                    // If we find a cwd entry, check if it matches
+                    if path == cwd_str {
+                        return true;
+                    }
+                }
             }
+            // lsof succeeded but didn't find matching cwd - it's a different directory
+            // However, lsof output is complex; if we're not sure, fall back to true
         }
+        // lsof failed - can't verify, assume it's ours
+        true
     }
 
     // On Linux, check /proc/{pid}/cwd
@@ -2280,21 +2299,19 @@ fn is_watch_for_directory(pid: u32, cwd: &Path) -> bool {
     {
         let proc_cwd = PathBuf::from(format!("/proc/{}/cwd", pid));
         if let Ok(link_target) = std::fs::read_link(&proc_cwd) {
-            if link_target == cwd {
-                return true;
-            }
+            // We can verify - return whether it matches
+            return link_target == cwd;
         }
+        // Can't read /proc - assume it's ours
+        true
     }
 
-    // Fallback: assume it's for our directory if we found a match
-    // This is less precise but better than nothing
+    // Fallback for other platforms: assume it's for our directory
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = (pid, cwd);
-        return true;
+        true
     }
-
-    false
 }
 
 /// Warn if no active session (watch mode) is running
