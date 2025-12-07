@@ -2274,13 +2274,13 @@ How would you like to configure agents?
     match choice {
         AgentSetupChoice::InstallAgents => {
             // Always install rocketindex agent first
-            if let Some(rocketindex_skill) = skills::SKILLS.iter().find(|s| s.name == "rocketindex")
+            if let Some(rocketindex_agent) = skills::AGENTS.iter().find(|a| a.name == "rocketindex")
             {
-                let skill_dir = skills_dir.join(rocketindex_skill.name);
-                std::fs::create_dir_all(&skill_dir)?;
-                let skill_path = skill_dir.join("SKILL.md");
-                std::fs::write(&skill_path, rocketindex_skill.content)?;
-                created_files.push(skill_path.display().to_string());
+                let agent_dir = skills_dir.join(rocketindex_agent.name);
+                std::fs::create_dir_all(&agent_dir)?;
+                let agent_path = agent_dir.join("SKILL.md");
+                std::fs::write(&agent_path, rocketindex_agent.content)?;
+                created_files.push(agent_path.display().to_string());
             }
 
             println!(
@@ -2292,14 +2292,14 @@ Use Space to toggle, Enter to confirm.
 "#
             );
 
-            let optional_skills: Vec<_> = skills::SKILLS
+            let optional_agents: Vec<_> = skills::AGENTS
                 .iter()
-                .filter(|s| s.name != "rocketindex")
+                .filter(|a| a.name != "rocketindex")
                 .collect();
 
-            let items: Vec<String> = optional_skills
+            let items: Vec<String> = optional_agents
                 .iter()
-                .map(|s| format!("{:<18} {}", s.display_name, s.description))
+                .map(|a| format!("{:<18} {}", a.display_name, a.description))
                 .collect();
 
             let defaults: Vec<bool> = vec![true; items.len()];
@@ -2312,16 +2312,16 @@ Use Space to toggle, Enter to confirm.
             if let Some(selected) = selections {
                 println!("\nInstalling agents...");
                 for idx in selected {
-                    let skill = optional_skills[idx];
-                    let skill_dir = skills_dir.join(skill.name);
-                    std::fs::create_dir_all(&skill_dir)?;
+                    let agent = optional_agents[idx];
+                    let agent_dir = skills_dir.join(agent.name);
+                    std::fs::create_dir_all(&agent_dir)?;
 
-                    let skill_path = skill_dir.join("SKILL.md");
-                    std::fs::write(&skill_path, skill.content)?;
-                    created_files.push(skill_path.display().to_string());
+                    let agent_path = agent_dir.join("SKILL.md");
+                    std::fs::write(&agent_path, agent.content)?;
+                    created_files.push(agent_path.display().to_string());
 
                     if !quiet {
-                        println!("  * .claude/skills/{}/SKILL.md", skill.name);
+                        println!("  * .claude/skills/{}/SKILL.md", agent.name);
                     }
                 }
             }
@@ -2589,12 +2589,12 @@ fn setup_claude_code_non_interactive(cwd: &Path, format: OutputFormat, quiet: bo
 
     // Install rocketindex agent
     let skills_dir = cwd.join(".claude").join("skills");
-    if let Some(rocketindex_skill) = skills::SKILLS.iter().find(|s| s.name == "rocketindex") {
-        let skill_dir = skills_dir.join(rocketindex_skill.name);
-        std::fs::create_dir_all(&skill_dir)?;
-        let skill_path = skill_dir.join("SKILL.md");
-        std::fs::write(&skill_path, rocketindex_skill.content)?;
-        created_files.push(skill_path.display().to_string());
+    if let Some(rocketindex_agent) = skills::AGENTS.iter().find(|a| a.name == "rocketindex") {
+        let agent_dir = skills_dir.join(rocketindex_agent.name);
+        std::fs::create_dir_all(&agent_dir)?;
+        let agent_path = agent_dir.join("SKILL.md");
+        std::fs::write(&agent_path, rocketindex_agent.content)?;
+        created_files.push(agent_path.display().to_string());
     }
 
     // Create AGENTS.md
