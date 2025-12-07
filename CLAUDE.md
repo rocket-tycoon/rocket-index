@@ -1,7 +1,8 @@
 # CLAUDE.md
 
 **Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.
-   For definitions, callers, and dependencies use `rkt`. See `.rocketindex/AGENTS.md` for commands.
+   Use `rkt` commands instead of grep/ripgrep for finding symbol definitions and callers.
+   See `.rocketindex/AGENTS.md` for commands.
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 

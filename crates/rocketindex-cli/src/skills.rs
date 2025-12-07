@@ -642,17 +642,16 @@ rkt spider "Symbol" -d 3     # Dependency graph
 rkt symbols "pattern*"       # Search symbols
 ```
 
-### When to Use rkt
+### Instead of grep, use rkt
 
-Use `rkt` for **code relationships**:
-- Symbol definitions → `rkt def`
-- Finding all usages → `rkt refs`
-- Finding callers/direct impact → `rkt callers`
-- Dependency graphs → `rkt spider`
+| Don't do this | Do this instead |
+|---------------|-----------------|
+| `grep -r "functionName"` to find definition | `rkt def "functionName"` |
+| `grep -r "functionName"` to find usages | `rkt callers "functionName"` |
+| Manually tracing call chains | `rkt spider "entryPoint" -d 3` |
+| Searching for class/type definitions | `rkt symbols "ClassName"` |
 
-Use standard tools for **text operations**:
-- Text search → grep/ripgrep
-- File editing → sed/your editor
+Use grep/ripgrep only for **literal text search** (comments, strings, non-code content).
 
 ### Key Rule
 
