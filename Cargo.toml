@@ -49,3 +49,8 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 
 # Internal crates
 rocketindex = { path = "crates/rocketindex" }
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1
