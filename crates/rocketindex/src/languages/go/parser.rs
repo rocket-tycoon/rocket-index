@@ -423,6 +423,57 @@ fn extract_type_spec(
         }
 
         "interface_type" => {
+            // Extract embedded interfaces first
+            let mut embedded_interfaces = Vec::new();
+            for i in 0..type_node.child_count() {
+                if let Some(child) = type_node.child(i) {
+                    // Embedded interfaces appear as type_elem nodes in tree-sitter-go
+                    match child.kind() {
+                        "type_identifier" => {
+                            // Simple embedded interface: Reader
+                            if let Ok(embedded_name) = child.utf8_text(source) {
+                                embedded_interfaces.push(embedded_name.to_string());
+                            }
+                        }
+                        "qualified_type" => {
+                            // Qualified embedded interface: io.Reader
+                            if let Ok(qualified_name) = child.utf8_text(source) {
+                                embedded_interfaces.push(qualified_name.to_string());
+                            }
+                        }
+                        "type_elem" => {
+                            // type_elem contains embedded interfaces
+                            // Look for type_identifier or qualified_type inside
+                            for j in 0..child.child_count() {
+                                if let Some(inner) = child.child(j) {
+                                    match inner.kind() {
+                                        "type_identifier" => {
+                                            if let Ok(embedded_name) = inner.utf8_text(source) {
+                                                embedded_interfaces.push(embedded_name.to_string());
+                                            }
+                                        }
+                                        "qualified_type" => {
+                                            if let Ok(qualified_name) = inner.utf8_text(source) {
+                                                embedded_interfaces
+                                                    .push(qualified_name.to_string());
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            let mixins = if embedded_interfaces.is_empty() {
+                None
+            } else {
+                Some(embedded_interfaces)
+            };
+
             result.symbols.push(Symbol {
                 name: name.to_string(),
                 qualified: qualified.clone(),
@@ -431,7 +482,7 @@ fn extract_type_spec(
                 visibility,
                 language: "go".to_string(),
                 parent: None,
-                mixins: None,
+                mixins,
                 attributes: None,
                 implements: None,
                 doc,
@@ -887,6 +938,348 @@ const (
 
         assert!(result.symbols.iter().any(|s| s.name == "StatusOK"));
         assert!(result.symbols.iter().any(|s| s.name == "StatusNotFound"));
+    }
+
+    #[test]
+    fn extracts_interface_embedding() {
+        let source = r#"
+package test
+
+type Reader interface {
+    Read(p []byte) (n int, err error)
+}
+
+type Writer interface {
+    Write(p []byte) (n int, err error)
+}
+
+type ReadWriter interface {
+    Reader
+    Writer
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        // Should find Reader interface with Read method
+        let reader = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Reader" && s.kind == SymbolKind::Interface)
+            .expect("Should find Reader interface");
+        assert_eq!(reader.qualified, "test.Reader");
+
+        let read_method = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Read" && s.qualified == "test.Reader.Read")
+            .expect("Should find Read method");
+        assert_eq!(read_method.kind, SymbolKind::Function);
+
+        // Should find Writer interface with Write method
+        let writer = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Writer" && s.kind == SymbolKind::Interface)
+            .expect("Should find Writer interface");
+        assert_eq!(writer.qualified, "test.Writer");
+
+        // Should find ReadWriter interface with embedded interfaces tracked in mixins
+        let read_writer = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "ReadWriter" && s.kind == SymbolKind::Interface)
+            .expect("Should find ReadWriter interface");
+        assert_eq!(read_writer.qualified, "test.ReadWriter");
+
+        // Interface embedding: Reader and Writer should be recorded in mixins
+        let mixins = read_writer
+            .mixins
+            .as_ref()
+            .expect("ReadWriter should have mixins");
+        assert!(
+            mixins.contains(&"Reader".to_string()),
+            "Should embed Reader"
+        );
+        assert!(
+            mixins.contains(&"Writer".to_string()),
+            "Should embed Writer"
+        );
+    }
+
+    #[test]
+    fn extracts_qualified_interface_embedding() {
+        let source = r#"
+package gin
+
+type ResponseWriter interface {
+    http.ResponseWriter
+    http.Hijacker
+    http.Flusher
+    Status() int
+    Size() int
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        // Should find ResponseWriter interface
+        let rw = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "ResponseWriter" && s.kind == SymbolKind::Interface)
+            .expect("Should find ResponseWriter interface");
+        assert_eq!(rw.qualified, "gin.ResponseWriter");
+
+        // Should have embedded interfaces (qualified types)
+        let mixins = rw.mixins.as_ref().expect("Should have mixins");
+        assert!(
+            mixins.contains(&"http.ResponseWriter".to_string()),
+            "Should embed http.ResponseWriter, got: {:?}",
+            mixins
+        );
+        assert!(
+            mixins.contains(&"http.Hijacker".to_string()),
+            "Should embed http.Hijacker"
+        );
+        assert!(
+            mixins.contains(&"http.Flusher".to_string()),
+            "Should embed http.Flusher"
+        );
+
+        // Should also have the declared methods
+        assert!(result
+            .symbols
+            .iter()
+            .any(|s| s.name == "Status" && s.qualified == "gin.ResponseWriter.Status"));
+        assert!(result
+            .symbols
+            .iter()
+            .any(|s| s.name == "Size" && s.qualified == "gin.ResponseWriter.Size"));
+    }
+
+    #[test]
+    fn extracts_interface_with_multiple_methods() {
+        let source = r#"
+package http
+
+type Handler interface {
+    ServeHTTP(w ResponseWriter, r *Request)
+}
+
+type ResponseWriter interface {
+    Header() Header
+    Write([]byte) (int, error)
+    WriteHeader(statusCode int)
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        // Handler interface
+        let handler = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Handler")
+            .expect("Should find Handler");
+        assert_eq!(handler.kind, SymbolKind::Interface);
+
+        // ResponseWriter interface with 3 methods
+        let rw = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "ResponseWriter")
+            .expect("Should find ResponseWriter");
+        assert_eq!(rw.kind, SymbolKind::Interface);
+
+        // Check methods are extracted
+        assert!(result
+            .symbols
+            .iter()
+            .any(|s| s.name == "Header" && s.qualified == "http.ResponseWriter.Header"));
+        assert!(result
+            .symbols
+            .iter()
+            .any(|s| s.name == "Write" && s.qualified == "http.ResponseWriter.Write"));
+        assert!(result
+            .symbols
+            .iter()
+            .any(|s| s.name == "WriteHeader" && s.qualified == "http.ResponseWriter.WriteHeader"));
+    }
+
+    #[test]
+    fn extracts_variadic_function() {
+        let source = r#"
+package fmt
+
+func Printf(format string, a ...interface{}) (n int, err error) {
+    return
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        let printf = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Printf")
+            .expect("Should find Printf");
+        assert_eq!(printf.kind, SymbolKind::Function);
+        assert!(printf.signature.as_ref().unwrap().contains("..."));
+    }
+
+    #[test]
+    fn extracts_generic_type() {
+        let source = r#"
+package collections
+
+type List[T any] struct {
+    items []T
+}
+
+func (l *List[T]) Add(item T) {
+    l.items = append(l.items, item)
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        // Generic struct
+        let list = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "List")
+            .expect("Should find List");
+        assert_eq!(list.kind, SymbolKind::Class);
+
+        // Method on generic type
+        let add = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Add")
+            .expect("Should find Add method");
+        assert_eq!(add.kind, SymbolKind::Function);
+    }
+
+    #[test]
+    fn extracts_iota_constants() {
+        let source = r#"
+package status
+
+const (
+    Pending = iota
+    Running
+    Completed
+    Failed
+)
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        // Should find all constants
+        assert!(result.symbols.iter().any(|s| s.name == "Pending"));
+        assert!(result.symbols.iter().any(|s| s.name == "Running"));
+        assert!(result.symbols.iter().any(|s| s.name == "Completed"));
+        assert!(result.symbols.iter().any(|s| s.name == "Failed"));
+    }
+
+    #[test]
+    fn extracts_import_alias() {
+        let source = r#"
+package main
+
+import (
+    "fmt"
+    json "encoding/json"
+    . "strings"
+    _ "net/http/pprof"
+)
+
+func main() {}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        // All imports should be captured
+        assert!(result.opens.contains(&"fmt".to_string()));
+        assert!(result.opens.contains(&"encoding/json".to_string()));
+        assert!(result.opens.contains(&"strings".to_string()));
+        assert!(result.opens.contains(&"net/http/pprof".to_string()));
+    }
+
+    #[test]
+    fn extracts_anonymous_struct_field() {
+        let source = r#"
+package config
+
+type Config struct {
+    Server struct {
+        Host string
+        Port int
+    }
+    Database struct {
+        URL string
+    }
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        // Should find Config struct
+        let config = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Config")
+            .expect("Should find Config");
+        assert_eq!(config.kind, SymbolKind::Class);
+
+        // Named fields with anonymous struct types should be captured
+        assert!(result
+            .symbols
+            .iter()
+            .any(|s| s.name == "Server" && s.qualified == "config.Config.Server"));
+        assert!(result
+            .symbols
+            .iter()
+            .any(|s| s.name == "Database" && s.qualified == "config.Config.Database"));
+    }
+
+    #[test]
+    fn extracts_pointer_receiver_method() {
+        let source = r#"
+package user
+
+type User struct {
+    name string
+}
+
+func (u *User) SetName(name string) {
+    u.name = name
+}
+
+func (u User) GetName() string {
+    return u.name
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        // Both pointer and value receiver methods should be found
+        let set_name = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "SetName")
+            .expect("Should find SetName");
+        assert_eq!(set_name.qualified, "user.User.SetName");
+        assert_eq!(set_name.parent, Some("User".to_string()));
+
+        let get_name = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "GetName")
+            .expect("Should find GetName");
+        assert_eq!(get_name.qualified, "user.User.GetName");
+        assert_eq!(get_name.parent, Some("User".to_string()));
     }
 
     #[test]

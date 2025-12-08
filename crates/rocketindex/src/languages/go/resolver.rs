@@ -291,4 +291,302 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(result.unwrap().symbol.visibility, Visibility::Private);
     }
+
+    #[test]
+    fn resolves_embedded_struct_field() {
+        let mut index = CodeIndex::new();
+
+        // Define Container struct
+        index.add_symbol(Symbol::new(
+            "Container".to_string(),
+            "container.Container".to_string(),
+            SymbolKind::Class,
+            Location::new(PathBuf::from("container/container.go"), 1, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        // Define embedded State field (embedded struct)
+        index.add_symbol(Symbol::new(
+            "State".to_string(),
+            "container.Container.State".to_string(),
+            SymbolKind::Member,
+            Location::new(PathBuf::from("container/container.go"), 5, 5),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        // Define Config field (named field)
+        index.add_symbol(Symbol::new(
+            "Config".to_string(),
+            "container.Container.Config".to_string(),
+            SymbolKind::Member,
+            Location::new(PathBuf::from("container/container.go"), 6, 5),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        let resolver = GoResolver;
+
+        // Should resolve Container.Config directly
+        let result =
+            resolver.resolve_dotted(&index, "container.Container.Config", Path::new("test.go"));
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap().symbol.qualified,
+            "container.Container.Config"
+        );
+
+        // Should resolve Container.State (embedded field)
+        let result =
+            resolver.resolve_dotted(&index, "container.Container.State", Path::new("test.go"));
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap().symbol.qualified,
+            "container.Container.State"
+        );
+    }
+
+    #[test]
+    fn resolves_cross_package_symbol() {
+        let mut index = CodeIndex::new();
+
+        // Define a symbol in package A
+        index.add_symbol(Symbol::new(
+            "Handler".to_string(),
+            "handlers.Handler".to_string(),
+            SymbolKind::Class,
+            Location::new(PathBuf::from("handlers/handler.go"), 1, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        // Add import in the calling file
+        index.add_open(PathBuf::from("main.go"), "handlers".to_string());
+
+        let resolver = GoResolver;
+
+        // From main.go, "handlers.Handler" should resolve
+        let result = resolver.resolve(&index, "handlers.Handler", Path::new("main.go"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().symbol.qualified, "handlers.Handler");
+    }
+
+    #[test]
+    fn resolves_method_via_type() {
+        let mut index = CodeIndex::new();
+
+        // Define struct
+        index.add_symbol(Symbol::new(
+            "Client".to_string(),
+            "http.Client".to_string(),
+            SymbolKind::Class,
+            Location::new(PathBuf::from("http/client.go"), 1, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        // Define method on struct
+        index.add_symbol(Symbol::new(
+            "Get".to_string(),
+            "http.Client.Get".to_string(),
+            SymbolKind::Function,
+            Location::new(PathBuf::from("http/client.go"), 10, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        let resolver = GoResolver;
+
+        // Should resolve method via dotted name
+        let result = resolver.resolve_dotted(&index, "http.Client.Get", Path::new("test.go"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().symbol.qualified, "http.Client.Get");
+    }
+
+    #[test]
+    fn resolves_interface_embedded_method() {
+        let mut index = CodeIndex::new();
+
+        // Define ReadWriter interface (which embeds Reader and Writer)
+        index.add_symbol(Symbol::new(
+            "ReadWriter".to_string(),
+            "io.ReadWriter".to_string(),
+            SymbolKind::Interface,
+            Location::new(PathBuf::from("io/io.go"), 1, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        // Define Reader interface
+        index.add_symbol(Symbol::new(
+            "Reader".to_string(),
+            "io.Reader".to_string(),
+            SymbolKind::Interface,
+            Location::new(PathBuf::from("io/io.go"), 10, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        // Define Read method on Reader
+        index.add_symbol(Symbol::new(
+            "Read".to_string(),
+            "io.Reader.Read".to_string(),
+            SymbolKind::Function,
+            Location::new(PathBuf::from("io/io.go"), 12, 5),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        let resolver = GoResolver;
+
+        // Should resolve Reader.Read
+        let result = resolver.resolve_dotted(&index, "io.Reader.Read", Path::new("test.go"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().symbol.qualified, "io.Reader.Read");
+    }
+
+    #[test]
+    fn resolves_symbols_in_same_package_different_files() {
+        let mut index = CodeIndex::new();
+
+        // Define package in file1.go
+        index.add_symbol(Symbol::new(
+            "mypackage".to_string(),
+            "mypackage".to_string(),
+            SymbolKind::Module,
+            Location::new(PathBuf::from("mypackage/file1.go"), 1, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        // Define function in file1.go
+        index.add_symbol(Symbol::new(
+            "HelperFunc".to_string(),
+            "mypackage.HelperFunc".to_string(),
+            SymbolKind::Function,
+            Location::new(PathBuf::from("mypackage/file1.go"), 5, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        // Define another function in file2.go (same package)
+        index.add_symbol(Symbol::new(
+            "MainFunc".to_string(),
+            "mypackage.MainFunc".to_string(),
+            SymbolKind::Function,
+            Location::new(PathBuf::from("mypackage/file2.go"), 5, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        // Add package declaration for file2.go too
+        index.add_symbol(Symbol::new(
+            "mypackage".to_string(),
+            "mypackage".to_string(),
+            SymbolKind::Module,
+            Location::new(PathBuf::from("mypackage/file2.go"), 1, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        let resolver = GoResolver;
+
+        // From file2.go, should be able to resolve HelperFunc (from file1.go) via same package
+        let result = resolver.resolve(&index, "HelperFunc", Path::new("mypackage/file2.go"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().symbol.qualified, "mypackage.HelperFunc");
+
+        // From file1.go, should be able to resolve MainFunc (from file2.go) via same package
+        let result = resolver.resolve(&index, "MainFunc", Path::new("mypackage/file1.go"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().symbol.qualified, "mypackage.MainFunc");
+    }
+
+    #[test]
+    fn resolves_nested_type_method() {
+        let mut index = CodeIndex::new();
+
+        // Define package.Type.Method pattern
+        index.add_symbol(Symbol::new(
+            "Server".to_string(),
+            "grpc.Server".to_string(),
+            SymbolKind::Class,
+            Location::new(PathBuf::from("grpc/server.go"), 1, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        index.add_symbol(Symbol::new(
+            "Serve".to_string(),
+            "grpc.Server.Serve".to_string(),
+            SymbolKind::Function,
+            Location::new(PathBuf::from("grpc/server.go"), 50, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        index.add_symbol(Symbol::new(
+            "Stop".to_string(),
+            "grpc.Server.Stop".to_string(),
+            SymbolKind::Function,
+            Location::new(PathBuf::from("grpc/server.go"), 100, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        let resolver = GoResolver;
+
+        // Should resolve Server.Serve
+        let result = resolver.resolve_dotted(&index, "grpc.Server.Serve", Path::new("test.go"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().symbol.qualified, "grpc.Server.Serve");
+
+        // Should resolve Server.Stop
+        let result = resolver.resolve_dotted(&index, "grpc.Server.Stop", Path::new("test.go"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().symbol.qualified, "grpc.Server.Stop");
+    }
+
+    #[test]
+    fn resolves_type_alias() {
+        let mut index = CodeIndex::new();
+
+        // Define a type alias
+        index.add_symbol(Symbol::new(
+            "Duration".to_string(),
+            "time.Duration".to_string(),
+            SymbolKind::Type,
+            Location::new(PathBuf::from("time/time.go"), 1, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        let resolver = GoResolver;
+
+        let result = resolver.resolve(&index, "time.Duration", Path::new("test.go"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().symbol.kind, SymbolKind::Type);
+    }
+
+    #[test]
+    fn resolves_constant() {
+        let mut index = CodeIndex::new();
+
+        // Define constants
+        index.add_symbol(Symbol::new(
+            "StatusOK".to_string(),
+            "http.StatusOK".to_string(),
+            SymbolKind::Value,
+            Location::new(PathBuf::from("http/status.go"), 1, 1),
+            Visibility::Public,
+            "go".to_string(),
+        ));
+
+        let resolver = GoResolver;
+
+        let result = resolver.resolve(&index, "http.StatusOK", Path::new("test.go"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().symbol.kind, SymbolKind::Value);
+    }
 }
