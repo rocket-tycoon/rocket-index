@@ -121,20 +121,26 @@ $ rkt def "spawn"
 | **Precision** | Exact | 17 candidates to sift |
 
 ## Language Support
-| Language | Extensions |
-| :--- | :--- |
-| **C** | `.c`, `.h` |
-| **C#** | `.cs` |
-| **C++** | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.hh` |
-| **F#** | `.fs`, `.fsi`, `.fsx` |
-| **Go** | `.go` |
-| **Java** | `.java` |
-| **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` |
-| **PHP** | `.php` |
-| **Python** | `.py`, `.pyi` |
-| **Ruby** | `.rb` |
-| **Rust** | `.rs` |
-| **TypeScript** | `.ts`, `.tsx` |
+
+| Language | Extensions | Status |
+| :--- | :--- | :--- |
+| **F#** | `.fs`, `.fsi`, `.fsx` | Full |
+| **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` | Full |
+| **Python** | `.py`, `.pyi` | Full |
+| **Ruby** | `.rb` | Full |
+| **Rust** | `.rs` | Full |
+| **TypeScript** | `.ts`, `.tsx` | Full |
+| **C#** | `.cs` | Beta |
+| **Go** | `.go` | Beta |
+| **Java** | `.java` | Beta |
+| **PHP** | `.php` | Beta |
+| **C** | `.c`, `.h` | Alpha |
+| **C++** | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.hh` | Alpha |
+
+**Status Key:**
+- **Full**: Production-ready. Comprehensive symbol extraction with visibility, inheritance, and language-specific patterns.
+- **Beta**: Functional for most use cases. Core symbols extracted; some advanced patterns may be missing.
+- **Alpha**: Basic support. Functions, classes, and modules extracted; limited metadata.
 
 ## Security
 
