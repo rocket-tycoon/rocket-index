@@ -289,6 +289,7 @@ fn start_accepts_valid_agent_names() -> TestResult {
         "cursor",
         "copilot",
         "github-copilot",
+        "zed",
     ];
 
     for agent in valid_agents {
@@ -320,6 +321,171 @@ fn start_accepts_valid_agent_names() -> TestResult {
         }
         // Timeout is expected and acceptable - means watch tried to start
     }
+
+    Ok(())
+}
+
+// ============================================================================
+// Zed setup tests
+// ============================================================================
+
+#[test]
+fn setup_zed_creates_correct_files() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Run setup zed
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "zed", "--quiet"])
+        .assert()
+        .success();
+
+    // Verify index was created
+    workspace.assert_exists(".rocketindex/index.db");
+
+    // Verify AGENTS.md creation in .rocketindex/
+    workspace.assert_exists(".rocketindex/AGENTS.md");
+    let agents_content = workspace.read_file(".rocketindex/AGENTS.md")?;
+    assert!(
+        agents_content.contains("RocketIndex") && agents_content.contains("rkt callers"),
+        "AGENTS.md content incorrect"
+    );
+
+    // Verify .rules file creation (Zed's primary rules file)
+    workspace.assert_exists(".rules");
+    let rules = workspace.read_file(".rules")?;
+    assert!(
+        rules.contains("RocketIndex"),
+        ".rules should contain RocketIndex instructions"
+    );
+    assert!(rules.contains("rkt"), ".rules should contain rkt commands");
+
+    Ok(())
+}
+
+#[test]
+fn setup_zed_updates_existing_rules_file() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Create existing .rules file
+    fs::write(
+        workspace.path(".rules"),
+        "# My Project Rules\n\nExisting rules for my project.\n",
+    )?;
+
+    // Run setup zed
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "zed", "--quiet"])
+        .assert()
+        .success();
+
+    workspace.assert_exists(".rocketindex/index.db");
+
+    // Verify content was appended, not replaced
+    let rules = workspace.read_file(".rules")?;
+    assert!(
+        rules.contains("Existing rules for my project"),
+        "Original content should be preserved"
+    );
+    assert!(
+        rules.contains("RocketIndex"),
+        "RocketIndex section should be added"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn setup_zed_idempotent() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Run setup zed twice
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "zed", "--quiet"])
+        .assert()
+        .success();
+
+    workspace.assert_exists(".rocketindex/index.db");
+
+    let first_content = workspace.read_file(".rules")?;
+
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "zed", "--quiet"])
+        .assert()
+        .success();
+
+    let second_content = workspace.read_file(".rules")?;
+
+    // Content should be identical - no duplicate sections
+    assert_eq!(
+        first_content, second_content,
+        "Running setup zed twice should produce identical content"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn setup_zed_also_updates_claude_md_if_exists() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Create existing CLAUDE.md (Zed also reads this file)
+    fs::write(
+        workspace.path("CLAUDE.md"),
+        "# My Project\n\nProject documentation.\n",
+    )?;
+
+    // Run setup zed
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "zed", "--quiet"])
+        .assert()
+        .success();
+
+    workspace.assert_exists(".rocketindex/index.db");
+
+    // Verify CLAUDE.md was updated with RocketIndex reference
+    let claude_md = workspace.read_file("CLAUDE.md")?;
+    assert!(
+        claude_md.contains(".rocketindex/AGENTS.md"),
+        "CLAUDE.md should reference .rocketindex/AGENTS.md"
+    );
+    assert!(
+        claude_md.contains("Project documentation"),
+        "Original content should be preserved"
+    );
+
+    // Verify .rules also exists
+    workspace.assert_exists(".rules");
+
+    Ok(())
+}
+
+#[test]
+fn start_zed_is_recognized() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Create an index so it doesn't run full setup wizard
+    fs::create_dir_all(workspace.path(".rocketindex"))?;
+
+    // Verify 'zed' is accepted as a valid agent
+    let output = Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["start", "zed", "--format", "json"])
+        .timeout(std::time::Duration::from_millis(500))
+        .output();
+
+    if let Ok(out) = output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !stdout.contains("Unknown agent"),
+            "Agent 'zed' should be recognized as valid"
+        );
+    }
+    // Timeout is expected and acceptable - means watch tried to start
 
     Ok(())
 }
