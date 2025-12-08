@@ -136,7 +136,13 @@ $ rkt def "spawn"
 | **Rust** | `.rs` |
 | **TypeScript** | `.ts`, `.tsx` |
 
+## Security
+
+RocketIndex uses [Tree-sitter](https://tree-sitter.github.io/) for pure syntactic analysis. In the core indexer path, source files are only ever **read as bytes and parsed into an AST**; they are never compiled or executed. Symbol information is extracted from the AST and stored in SQLite.
+
+The CLI may optionally invoke external tools like `git` (for history) or `dotnet fsi` (for F# type extraction). These tools can execute project build scripts or code if you enable those features, so they should not be used with untrusted repositories unless you trust your toolchain and environment.
+
+With those caveats, the default indexing and navigation features of RocketIndex are safe to run on untrusted codebases: **indexed files themselves are never executed by RocketIndex.**
+
 ## License
 [BSL 1.1](LICENSE) - Source Available.
-
-RocketIndex also powers the **F# Fast** extension for Zed. [See IDE Integration Guide](docs/ide_integration.md).
