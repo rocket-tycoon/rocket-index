@@ -13,19 +13,14 @@ brew install rocket-tycoon/tap/rocketindex
 ```
 
 ### 2. Start RocketIndex
-Run this in a separate terminal. It will index your codebase and watch for changes.
+Run this in a separate terminal. It will set up your agent, index your codebase, and watch for changes.
 
 ```bash
 cd /path/to/your/repo
-rkt watch
+rkt start claude   # or: cursor, copilot
 ```
 
-### 3. Augment Your Agent
-Tell your agent (Claude Code, Aider, etc.) to use the tool:
-
-> "I have installed `rkt`. Use `rkt symbols <query>` to find code and `rkt def <symbol>` to find definitions. Never use grep."
-
----
+This runs `rkt setup` (installs slash commands and rules for your agent) then starts watch mode.
 
 ## The Problem: Approximate Navigation
 
@@ -44,8 +39,6 @@ RocketIndex uses **Tree-sitter** and **SQLite** to build a precise, relational g
 | **Precision** | **100% (Exact)** | Probabilistic | Low (Noisy) |
 | **Latency** | **< 10ms** | ~200ms+ | Variable |
 | **Best For** | **Navigation & Refactoring** | Exploration | Simple edits |
-
----
 
 ## Agent Capabilities
 
@@ -80,36 +73,47 @@ Agents can quickly map out a new codebase without reading file contents.
 $ rkt symbols "*Service" --concise
 ```
 
----
-
 ## Performance (Real-World Benchmarks)
 
-Tested on **a huge Ruby on Rails monolith** (7,434 files).
+### Example: Finding `spawn` in Tokio (751 Rust files)
 
-| Query | RocketIndex | grep | Speedup |
-| :--- | :--- | :--- | :--- |
-| **Definition** | **0.010s** | 1.2s | **120x** |
-| **References** | **0.020s** | 1.3s | **65x** |
+**Without RocketIndex** - Agent uses grep, gets 17 candidate files:
+```
+tokio/src/process/mod.rs:863:    pub fn spawn(&mut self) -> ...
+tokio-util/src/task/task_tracker.rs:381:    pub fn spawn<F>(...
+tokio-util/src/task/join_map.rs:264:    pub fn spawn<F>(...
+... 14 more matches
+```
+Then it reads each file to verify. **3-5 tool calls, 5,000+ tokens consumed.**
 
-*RocketIndex uses ~50MB RAM, constant. No V8 or JVM required.*
+**With RocketIndex** - One call, one exact answer:
+```bash
+$ rkt def "spawn"
+# -> tokio-util/tests/task_tracker.rs:186
+```
+**1 tool call, 221 tokens.**
 
----
+### Benchmarks
 
-## Editor Integration
-RocketIndex also powers the **F# Fast** extension for Zed. [See IDE Integration Guide](docs/ide_integration.md).
+| Metric | RocketIndex | Grep Workflow |
+| :--- | :--- | :--- |
+| **Tool calls** | 1 | 3-5+ |
+| **Output size** | 221 chars | 5,000+ chars |
+| **Precision** | Exact | 17 candidates to sift |
 
 ## Language Support
-| Language | Extensions | Features |
-| :--- | :--- | :--- |
-| **F#** | `.fs`, `.fsi`, `.fsx` | Modules, functions, types, records, unions, interfaces |
-| **Ruby** | `.rb` | Classes, modules, methods, constants |
-| **Python** | `.py` | Classes, functions, methods |
-| **JavaScript** | `.js`, `.jsx` | Classes, functions, variables, exports |
-| **TypeScript** | `.ts`, `.tsx` | Classes, interfaces, types, functions, exports |
-| **Rust** | `.rs` | Structs, enums, functions, traits, implementation blocks |
-| **Go** | `.go` | Packages, functions, structs, interfaces, methods |
-
-*(More coming via Tree-sitter)*
+| Language | Extensions |
+| :--- | :--- |
+| **F#** | `.fs`, `.fsi`, `.fsx` |
+| **Go** | `.go` |
+| **Java** | `.java` |
+| **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` |
+| **Python** | `.py`, `.pyi` |
+| **Ruby** | `.rb` |
+| **Rust** | `.rs` |
+| **TypeScript** | `.ts`, `.tsx` |
 
 ## License
 [BSL 1.1](LICENSE) - Source Available.
+
+RocketIndex also powers the **F# Fast** extension for Zed. [See IDE Integration Guide](docs/ide_integration.md).
