@@ -528,6 +528,13 @@ fn extract_class_body(
                                 doc,
                                 signature,
                             });
+
+                            // For constructors, extract parameter properties
+                            if name == "constructor" {
+                                extract_constructor_parameter_properties(
+                                    &child, source, file, result, class_path,
+                                );
+                            }
                         }
                     }
                 }
@@ -683,6 +690,85 @@ fn extract_enum_members(
             }
         }
     }
+}
+
+/// Extract constructor parameter properties (TypeScript shorthand for declaring class members)
+///
+/// In TypeScript, `constructor(private readonly foo: Bar)` is shorthand for declaring
+/// a private readonly class member `foo` of type `Bar`.
+fn extract_constructor_parameter_properties(
+    method_node: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+    class_path: &str,
+) {
+    // Find formal_parameters child
+    if let Some(params) = find_child_by_kind(method_node, "formal_parameters") {
+        for i in 0..params.child_count() {
+            if let Some(param) = params.child(i) {
+                // Check for required_parameter with accessibility_modifier
+                if param.kind() == "required_parameter" {
+                    // If it has an accessibility modifier, it's a parameter property
+                    if has_accessibility_modifier(&param) {
+                        // Get the parameter name (identifier)
+                        if let Some(name_node) = find_child_by_kind(&param, "identifier") {
+                            if let Ok(name) = name_node.utf8_text(source) {
+                                let qualified = format!("{}.{}", class_path, name);
+                                let visibility = extract_parameter_visibility(&param, source);
+
+                                result.symbols.push(Symbol {
+                                    name: name.to_string(),
+                                    qualified,
+                                    kind: SymbolKind::Member,
+                                    location: node_to_location(file, &name_node),
+                                    visibility,
+                                    language: "typescript".to_string(),
+                                    parent: Some(class_path.to_string()),
+                                    mixins: None,
+                                    attributes: None,
+                                    implements: None,
+                                    doc: None,
+                                    signature: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Check if a parameter node has an accessibility modifier (public/private/protected)
+fn has_accessibility_modifier(param: &tree_sitter::Node) -> bool {
+    for i in 0..param.child_count() {
+        if let Some(child) = param.child(i) {
+            if child.kind() == "accessibility_modifier" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Extract visibility from a constructor parameter
+fn extract_parameter_visibility(param: &tree_sitter::Node, source: &[u8]) -> Visibility {
+    for i in 0..param.child_count() {
+        if let Some(child) = param.child(i) {
+            if child.kind() == "accessibility_modifier" {
+                if let Ok(text) = child.utf8_text(source) {
+                    return match text {
+                        "public" => Visibility::Public,
+                        "protected" => Visibility::Internal,
+                        "private" => Visibility::Private,
+                        _ => Visibility::Public,
+                    };
+                }
+            }
+        }
+    }
+    Visibility::Public
 }
 
 /// Extract variable declarations (const, let, var)
@@ -1249,6 +1335,66 @@ class Counter {
             .symbols
             .iter()
             .any(|s| s.name == "increment" && s.qualified == "Counter.increment"));
+    }
+
+    #[test]
+    fn extracts_constructor_parameter_properties() {
+        let source = r#"
+class MyService {
+    constructor(private readonly dependency: OtherService) {}
+}
+"#;
+        let result = extract_symbols(std::path::Path::new("test.ts"), source, 100);
+
+        // Constructor parameter property should be indexed as a class member
+        let dep = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "dependency")
+            .expect("Should find dependency as a class member");
+        assert_eq!(dep.kind, SymbolKind::Member);
+        assert_eq!(dep.qualified, "MyService.dependency");
+        assert_eq!(dep.visibility, Visibility::Private);
+        assert_eq!(dep.parent, Some("MyService".to_string()));
+    }
+
+    #[test]
+    fn extracts_multiple_constructor_parameter_properties() {
+        let source = r#"
+class Controller {
+    constructor(
+        private readonly service: Service,
+        public readonly name: string,
+        protected config: Config
+    ) {}
+}
+"#;
+        let result = extract_symbols(std::path::Path::new("test.ts"), source, 100);
+
+        // All three should be indexed
+        let service = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "service")
+            .expect("Should find service");
+        assert_eq!(service.visibility, Visibility::Private);
+        assert_eq!(service.qualified, "Controller.service");
+
+        let name = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "name")
+            .expect("Should find name");
+        assert_eq!(name.visibility, Visibility::Public);
+        assert_eq!(name.qualified, "Controller.name");
+
+        let config = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "config")
+            .expect("Should find config");
+        assert_eq!(config.visibility, Visibility::Internal); // protected maps to Internal
+        assert_eq!(config.qualified, "Controller.config");
     }
     #[test]
     fn extracts_tsx_component() {
