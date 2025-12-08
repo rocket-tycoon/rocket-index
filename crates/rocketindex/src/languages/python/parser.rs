@@ -193,6 +193,64 @@ fn extract_docstring(node: &tree_sitter::Node, source: &[u8]) -> Option<String> 
     None
 }
 
+/// Extract class-level attribute from an expression_statement in a class body
+///
+/// Handles:
+/// - `name = value` (Django-style field assignments)
+/// - `name: type` (dataclass type annotations)
+/// - `name: type = value` (annotated assignments)
+fn extract_class_attribute(
+    expr_stmt: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+    class_path: &str,
+) {
+    // Look for assignment child
+    if let Some(assignment) = find_child_by_kind(expr_stmt, "assignment") {
+        // Get the left side - should be identifier for simple assignments
+        // Structure: assignment -> identifier (left) OR assignment -> identifier : type (left)
+        if let Some(left) = assignment.child_by_field_name("left") {
+            let name_node = if left.kind() == "identifier" {
+                Some(left)
+            } else {
+                // Could be other patterns, skip for now
+                None
+            };
+
+            if let Some(name_node) = name_node {
+                if let Ok(name) = name_node.utf8_text(source) {
+                    // Skip if it looks like an internal attribute assignment (skip _protected, __private)
+                    // but keep class constants like NAME
+                    let visibility = if name.starts_with("__") && !name.ends_with("__") {
+                        Visibility::Private
+                    } else if name.starts_with('_') {
+                        Visibility::Internal
+                    } else {
+                        Visibility::Public
+                    };
+
+                    let qualified = format!("{}.{}", class_path, name);
+                    result.symbols.push(Symbol {
+                        name: name.to_string(),
+                        qualified,
+                        kind: SymbolKind::Member,
+                        location: node_to_location(file, &name_node),
+                        visibility,
+                        language: "python".to_string(),
+                        parent: Some(class_path.to_string()),
+                        mixins: None,
+                        attributes: None,
+                        implements: None,
+                        doc: None,
+                        signature: None,
+                    });
+                }
+            }
+        }
+    }
+}
+
 fn extract_recursive(
     node: &tree_sitter::Node,
     source: &[u8],
@@ -404,6 +462,12 @@ fn extract_definition_with_decorators(
                     if let Some(body) = node.child_by_field_name("body") {
                         for i in 0..body.child_count() {
                             if let Some(child) = body.child(i) {
+                                // Handle expression_statement containing assignments as class members
+                                if child.kind() == "expression_statement" {
+                                    extract_class_attribute(
+                                        &child, source, file, result, &qualified,
+                                    );
+                                }
                                 extract_recursive(
                                     &child,
                                     source,
@@ -907,5 +971,55 @@ class NoInit:
             class_sym.signature.is_none(),
             "Class without __init__ should have no signature"
         );
+    }
+
+    #[test]
+    fn extracts_class_level_assignments() {
+        let source = r#"
+class Author:
+    name = models.CharField(max_length=100)
+    slug = models.SlugField()
+
+    def __str__(self):
+        return self.name
+
+@dataclass
+class Task:
+    priority: int
+    func: Callable
+"#;
+        let result = extract_symbols(std::path::Path::new("test.py"), source, 100);
+
+        // Django-style field assignments should be extracted as members
+        let name = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "name" && s.qualified == "Author.name")
+            .expect("Should find Author.name");
+        assert_eq!(name.kind, SymbolKind::Member);
+        assert_eq!(name.parent, Some("Author".to_string()));
+
+        let slug = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "slug" && s.qualified == "Author.slug")
+            .expect("Should find Author.slug");
+        assert_eq!(slug.kind, SymbolKind::Member);
+
+        // Dataclass type annotations should be extracted as members
+        let priority = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "priority" && s.qualified == "Task.priority")
+            .expect("Should find Task.priority");
+        assert_eq!(priority.kind, SymbolKind::Member);
+        assert_eq!(priority.parent, Some("Task".to_string()));
+
+        let func = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "func" && s.qualified == "Task.func")
+            .expect("Should find Task.func");
+        assert_eq!(func.kind, SymbolKind::Member);
     }
 }
