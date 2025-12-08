@@ -8,9 +8,20 @@ It provides a high-performance CLI that acts as an **O(1) Oracle** for your agen
 ## Fast Track
 
 ### 1. Install
+
+**macOS (Homebrew)**
 ```bash
 brew install rocket-tycoon/tap/rocketindex
 ```
+
+**Windows (Scoop)**
+```powershell
+scoop bucket add rocket-tycoon https://github.com/rocket-tycoon/scoop-bucket
+scoop install rocketindex
+```
+
+**Linux / Manual**
+Download the latest release from [GitHub Releases](https://github.com/rocket-tycoon/rocket-index/releases).
 
 ### 2. Start RocketIndex
 Run this in a separate terminal. It will set up your agent, index your codebase, and watch for changes.

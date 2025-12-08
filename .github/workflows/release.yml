@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 env:
   CARGO_TERM_COLOR: always
@@ -159,5 +159,80 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/rocketindex.rb
+          git commit -m "Update rocketindex to ${{ github.ref_name }}"
+          git push
+
+  update-scoop:
+    name: Update Scoop Bucket
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout scoop-bucket
+        uses: actions/checkout@v4
+        with:
+          repository: rocket-tycoon/scoop-bucket
+          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          path: scoop-bucket
+
+      - name: Download Windows artifact for SHA256
+        uses: actions/download-artifact@v4
+        with:
+          name: rocketindex-x86_64-pc-windows-msvc
+          path: artifacts
+
+      - name: Calculate SHA256 and update manifest
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION_NUM="${VERSION#v}"
+
+          # Calculate SHA256 for Windows build
+          SHA_WIN=$(sha256sum artifacts/rocketindex-${VERSION}-x86_64-pc-windows-msvc.zip | cut -d' ' -f1)
+
+          echo "SHA256 (Windows): $SHA_WIN"
+
+          # Update Scoop manifest
+          cat > scoop-bucket/bucket/rocketindex.json << EOF
+          {
+            "version": "${VERSION_NUM}",
+            "description": "Rocket-fast polyglot code indexer for AI coding agents",
+            "homepage": "https://github.com/rocket-tycoon/rocket-index",
+            "license": "BSL-1.1",
+            "architecture": {
+              "64bit": {
+                "url": "https://github.com/rocket-tycoon/rocket-index/releases/download/${VERSION}/rocketindex-${VERSION}-x86_64-pc-windows-msvc.zip",
+                "hash": "${SHA_WIN}"
+              }
+            },
+            "bin": [
+              "rkt.exe",
+              "rocketindex-lsp.exe"
+            ],
+            "checkver": {
+              "github": "https://github.com/rocket-tycoon/rocket-index"
+            },
+            "autoupdate": {
+              "architecture": {
+                "64bit": {
+                  "url": "https://github.com/rocket-tycoon/rocket-index/releases/download/v\$version/rocketindex-v\$version-x86_64-pc-windows-msvc.zip"
+                }
+              }
+            },
+            "notes": [
+              "To get started:",
+              "  1. cd to your project directory",
+              "  2. Run: rkt start claude",
+              "",
+              "This will set up your AI agent and start watching for file changes.",
+              "See https://github.com/rocket-tycoon/rocket-index for documentation."
+            ]
+          }
+          EOF
+
+      - name: Commit and push
+        run: |
+          cd scoop-bucket
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/rocketindex.json
           git commit -m "Update rocketindex to ${{ github.ref_name }}"
           git push
