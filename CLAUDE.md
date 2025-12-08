@@ -135,3 +135,33 @@ Currently supports F#, Ruby, Python, Rust, Go, TypeScript, JavaScript, and Java 
 | TypeScript | `.ts`, `.tsx` |
 | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |
 | Java | `.java` |
+
+## Adding a New Language
+
+Follow these steps when adding support for a new programming language:
+
+### 1. Implementation
+1. Add tree-sitter grammar dependency to `Cargo.toml`
+2. Create `crates/rocketindex/src/languages/<lang>/` module with parser
+3. Extract symbols: classes, functions, methods, types, etc.
+4. Add file extension mapping in `parse.rs`
+5. Add unit tests for the parser
+
+### 2. Integration Testing
+Clone real-world repos to `test-repos/<lang>/` for validation:
+- **Small**: Focused library (<100 files) for quick iteration
+- **Medium**: Popular framework (100-1000 files) for broader coverage
+- **Large**: Major project (1000+ files) for stress testing
+
+### 3. Quirk Discovery
+Run indexing on test repos and look for:
+- Missing symbols (hidden by macros, metaprogramming, etc.)
+- Incorrect qualified names
+- Namespace/module resolution issues
+- Language-specific constructs that need special handling
+
+File beads for any parsing quirks discovered.
+
+### 4. Documentation
+- Update CLAUDE.md language table
+- Update README.md language table
