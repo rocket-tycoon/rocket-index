@@ -1,10 +1,48 @@
 //! rocketindex: Rocket-fast symbol extraction, indexing, and name resolution
 //!
 //! This crate provides the fundamental building blocks for a minimal language server:
-//! - Symbol extraction from source files (F#, Ruby) using tree-sitter
+//! - Symbol extraction from source files using tree-sitter
 //! - In-memory index for fast symbol lookup
 //! - Name resolution with language-specific scoping rules
 //! - Dependency graph traversal (spider)
+//!
+//! # Quick Start
+//!
+//! Extract symbols from source code:
+//!
+//! ```
+//! use rocketindex::{extract_symbols, SymbolKind};
+//! use std::path::Path;
+//!
+//! let source = r#"
+//! def hello():
+//!     print("Hello, World!")
+//! "#;
+//!
+//! let result = extract_symbols(Path::new("example.py"), source, 100);
+//! assert!(!result.symbols.is_empty());
+//! assert_eq!(result.symbols[0].name, "hello");
+//! assert_eq!(result.symbols[0].kind, SymbolKind::Function);
+//! ```
+//!
+//! # Core Types
+//!
+//! - [`Symbol`]: A symbol extracted from source code (function, class, etc.)
+//! - [`Location`]: Source location with file path and line/column positions
+//! - [`SymbolKind`]: The type of symbol (Function, Class, Module, etc.)
+//! - [`Visibility`]: Access modifier (Public, Private, Internal)
+//!
+//! # Indexing
+//!
+//! For persistent storage and querying, use [`SqliteIndex`]:
+//!
+//! ```no_run
+//! use rocketindex::SqliteIndex;
+//! use std::path::Path;
+//!
+//! let index = SqliteIndex::open(Path::new(".rocketindex/index.db")).unwrap();
+//! let symbols = index.search("User*", 10, None).unwrap();
+//! ```
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -35,7 +73,29 @@ pub use resolve::ResolveResult;
 pub use stacktrace::{parse_stacktrace, StackFrame, StacktraceLanguage, StacktraceResult};
 pub use type_cache::{MemberKind, TypeCache, TypeCacheSchema, TypeMember, TypedSymbol};
 
-/// A location in source code (file, line, column) with start and end positions
+/// A location in source code (file, line, column) with start and end positions.
+///
+/// All positions are 1-indexed to match editor conventions.
+///
+/// # Examples
+///
+/// ```
+/// use rocketindex::Location;
+/// use std::path::PathBuf;
+///
+/// // Create a point location (start == end)
+/// let loc = Location::new(PathBuf::from("src/main.rs"), 10, 5);
+/// assert_eq!(loc.line, 10);
+/// assert_eq!(loc.column, 5);
+///
+/// // Create a span location
+/// let span = Location::with_end(
+///     PathBuf::from("src/main.rs"),
+///     10, 5,   // start line, column
+///     10, 15,  // end line, column
+/// );
+/// assert_eq!(span.end_column, 15);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Location {
     pub file: PathBuf,
@@ -69,6 +129,22 @@ impl Location {
 }
 
 /// The kind of symbol (function, type, module, etc.)
+///
+/// # Examples
+///
+/// ```
+/// use rocketindex::SymbolKind;
+///
+/// let kind = SymbolKind::Function;
+/// assert_eq!(format!("{kind}"), "Function");
+///
+/// // Common kinds:
+/// // - Module: namespace or module
+/// // - Function: function or method
+/// // - Class: class, struct, or type definition
+/// // - Interface: trait, interface, or protocol
+/// // - Value: constant or variable
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SymbolKind {
     Module,
@@ -111,7 +187,50 @@ fn default_language() -> String {
     "fsharp".to_string()
 }
 
-/// A symbol extracted from source code
+/// A symbol extracted from source code.
+///
+/// Represents a named entity like a function, class, module, or variable.
+///
+/// # Examples
+///
+/// ```
+/// use rocketindex::{Symbol, SymbolKind, Location, Visibility};
+/// use std::path::PathBuf;
+///
+/// let symbol = Symbol::new(
+///     "process_payment".to_string(),
+///     "MyApp.Services.PaymentService.process_payment".to_string(),
+///     SymbolKind::Function,
+///     Location::new(PathBuf::from("src/services/payment.rs"), 42, 5),
+///     Visibility::Public,
+///     "rust".to_string(),
+/// );
+///
+/// assert_eq!(symbol.name, "process_payment");
+/// assert_eq!(symbol.qualified, "MyApp.Services.PaymentService.process_payment");
+/// assert_eq!(symbol.kind, SymbolKind::Function);
+/// ```
+///
+/// # Builder Pattern
+///
+/// Use builder methods to add optional metadata:
+///
+/// ```
+/// # use rocketindex::{Symbol, SymbolKind, Location, Visibility};
+/// # use std::path::PathBuf;
+/// let symbol = Symbol::new(
+///     "User".to_string(),
+///     "models.User".to_string(),
+///     SymbolKind::Class,
+///     Location::new(PathBuf::from("models.py"), 10, 1),
+///     Visibility::Public,
+///     "python".to_string(),
+/// )
+/// .with_parent(Some("BaseModel".to_string()))
+/// .with_doc(Some("User account model".to_string()));
+///
+/// assert_eq!(symbol.parent, Some("BaseModel".to_string()));
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Symbol {
     /// Short name: "processPayment"

@@ -1,12 +1,52 @@
 //! SQLite-based index storage for RocketIndex.
 //!
-//! This module provides persistent storage for the F# symbol index using SQLite.
+//! This module provides persistent storage for the symbol index using SQLite.
 //! Benefits over the previous JSON approach:
 //! - O(log n) indexed lookups vs O(n) linear scan
 //! - Low memory: query on-demand, don't load entire index
 //! - Incremental updates: UPDATE single rows, no full rewrite
 //! - Rich queries: LIKE patterns, JOINs for references
 //! - Debuggable: inspect with `sqlite3` CLI
+//!
+//! # Examples
+//!
+//! Create an in-memory index for testing:
+//!
+//! ```
+//! use rocketindex::SqliteIndex;
+//!
+//! let index = SqliteIndex::in_memory().unwrap();
+//! assert_eq!(index.count_symbols().unwrap(), 0);
+//! ```
+//!
+//! Store and query symbols:
+//!
+//! ```
+//! use rocketindex::{SqliteIndex, Symbol, SymbolKind, Location, Visibility};
+//! use std::path::PathBuf;
+//!
+//! let index = SqliteIndex::in_memory().unwrap();
+//!
+//! // Insert a symbol
+//! let symbol = Symbol::new(
+//!     "process_payment".to_string(),
+//!     "PaymentService.process_payment".to_string(),
+//!     SymbolKind::Function,
+//!     Location::new(PathBuf::from("src/payment.rs"), 42, 5),
+//!     Visibility::Public,
+//!     "rust".to_string(),
+//! );
+//! index.insert_symbol(&symbol).unwrap();
+//!
+//! // Query by qualified name
+//! let found = index.find_by_qualified("PaymentService.process_payment").unwrap();
+//! assert!(found.is_some());
+//! assert_eq!(found.unwrap().name, "process_payment");
+//!
+//! // Search with wildcards
+//! let results = index.search("Payment*", 10, None).unwrap();
+//! assert_eq!(results.len(), 1);
+//! ```
 
 use std::path::{Path, PathBuf};
 
@@ -26,7 +66,39 @@ const SYMBOL_COLUMNS: &str = "name, qualified, kind, file, line, column, end_lin
 /// Default database filename within .rocketindex/
 pub const DEFAULT_DB_NAME: &str = "index.db";
 
-/// SQLite-based index for F# symbols.
+/// SQLite-based index for symbol storage and querying.
+///
+/// `SqliteIndex` provides persistent storage for extracted symbols with
+/// efficient lookup operations. It supports:
+/// - Exact lookups by qualified name (O(log n))
+/// - Wildcard searches (LIKE patterns)
+/// - Full-text search (FTS5) for fast prefix matching
+/// - Batch insert operations with transactions
+///
+/// # Examples
+///
+/// ```
+/// use rocketindex::SqliteIndex;
+///
+/// // Create an in-memory index (for testing)
+/// let index = SqliteIndex::in_memory().unwrap();
+///
+/// // Check it's empty
+/// assert_eq!(index.count_symbols().unwrap(), 0);
+/// ```
+///
+/// For persistent storage, use `create` or `open`:
+///
+/// ```no_run
+/// use rocketindex::SqliteIndex;
+/// use std::path::Path;
+///
+/// // Create a new database
+/// let index = SqliteIndex::create(Path::new(".rocketindex/index.db")).unwrap();
+///
+/// // Later, open an existing database
+/// let index = SqliteIndex::open(Path::new(".rocketindex/index.db")).unwrap();
+/// ```
 pub struct SqliteIndex {
     conn: Connection,
 }

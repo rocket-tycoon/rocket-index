@@ -1,7 +1,42 @@
-//! Symbol storage and query index for F# codebases.
+//! In-memory symbol storage and query index.
 //!
-//! The `CodeIndex` is the central data structure that stores all extracted symbols
-//! and provides efficient lookup operations.
+//! The [`CodeIndex`] is the central data structure that stores all extracted symbols
+//! and provides efficient lookup operations. It's used for name resolution and
+//! dependency analysis.
+//!
+//! For persistent storage, see [`crate::SqliteIndex`].
+//!
+//! # Examples
+//!
+//! Build an in-memory index and query symbols:
+//!
+//! ```
+//! use rocketindex::CodeIndex;
+//! use rocketindex::{Symbol, SymbolKind, Location, Visibility};
+//! use std::path::PathBuf;
+//!
+//! let mut index = CodeIndex::new();
+//!
+//! // Add a symbol
+//! let symbol = Symbol::new(
+//!     "PaymentService".to_string(),
+//!     "services.PaymentService".to_string(),
+//!     SymbolKind::Class,
+//!     Location::new(PathBuf::from("src/payment.rs"), 42, 5),
+//!     Visibility::Public,
+//!     "rust".to_string(),
+//! );
+//! index.add_symbol(symbol);
+//!
+//! // Look up by qualified name
+//! let found = index.get("services.PaymentService");
+//! assert!(found.is_some());
+//! assert_eq!(found.unwrap().name, "PaymentService");
+//!
+//! // Search with glob patterns (matches symbol name)
+//! let results = index.search("Payment*");
+//! assert_eq!(results.len(), 1);
+//! ```
 //!
 //! ## Path Handling
 //!
@@ -18,6 +53,23 @@ use crate::type_cache::{TypeCache, TypeMember};
 use crate::{Location, Symbol};
 
 /// A reference to a symbol (an identifier usage, not a definition).
+///
+/// References track where symbols are used throughout the codebase,
+/// enabling "find all usages" functionality.
+///
+/// # Examples
+///
+/// ```
+/// use rocketindex::Reference;
+/// use rocketindex::Location;
+/// use std::path::PathBuf;
+///
+/// let reference = Reference {
+///     name: "process_payment".to_string(),
+///     location: Location::new(PathBuf::from("src/main.rs"), 25, 10),
+/// };
+/// assert_eq!(reference.name, "process_payment");
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reference {
     /// The identifier as written: "List.map" or "processPayment"
@@ -30,6 +82,36 @@ pub struct Reference {
 ///
 /// All file paths within the index are stored relative to `workspace_root`.
 /// This ensures the index is portable across machines.
+///
+/// # Examples
+///
+/// ```
+/// use rocketindex::CodeIndex;
+/// use rocketindex::{Symbol, SymbolKind, Location, Visibility};
+/// use std::path::PathBuf;
+///
+/// // Create an index with a workspace root
+/// let mut index = CodeIndex::with_root(PathBuf::from("/project"));
+///
+/// // Add symbols
+/// let symbol = Symbol::new(
+///     "User".to_string(),
+///     "models.User".to_string(),
+///     SymbolKind::Class,
+///     Location::new(PathBuf::from("/project/src/models.py"), 10, 1),
+///     Visibility::Public,
+///     "python".to_string(),
+/// );
+/// index.add_symbol(symbol);
+///
+/// // Query the index
+/// assert_eq!(index.symbol_count(), 1);
+/// assert!(index.get("models.User").is_some());
+///
+/// // Search with patterns
+/// let results = index.search("User");
+/// assert_eq!(results.len(), 1);
+/// ```
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct CodeIndex {
     /// Workspace root directory (not serialized - set on load)

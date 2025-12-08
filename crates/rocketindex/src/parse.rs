@@ -2,6 +2,54 @@
 //!
 //! This module defines the common interface for parsing and extracting symbols
 //! from different languages.
+//!
+//! # Examples
+//!
+//! Extract symbols from Python source code:
+//!
+//! ```
+//! use rocketindex::extract_symbols;
+//! use std::path::Path;
+//!
+//! let source = r#"
+//! class User:
+//!     def __init__(self, name):
+//!         self.name = name
+//!
+//!     def greet(self):
+//!         return f"Hello, {self.name}"
+//! "#;
+//!
+//! let result = extract_symbols(Path::new("user.py"), source, 100);
+//!
+//! // Should find the User class and its methods
+//! assert!(result.symbols.iter().any(|s| s.name == "User"));
+//! assert!(result.symbols.iter().any(|s| s.name == "__init__"));
+//! assert!(result.symbols.iter().any(|s| s.name == "greet"));
+//! ```
+//!
+//! The file extension determines which parser is used:
+//!
+//! ```
+//! use rocketindex::extract_symbols;
+//! use std::path::Path;
+//!
+//! // Rust code
+//! let rust_result = extract_symbols(
+//!     Path::new("lib.rs"),
+//!     "pub fn hello() {}",
+//!     100
+//! );
+//! assert_eq!(rust_result.symbols[0].name, "hello");
+//!
+//! // Go code
+//! let go_result = extract_symbols(
+//!     Path::new("main.go"),
+//!     "package main\nfunc Hello() {}",
+//!     100
+//! );
+//! assert_eq!(go_result.symbols[0].name, "Hello");
+//! ```
 
 use std::path::Path;
 
