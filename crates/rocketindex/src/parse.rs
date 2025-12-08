@@ -5,7 +5,9 @@
 
 use std::path::Path;
 
-use crate::languages::{csharp, fsharp, go, java, javascript, python, ruby, rust, typescript};
+use crate::languages::{
+    c, cpp, csharp, fsharp, go, java, javascript, php, python, ruby, rust, typescript,
+};
 use crate::{Location, Reference, Symbol};
 
 /// A syntax error detected during parsing.
@@ -67,6 +69,10 @@ pub fn extract_symbols(file: &Path, source: &str, max_depth: usize) -> ParseResu
         .to_lowercase();
 
     match extension.as_str() {
+        "c" | "h" => c::CParser.extract_symbols(file, source, max_depth),
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => {
+            cpp::CppParser.extract_symbols(file, source, max_depth)
+        }
         "fs" | "fsi" | "fsx" => fsharp::FSharpParser.extract_symbols(file, source, max_depth),
         "rb" => ruby::RubyParser.extract_symbols(file, source, max_depth),
         "py" | "pyi" => python::parser::PythonParser.extract_symbols(file, source, max_depth),
@@ -78,6 +84,7 @@ pub fn extract_symbols(file: &Path, source: &str, max_depth: usize) -> ParseResu
         "js" | "jsx" | "mjs" | "cjs" => {
             javascript::JavaScriptParser.extract_symbols(file, source, max_depth)
         }
+        "php" => php::PhpParser.extract_symbols(file, source, max_depth),
         _ => {
             tracing::warn!("Unsupported file extension: {}", extension);
             ParseResult::default()

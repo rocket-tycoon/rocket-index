@@ -323,27 +323,49 @@ impl DebouncedFileWatcher {
 }
 
 /// Check if a path is a supported source file.
-/// Supported: F#, Ruby, Python, Rust, Go, TypeScript, JavaScript.
+/// Supported: C, C++, C#, F#, Go, Java, JavaScript, PHP, Python, Ruby, Rust, TypeScript.
 pub fn is_supported_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| {
             matches!(
                 ext,
-                "fs" | "fsi"
+                // C
+                "c" | "h"
+                    // C++
+                    | "cpp"
+                    | "cc"
+                    | "cxx"
+                    | "hpp"
+                    | "hxx"
+                    | "hh"
+                    // C#
+                    | "cs"
+                    // F#
+                    | "fs"
+                    | "fsi"
                     | "fsx"
-                    | "rb"
-                    | "py"
-                    | "pyi"
-                    | "rs"
+                    // Go
                     | "go"
-                    | "ts"
-                    | "tsx"
+                    // Java
+                    | "java"
+                    // JavaScript
                     | "js"
                     | "jsx"
                     | "mjs"
                     | "cjs"
-                    | "java"
+                    // PHP
+                    | "php"
+                    // Python
+                    | "py"
+                    | "pyi"
+                    // Ruby
+                    | "rb"
+                    // Rust
+                    | "rs"
+                    // TypeScript
+                    | "ts"
+                    | "tsx"
             )
         })
         .unwrap_or(false)
@@ -448,30 +470,45 @@ mod tests {
 
     #[test]
     fn test_is_supported_file() {
+        // C
+        assert!(is_supported_file(Path::new("test.c")));
+        assert!(is_supported_file(Path::new("test.h")));
+        // C++
+        assert!(is_supported_file(Path::new("test.cpp")));
+        assert!(is_supported_file(Path::new("test.cc")));
+        assert!(is_supported_file(Path::new("test.cxx")));
+        assert!(is_supported_file(Path::new("test.hpp")));
+        assert!(is_supported_file(Path::new("test.hxx")));
+        assert!(is_supported_file(Path::new("test.hh")));
+        // C#
+        assert!(is_supported_file(Path::new("test.cs")));
         // F#
         assert!(is_supported_file(Path::new("test.fs")));
         assert!(is_supported_file(Path::new("test.fsi")));
         assert!(is_supported_file(Path::new("test.fsx")));
-        // Ruby
-        assert!(is_supported_file(Path::new("test.rb")));
-        // Rust
-        assert!(is_supported_file(Path::new("test.rs")));
         // Go
         assert!(is_supported_file(Path::new("test.go")));
-        // TypeScript
-        assert!(is_supported_file(Path::new("test.ts")));
-        assert!(is_supported_file(Path::new("test.tsx")));
+        // Java
+        assert!(is_supported_file(Path::new("test.java")));
         // JavaScript
         assert!(is_supported_file(Path::new("test.js")));
         assert!(is_supported_file(Path::new("test.jsx")));
         assert!(is_supported_file(Path::new("test.mjs")));
         assert!(is_supported_file(Path::new("test.cjs")));
+        // Ruby
+        assert!(is_supported_file(Path::new("test.rb")));
+        // Rust
+        assert!(is_supported_file(Path::new("test.rs")));
+        // TypeScript
+        assert!(is_supported_file(Path::new("test.ts")));
+        assert!(is_supported_file(Path::new("test.tsx")));
+        // PHP
+        assert!(is_supported_file(Path::new("test.php")));
         // Paths
         assert!(is_supported_file(Path::new("/path/to/Module.fs")));
         assert!(is_supported_file(Path::new("/path/to/main.go")));
         assert!(is_supported_file(Path::new("/path/to/app.ts")));
 
-        assert!(!is_supported_file(Path::new("test.cs")));
         assert!(!is_supported_file(Path::new("test.txt")));
         assert!(!is_supported_file(Path::new("test")));
     }
