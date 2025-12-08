@@ -125,13 +125,13 @@ $ rkt def "spawn"
 | Language | Extensions | Status |
 | :--- | :--- | :--- |
 | **F#** | `.fs`, `.fsi`, `.fsx` | Full |
+| **Go** | `.go` | Full |
 | **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` | Full |
 | **Python** | `.py`, `.pyi` | Full |
 | **Ruby** | `.rb` | Full |
 | **Rust** | `.rs` | Full |
 | **TypeScript** | `.ts`, `.tsx` | Full |
 | **C#** | `.cs` | Beta |
-| **Go** | `.go` | Beta |
 | **Java** | `.java` | Beta |
 | **PHP** | `.php` | Beta |
 | **C** | `.c`, `.h` | Alpha |
