@@ -111,9 +111,11 @@ impl<'a> ExtractionContext<'a> {
             _ => None,
         };
 
+        let type_qualified = qualified_name(trimmed, current_module);
+
         let symbol = Symbol {
             name: trimmed.to_string(),
-            qualified: qualified_name(trimmed, current_module),
+            qualified: type_qualified.clone(),
             kind,
             location: node_to_location(self.file, name_node),
             visibility: Visibility::Public,
@@ -131,8 +133,97 @@ impl<'a> ExtractionContext<'a> {
         };
         self.result.symbols.push(symbol);
 
+        // Extract DU cases for union types
+        if kind == SymbolKind::Union {
+            self.extract_union_cases(node, &type_qualified);
+        }
+
+        // Extract record fields for record types
+        if kind == SymbolKind::Record {
+            self.extract_record_fields(node, &type_qualified);
+        }
+
+        // Extract members for class/interface types (and also for types with members)
         if matches!(kind, SymbolKind::Class | SymbolKind::Interface) {
-            self.extract_members(node, current_module, 0);
+            self.extract_members(node, Some(&type_qualified), 0);
+        }
+    }
+
+    fn extract_union_cases(&mut self, node: &tree_sitter::Node, type_qualified: &str) {
+        // Look for union_type_cases -> union_type_case -> identifier
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "union_type_cases" {
+                    for j in 0..child.child_count() {
+                        if let Some(case_node) = child.child(j) {
+                            if case_node.kind() == "union_type_case" {
+                                // The first identifier child is the case name
+                                if let Some(case_name_node) =
+                                    find_child_by_kind(&case_node, "identifier")
+                                {
+                                    if let Ok(case_name) = case_name_node.utf8_text(self.source) {
+                                        let case_qualified =
+                                            format!("{}.{}", type_qualified, case_name.trim());
+                                        self.result.symbols.push(Symbol {
+                                            name: case_name.trim().to_string(),
+                                            qualified: case_qualified,
+                                            kind: SymbolKind::Member,
+                                            location: node_to_location(self.file, &case_name_node),
+                                            visibility: Visibility::Public,
+                                            language: "fsharp".to_string(),
+                                            parent: Some(type_qualified.to_string()),
+                                            mixins: None,
+                                            attributes: None,
+                                            implements: None,
+                                            doc: None,
+                                            signature: None,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn extract_record_fields(&mut self, node: &tree_sitter::Node, type_qualified: &str) {
+        // Look for record_fields -> record_field -> identifier
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "record_fields" {
+                    for j in 0..child.child_count() {
+                        if let Some(field_node) = child.child(j) {
+                            if field_node.kind() == "record_field" {
+                                // The first identifier child is the field name
+                                if let Some(field_name_node) =
+                                    find_child_by_kind(&field_node, "identifier")
+                                {
+                                    if let Ok(field_name) = field_name_node.utf8_text(self.source) {
+                                        let field_qualified =
+                                            format!("{}.{}", type_qualified, field_name.trim());
+                                        self.result.symbols.push(Symbol {
+                                            name: field_name.trim().to_string(),
+                                            qualified: field_qualified,
+                                            kind: SymbolKind::Member,
+                                            location: node_to_location(self.file, &field_name_node),
+                                            visibility: Visibility::Public,
+                                            language: "fsharp".to_string(),
+                                            parent: Some(type_qualified.to_string()),
+                                            mixins: None,
+                                            attributes: None,
+                                            implements: None,
+                                            doc: None,
+                                            signature: None,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -152,17 +243,20 @@ impl<'a> ExtractionContext<'a> {
             };
 
             if child.kind() == "member_defn" {
-                if let Some(name_node) = find_child_by_kind(&child, "identifier") {
-                    if let Ok(name) = name_node.utf8_text(self.source) {
-                        let trimmed = name.trim();
+                // Member name can be in different structures:
+                // - method_or_prop_defn -> property_or_ident -> identifier (for instance members like this.Add)
+                // - method_or_prop_defn -> property_or_ident -> identifier (for static members like Multiply)
+                if let Some((name, location)) = self.extract_member_name_and_location(&child) {
+                    // Skip 'this' and '_' self-identifiers
+                    if name != "this" && name != "_" {
                         let symbol = Symbol {
-                            name: trimmed.to_string(),
-                            qualified: qualified_name(trimmed, current_module),
-                            kind: SymbolKind::Member,
-                            location: node_to_location(self.file, &name_node),
+                            name: name.clone(),
+                            qualified: qualified_name(&name, current_module),
+                            kind: SymbolKind::Function, // Methods are functions
+                            location,
                             visibility: extract_visibility(&child, self.source),
                             language: "fsharp".to_string(),
-                            parent: None,
+                            parent: current_module.map(|s| s.to_string()),
                             mixins: None,
                             attributes: None,
                             implements: None,
@@ -173,8 +267,63 @@ impl<'a> ExtractionContext<'a> {
                     }
                 }
             }
-            self.extract_members(&child, current_module, depth + 1);
+            // Also look for type_extension_elements which contain member_defn
+            if child.kind() == "type_extension_elements" {
+                self.extract_members(&child, current_module, depth + 1);
+            }
         }
+    }
+
+    /// Extract member name and location from a member_defn node
+    fn extract_member_name_and_location(
+        &self,
+        member_defn: &tree_sitter::Node,
+    ) -> Option<(String, Location)> {
+        // Look for method_or_prop_defn -> property_or_ident -> last identifier
+        for i in 0..member_defn.child_count() {
+            if let Some(method_or_prop) = member_defn.child(i) {
+                if method_or_prop.kind() == "method_or_prop_defn" {
+                    for j in 0..method_or_prop.child_count() {
+                        if let Some(prop_or_ident) = method_or_prop.child(j) {
+                            if prop_or_ident.kind() == "property_or_ident" {
+                                // For instance members (this.Add), the last identifier is the name
+                                // For static members (Multiply), the first/only identifier is the name
+                                let mut last_name = None;
+                                let mut last_location = None;
+                                for k in 0..prop_or_ident.child_count() {
+                                    if let Some(id_child) = prop_or_ident.child(k) {
+                                        if id_child.kind() == "identifier" {
+                                            if let Ok(name) = id_child.utf8_text(self.source) {
+                                                last_name = Some(name.trim().to_string());
+                                                last_location =
+                                                    Some(node_to_location(self.file, &id_child));
+                                            }
+                                        }
+                                    }
+                                }
+                                if let (Some(name), Some(location)) = (last_name, last_location) {
+                                    return Some((name, location));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback to direct identifier child
+        for i in 0..member_defn.child_count() {
+            if let Some(child) = member_defn.child(i) {
+                if child.kind() == "identifier" {
+                    if let Ok(name) = child.utf8_text(self.source) {
+                        return Some((
+                            name.trim().to_string(),
+                            node_to_location(self.file, &child),
+                        ));
+                    }
+                }
+            }
+        }
+        None
     }
 }
 
@@ -717,7 +866,33 @@ fn handle_function_or_value_defn(
     // Extract type signature if present
     let signature = extract_signature(node, source);
     if let Some(decl) = find_child_by_kind(node, "function_declaration_left") {
-        if let Some(name_node) = find_child_by_kind(&decl, "identifier") {
+        // Check for active pattern first: let (|Even|Odd|) n = ...
+        if let Some(active_pattern) = find_child_by_kind(&decl, "active_pattern") {
+            // Extract the full active pattern name including (| and |)
+            if let Ok(pattern_text) = active_pattern.utf8_text(source) {
+                let trimmed = pattern_text.trim();
+                let qualified = qualified_name(trimmed, current_module);
+                let attrs = extract_attributes(node, source);
+                let symbol = Symbol {
+                    name: trimmed.to_string(),
+                    qualified,
+                    kind: SymbolKind::Function,
+                    location: node_to_location(file, &active_pattern),
+                    visibility: extract_visibility(node, source),
+                    language: "fsharp".to_string(),
+                    parent: None,
+                    mixins: None,
+                    attributes: if attrs.is_empty() { None } else { Some(attrs) },
+                    implements: None,
+                    doc: doc.clone(),
+                    signature: signature.clone(),
+                };
+                result.symbols.push(symbol);
+                handled = true;
+            }
+        }
+        // Regular function/value with identifier
+        else if let Some(name_node) = find_child_by_kind(&decl, "identifier") {
             if let Ok(name) = name_node.utf8_text(source) {
                 let trimmed = name.trim();
                 let qualified = qualified_name(trimmed, current_module);
@@ -1334,6 +1509,155 @@ type Status =
             sig.contains("| Pending"),
             "Should contain Pending case: {}",
             sig
+        );
+    }
+
+    // ============================================================
+    // QUIRK TESTS: These test known indexing quirks/gaps
+    // ============================================================
+
+    #[test]
+    fn extracts_discriminated_union_cases() {
+        // QUIRK: Discriminated Union (DU) cases are not indexed
+        let source = r#"
+module MyApp
+
+type Shape =
+    | Circle of radius: float
+    | Rectangle of width: float * height: float
+    | Point
+"#;
+        let result = extract_symbols(Path::new("shapes.fs"), source, 500);
+
+        // The DU type itself should be indexed
+        let shape = result.symbols.iter().find(|s| s.name == "Shape");
+        assert!(shape.is_some(), "Shape union type should be indexed");
+        assert_eq!(shape.unwrap().kind, SymbolKind::Union);
+
+        // Each DU case should also be indexed
+        let circle = result.symbols.iter().find(|s| s.name == "Circle");
+        assert!(circle.is_some(), "DU case 'Circle' should be indexed");
+        assert_eq!(
+            circle.unwrap().qualified,
+            "MyApp.Shape.Circle",
+            "DU case should have qualified name including parent type"
+        );
+
+        let rectangle = result.symbols.iter().find(|s| s.name == "Rectangle");
+        assert!(rectangle.is_some(), "DU case 'Rectangle' should be indexed");
+
+        let point = result.symbols.iter().find(|s| s.name == "Point");
+        assert!(point.is_some(), "DU case 'Point' should be indexed");
+    }
+
+    #[test]
+    fn extracts_record_fields() {
+        // QUIRK: Record fields are not indexed as members
+        let source = r#"
+module MyApp
+
+type Person = {
+    Name: string
+    Age: int
+    Email: string option
+}
+"#;
+        let result = extract_symbols(Path::new("person.fs"), source, 500);
+
+        // The record type should be indexed
+        let person = result.symbols.iter().find(|s| s.name == "Person");
+        assert!(person.is_some(), "Person record should be indexed");
+
+        // Each record field should also be indexed
+        let name_field = result.symbols.iter().find(|s| s.name == "Name");
+        assert!(
+            name_field.is_some(),
+            "Record field 'Name' should be indexed"
+        );
+        assert_eq!(
+            name_field.unwrap().qualified,
+            "MyApp.Person.Name",
+            "Record field should have qualified name including parent type"
+        );
+
+        let age_field = result.symbols.iter().find(|s| s.name == "Age");
+        assert!(age_field.is_some(), "Record field 'Age' should be indexed");
+
+        let email_field = result.symbols.iter().find(|s| s.name == "Email");
+        assert!(
+            email_field.is_some(),
+            "Record field 'Email' should be indexed"
+        );
+    }
+
+    #[test]
+    fn extracts_type_members() {
+        // QUIRK: Type members (instance and static) are not indexed
+        let source = r#"
+module MyApp
+
+type Calculator() =
+    member this.Add(x, y) = x + y
+    member _.Subtract(x, y) = x - y
+    static member Multiply(x, y) = x * y
+"#;
+        let result = extract_symbols(Path::new("calculator.fs"), source, 500);
+
+        // The type should be indexed
+        let calc = result.symbols.iter().find(|s| s.name == "Calculator");
+        assert!(calc.is_some(), "Calculator type should be indexed");
+
+        // Instance members should be indexed
+        let add = result.symbols.iter().find(|s| s.name == "Add");
+        assert!(add.is_some(), "Instance member 'Add' should be indexed");
+        assert_eq!(
+            add.unwrap().qualified,
+            "MyApp.Calculator.Add",
+            "Instance member should have qualified name including parent type"
+        );
+
+        let subtract = result.symbols.iter().find(|s| s.name == "Subtract");
+        assert!(
+            subtract.is_some(),
+            "Instance member 'Subtract' should be indexed"
+        );
+
+        // Static members should also be indexed
+        let multiply = result.symbols.iter().find(|s| s.name == "Multiply");
+        assert!(
+            multiply.is_some(),
+            "Static member 'Multiply' should be indexed"
+        );
+    }
+
+    #[test]
+    fn extracts_active_patterns() {
+        // QUIRK: Active patterns are not indexed
+        let source = r#"
+module MyApp
+
+let (|Even|Odd|) n =
+    if n % 2 = 0 then Even else Odd
+
+let (|Integer|_|) (str: string) =
+    match System.Int32.TryParse(str) with
+    | (true, n) -> Some n
+    | _ -> None
+"#;
+        let result = extract_symbols(Path::new("patterns.fs"), source, 500);
+
+        // Total active pattern should be indexed
+        let even_odd = result.symbols.iter().find(|s| s.name == "(|Even|Odd|)");
+        assert!(
+            even_odd.is_some(),
+            "Total active pattern '(|Even|Odd|)' should be indexed"
+        );
+
+        // Partial active pattern should be indexed
+        let integer = result.symbols.iter().find(|s| s.name == "(|Integer|_|)");
+        assert!(
+            integer.is_some(),
+            "Partial active pattern '(|Integer|_|)' should be indexed"
         );
     }
 

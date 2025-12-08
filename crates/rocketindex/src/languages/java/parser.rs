@@ -336,6 +336,148 @@ fn extract_recursive(
             }
         }
 
+        "annotation_type_declaration" => {
+            // Java annotation definitions: public @interface Service { ... }
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source) {
+                    let qualified = qualified_name(name, package);
+                    let visibility = extract_visibility(node, source);
+                    let doc = extract_doc_comments(node, source);
+                    let annotations = extract_annotations(node, source);
+
+                    result.symbols.push(Symbol {
+                        name: name.to_string(),
+                        qualified: qualified.clone(),
+                        kind: SymbolKind::Interface, // Annotations are interfaces in Java
+                        location: node_to_location(file, &name_node),
+                        visibility,
+                        language: "java".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: annotations,
+                        implements: None,
+                        doc,
+                        signature: None,
+                    });
+
+                    // Extract annotation elements (methods)
+                    if let Some(body) = node.child_by_field_name("body") {
+                        for i in 0..body.child_count() {
+                            if let Some(child) = body.child(i) {
+                                if child.kind() == "annotation_type_element_declaration" {
+                                    // Extract the element name (it's an identifier child)
+                                    for j in 0..child.child_count() {
+                                        if let Some(elem_child) = child.child(j) {
+                                            if elem_child.kind() == "identifier" {
+                                                if let Ok(elem_name) = elem_child.utf8_text(source)
+                                                {
+                                                    let elem_qualified =
+                                                        format!("{}.{}", qualified, elem_name);
+                                                    result.symbols.push(Symbol {
+                                                        name: elem_name.to_string(),
+                                                        qualified: elem_qualified,
+                                                        kind: SymbolKind::Function,
+                                                        location: node_to_location(
+                                                            file,
+                                                            &elem_child,
+                                                        ),
+                                                        visibility: Visibility::Public,
+                                                        language: "java".to_string(),
+                                                        parent: Some(qualified.clone()),
+                                                        mixins: None,
+                                                        attributes: None,
+                                                        implements: None,
+                                                        doc: None,
+                                                        signature: None,
+                                                    });
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
+        "record_declaration" => {
+            // Java 16+ records: public record Point(int x, int y) { ... }
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source) {
+                    let qualified = qualified_name(name, package);
+                    let visibility = extract_visibility(node, source);
+                    let doc = extract_doc_comments(node, source);
+                    let annotations = extract_annotations(node, source);
+
+                    result.symbols.push(Symbol {
+                        name: name.to_string(),
+                        qualified: qualified.clone(),
+                        kind: SymbolKind::Class, // Records are class-like
+                        location: node_to_location(file, &name_node),
+                        visibility,
+                        language: "java".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: annotations,
+                        implements: None,
+                        doc,
+                        signature: None,
+                    });
+
+                    // Extract record components from formal_parameters
+                    if let Some(params) = node.child_by_field_name("parameters") {
+                        for i in 0..params.child_count() {
+                            if let Some(param) = params.child(i) {
+                                if param.kind() == "formal_parameter" {
+                                    if let Some(param_name) = param.child_by_field_name("name") {
+                                        if let Ok(pname) = param_name.utf8_text(source) {
+                                            let param_qualified =
+                                                format!("{}.{}", qualified, pname);
+                                            result.symbols.push(Symbol {
+                                                name: pname.to_string(),
+                                                qualified: param_qualified,
+                                                kind: SymbolKind::Member,
+                                                location: node_to_location(file, &param_name),
+                                                visibility: Visibility::Public,
+                                                language: "java".to_string(),
+                                                parent: Some(qualified.clone()),
+                                                mixins: None,
+                                                attributes: None,
+                                                implements: None,
+                                                doc: None,
+                                                signature: None,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Extract methods from class_body
+                    if let Some(body) = node.child_by_field_name("body") {
+                        for i in 0..body.child_count() {
+                            if let Some(child) = body.child(i) {
+                                extract_recursive(
+                                    &child,
+                                    source,
+                                    file,
+                                    result,
+                                    Some(&qualified),
+                                    max_depth - 1,
+                                );
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
         "method_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name) = name_node.utf8_text(source) {
@@ -796,5 +938,112 @@ public class Counter {
             .expect("Should find count field");
         assert_eq!(field.kind, SymbolKind::Value);
         assert_eq!(field.visibility, Visibility::Private);
+    }
+
+    // ============================================================
+    // QUIRK TESTS: These test known indexing quirks/gaps
+    // ============================================================
+
+    #[test]
+    fn extracts_annotation_definitions() {
+        // QUIRK: Annotation definitions (@interface) are not indexed at all
+        let source = r#"
+package com.example;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+
+/**
+ * Marks a class as a service component.
+ */
+@Retention(RetentionPolicy.RUNTIME)
+public @interface Service {
+    String value() default "";
+    boolean lazy() default false;
+}
+"#;
+        let parser = JavaParser;
+        let result = parser.extract_symbols(std::path::Path::new("Service.java"), source, 100);
+
+        // The annotation definition should be indexed
+        let annotation = result.symbols.iter().find(|s| s.name == "Service");
+        assert!(
+            annotation.is_some(),
+            "@interface Service should be indexed as a type"
+        );
+
+        let annotation = annotation.unwrap();
+        assert_eq!(
+            annotation.kind,
+            SymbolKind::Interface,
+            "Annotation definitions should be indexed as Interface"
+        );
+        assert_eq!(annotation.qualified, "com.example.Service");
+
+        // Annotation methods should also be indexed
+        let value_method = result.symbols.iter().find(|s| s.name == "value");
+        assert!(
+            value_method.is_some(),
+            "Annotation method 'value' should be indexed"
+        );
+
+        let lazy_method = result.symbols.iter().find(|s| s.name == "lazy");
+        assert!(
+            lazy_method.is_some(),
+            "Annotation method 'lazy' should be indexed"
+        );
+    }
+
+    #[test]
+    fn extracts_java_records() {
+        // QUIRK: Java records (Java 16+) are not indexed at all
+        let source = r#"
+package com.example;
+
+/**
+ * Represents a point in 2D space.
+ */
+public record Point(int x, int y) {
+    public double distanceFromOrigin() {
+        return Math.sqrt(x * x + y * y);
+    }
+}
+"#;
+        let parser = JavaParser;
+        let result = parser.extract_symbols(std::path::Path::new("Point.java"), source, 100);
+
+        // The record should be indexed as a class-like type
+        let record = result.symbols.iter().find(|s| s.name == "Point");
+        assert!(record.is_some(), "record Point should be indexed");
+
+        let record = record.unwrap();
+        assert_eq!(
+            record.kind,
+            SymbolKind::Class,
+            "Records should be indexed as Class"
+        );
+        assert_eq!(record.qualified, "com.example.Point");
+
+        // Record components (x, y) should be indexed as members
+        let x_field = result.symbols.iter().find(|s| s.name == "x");
+        assert!(x_field.is_some(), "Record component 'x' should be indexed");
+        assert_eq!(x_field.unwrap().qualified, "com.example.Point.x");
+
+        let y_field = result.symbols.iter().find(|s| s.name == "y");
+        assert!(y_field.is_some(), "Record component 'y' should be indexed");
+
+        // Methods defined in records should also be indexed
+        let method = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "distanceFromOrigin");
+        assert!(
+            method.is_some(),
+            "Record method 'distanceFromOrigin' should be indexed"
+        );
+        assert_eq!(
+            method.unwrap().qualified,
+            "com.example.Point.distanceFromOrigin"
+        );
     }
 }
