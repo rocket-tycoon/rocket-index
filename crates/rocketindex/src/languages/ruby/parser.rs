@@ -90,6 +90,25 @@ fn extract_mixins(node: &tree_sitter::Node, source: &[u8]) -> Vec<String> {
     mixins
 }
 
+/// Current visibility state within a class/module body
+#[derive(Clone, Copy, Default)]
+enum VisibilityState {
+    #[default]
+    Public,
+    Private,
+    Protected,
+}
+
+impl From<VisibilityState> for Visibility {
+    fn from(state: VisibilityState) -> Self {
+        match state {
+            VisibilityState::Public => Visibility::Public,
+            VisibilityState::Private => Visibility::Private,
+            VisibilityState::Protected => Visibility::Internal, // Ruby protected maps to Internal
+        }
+    }
+}
+
 fn extract_recursive(
     node: &tree_sitter::Node,
     source: &[u8],
@@ -98,9 +117,19 @@ fn extract_recursive(
     current_module: Option<&str>,
     max_depth: usize,
 ) {
-    extract_recursive_inner(node, source, file, result, current_module, max_depth, false);
+    extract_recursive_inner(
+        node,
+        source,
+        file,
+        result,
+        current_module,
+        max_depth,
+        false,
+        VisibilityState::Public,
+    );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn extract_recursive_inner(
     node: &tree_sitter::Node,
     source: &[u8],
@@ -109,10 +138,14 @@ fn extract_recursive_inner(
     current_module: Option<&str>,
     max_depth: usize,
     in_singleton_class: bool,
+    visibility: VisibilityState,
 ) {
     if max_depth == 0 {
         return;
     }
+
+    // Track visibility changes for methods
+    let mut current_visibility = visibility;
 
     match node.kind() {
         "class" | "module" => {
@@ -158,11 +191,24 @@ fn extract_recursive_inner(
                     });
 
                     // Process children with this module context
-                    // We need to find the body (usually 'body' field or children)
-                    // In tree-sitter-ruby, class/module body is just children
-                    for i in 0..node.child_count() {
-                        if let Some(child) = node.child(i) {
-                            if child.id() != name_node.id() {
+                    // In tree-sitter-ruby, class/module has a body_statement containing methods
+                    // We need to find it and process visibility sequentially within it
+                    if let Some(body) = find_child_by_kind(node, "body_statement") {
+                        let mut class_visibility = VisibilityState::Public;
+                        for i in 0..body.child_count() {
+                            if let Some(child) = body.child(i) {
+                                // Check for visibility modifiers
+                                if child.kind() == "identifier" {
+                                    let text = child.utf8_text(source).unwrap_or_default();
+                                    match text {
+                                        "private" => class_visibility = VisibilityState::Private,
+                                        "protected" => {
+                                            class_visibility = VisibilityState::Protected
+                                        }
+                                        "public" => class_visibility = VisibilityState::Public,
+                                        _ => {}
+                                    }
+                                }
                                 extract_recursive_inner(
                                     &child,
                                     source,
@@ -171,7 +217,26 @@ fn extract_recursive_inner(
                                     Some(&qualified),
                                     max_depth - 1,
                                     false, // Reset singleton context for new class/module
+                                    class_visibility,
                                 );
+                            }
+                        }
+                    } else {
+                        // No body_statement, process children directly (shouldn't happen normally)
+                        for i in 0..node.child_count() {
+                            if let Some(child) = node.child(i) {
+                                if child.id() != name_node.id() {
+                                    extract_recursive_inner(
+                                        &child,
+                                        source,
+                                        file,
+                                        result,
+                                        Some(&qualified),
+                                        max_depth - 1,
+                                        false,
+                                        VisibilityState::Public,
+                                    );
+                                }
                             }
                         }
                     }
@@ -197,7 +262,7 @@ fn extract_recursive_inner(
                         qualified,
                         kind: SymbolKind::Function,
                         location: node_to_location(file, &name_node),
-                        visibility: Visibility::Public, // TODO: Track visibility (public/private/protected)
+                        visibility: current_visibility.into(),
                         language: "ruby".to_string(),
                         parent: None,
                         mixins: None,
@@ -210,11 +275,33 @@ fn extract_recursive_inner(
             }
         }
 
+        // Visibility modifiers: private, protected, public (when called without args)
+        "identifier" => {
+            let text = node.utf8_text(source).unwrap_or_default();
+            match text {
+                "private" => current_visibility = VisibilityState::Private,
+                "protected" => current_visibility = VisibilityState::Protected,
+                "public" => current_visibility = VisibilityState::Public,
+                _ => {}
+            }
+        }
+
         "singleton_class" => {
             // `class << self` block - methods inside are class methods
             // Don't emit a symbol for the singleton_class itself, just recurse with in_singleton_class=true
+            let mut singleton_visibility = VisibilityState::Public;
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i) {
+                    // Check for visibility modifiers in this child
+                    if child.kind() == "identifier" {
+                        let text = child.utf8_text(source).unwrap_or_default();
+                        match text {
+                            "private" => singleton_visibility = VisibilityState::Private,
+                            "protected" => singleton_visibility = VisibilityState::Protected,
+                            "public" => singleton_visibility = VisibilityState::Public,
+                            _ => {}
+                        }
+                    }
                     extract_recursive_inner(
                         &child,
                         source,
@@ -223,6 +310,7 @@ fn extract_recursive_inner(
                         current_module,
                         max_depth - 1,
                         true, // We're now inside a singleton class
+                        singleton_visibility,
                     );
                 }
             }
@@ -243,7 +331,7 @@ fn extract_recursive_inner(
                         qualified,
                         kind: SymbolKind::Function,
                         location: node_to_location(file, &name_node),
-                        visibility: Visibility::Public,
+                        visibility: current_visibility.into(),
                         language: "ruby".to_string(),
                         parent: None,
                         mixins: None,
@@ -294,6 +382,7 @@ fn extract_recursive_inner(
                                                 Some(&qualified),
                                                 max_depth - 1,
                                                 false,
+                                                VisibilityState::Public, // Struct blocks start with public
                                             );
                                         }
                                     }
@@ -333,7 +422,7 @@ fn extract_recursive_inner(
                     qualified,
                     kind: SymbolKind::Function,
                     location: node_to_location(file, alias_node),
-                    visibility: Visibility::Public,
+                    visibility: current_visibility.into(),
                     language: "ruby".to_string(),
                     parent: None,
                     mixins: None,
@@ -468,6 +557,197 @@ fn extract_recursive_inner(
                             }
                         }
                     }
+                    // Handle Rails scope - creates class methods
+                    // scope :active, -> { where(active: true) }
+                    else if name == "scope" {
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            // First argument is the scope name
+                            for i in 0..args.child_count() {
+                                if let Some(arg) = args.child(i) {
+                                    let kind = arg.kind();
+                                    if kind == "simple_symbol" || kind == "symbol" {
+                                        if let Ok(sym_text) = arg.utf8_text(source) {
+                                            let scope_name =
+                                                sym_text.trim_start_matches(':').to_string();
+                                            // Scopes are class methods (User.active)
+                                            let qualified = match current_module {
+                                                Some(m) => format!("{}.{}", m, scope_name),
+                                                None => scope_name.clone(),
+                                            };
+
+                                            result.symbols.push(Symbol {
+                                                name: scope_name,
+                                                qualified,
+                                                kind: SymbolKind::Function,
+                                                location: node_to_location(file, &arg),
+                                                visibility: Visibility::Public,
+                                                language: "ruby".to_string(),
+                                                parent: None,
+                                                mixins: None,
+                                                attributes: None,
+                                                implements: None,
+                                                doc: None,
+                                                signature: None,
+                                            });
+                                            // Only take the first symbol argument
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Handle delegate - creates instance methods
+                    // delegate :name, :email, to: :profile
+                    // delegate :company_name, to: :company, prefix: true
+                    else if name == "delegate" {
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            let mut prefix: Option<String> = None;
+                            let mut method_names: Vec<(String, tree_sitter::Node)> = Vec::new();
+
+                            // First pass: collect method names and find prefix
+                            for i in 0..args.child_count() {
+                                if let Some(arg) = args.child(i) {
+                                    let kind = arg.kind();
+                                    if kind == "simple_symbol" || kind == "symbol" {
+                                        if let Ok(sym_text) = arg.utf8_text(source) {
+                                            let method_name =
+                                                sym_text.trim_start_matches(':').to_string();
+                                            method_names.push((method_name, arg));
+                                        }
+                                    } else if kind == "pair" {
+                                        // Check for prefix: true or prefix: :custom
+                                        if let Some(key) =
+                                            find_child_by_kind(&arg, "hash_key_symbol")
+                                        {
+                                            if let Ok(key_text) = key.utf8_text(source) {
+                                                if key_text == "prefix" {
+                                                    // Get the value
+                                                    if let Some(val) = arg.child(2) {
+                                                        if val.kind() == "true" {
+                                                            // prefix: true - use the target name
+                                                            // Find "to:" pair to get target
+                                                            for j in 0..args.child_count() {
+                                                                if let Some(to_pair) = args.child(j)
+                                                                {
+                                                                    if to_pair.kind() == "pair" {
+                                                                        if let Some(to_key) =
+                                                                            find_child_by_kind(
+                                                                                &to_pair,
+                                                                                "hash_key_symbol",
+                                                                            )
+                                                                        {
+                                                                            if let Ok(to_key_text) =
+                                                                                to_key.utf8_text(
+                                                                                    source,
+                                                                                )
+                                                                            {
+                                                                                if to_key_text
+                                                                                    == "to"
+                                                                                {
+                                                                                    if let Some(
+                                                                                        to_val,
+                                                                                    ) = to_pair
+                                                                                        .child(2)
+                                                                                    {
+                                                                                        if let Ok(
+                                                                                            to_text,
+                                                                                        ) = to_val
+                                                                                            .utf8_text(
+                                                                                            source,
+                                                                                        )
+                                                                                        {
+                                                                                            prefix = Some(to_text.trim_start_matches(':').to_string());
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Second pass: create symbols for each method
+                            for (method_name, arg_node) in method_names {
+                                let final_name = if let Some(ref p) = prefix {
+                                    format!("{}_{}", p, method_name)
+                                } else {
+                                    method_name
+                                };
+
+                                let qualified = match current_module {
+                                    Some(m) => format!("{}#{}", m, final_name),
+                                    None => final_name.clone(),
+                                };
+
+                                result.symbols.push(Symbol {
+                                    name: final_name,
+                                    qualified,
+                                    kind: SymbolKind::Function,
+                                    location: node_to_location(file, &arg_node),
+                                    visibility: Visibility::Public,
+                                    language: "ruby".to_string(),
+                                    parent: None,
+                                    mixins: None,
+                                    attributes: None,
+                                    implements: None,
+                                    doc: None,
+                                    signature: None,
+                                });
+                            }
+                        }
+                    }
+                    // Handle define_method - creates instance methods dynamically
+                    // define_method :custom_method do ... end
+                    else if name == "define_method" {
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            // First argument is the method name
+                            for i in 0..args.child_count() {
+                                if let Some(arg) = args.child(i) {
+                                    let kind = arg.kind();
+                                    if kind == "simple_symbol" || kind == "symbol" {
+                                        if let Ok(sym_text) = arg.utf8_text(source) {
+                                            let method_name =
+                                                sym_text.trim_start_matches(':').to_string();
+                                            let separator =
+                                                if in_singleton_class { "." } else { "#" };
+                                            let qualified = match current_module {
+                                                Some(m) => {
+                                                    format!("{}{}{}", m, separator, method_name)
+                                                }
+                                                None => method_name.clone(),
+                                            };
+
+                                            result.symbols.push(Symbol {
+                                                name: method_name,
+                                                qualified,
+                                                kind: SymbolKind::Function,
+                                                location: node_to_location(file, &arg),
+                                                visibility: current_visibility.into(),
+                                                language: "ruby".to_string(),
+                                                parent: None,
+                                                mixins: None,
+                                                attributes: None,
+                                                implements: None,
+                                                doc: None,
+                                                signature: None,
+                                            });
+                                            // Only take the first symbol argument
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -486,6 +766,7 @@ fn extract_recursive_inner(
                 current_module,
                 max_depth - 1,
                 in_singleton_class,
+                current_visibility,
             );
         }
     }
@@ -900,5 +1181,235 @@ end
             .find(|s| s.name == "calculate")
             .unwrap();
         assert_eq!(calculate.qualified, "MyApp::Calculator#calculate");
+    }
+
+    // ============================================================
+    // PRODUCTION READINESS TESTS: Rails/SRE patterns
+    // ============================================================
+
+    #[test]
+    fn extracts_rails_scope_definitions() {
+        // Rails scopes are common in ActiveRecord models
+        let source = r#"
+class User < ApplicationRecord
+  scope :active, -> { where(active: true) }
+  scope :recent, ->(days) { where("created_at > ?", days.ago) }
+  scope :admins, -> { where(role: 'admin') }
+end
+"#;
+        let result = extract_symbols(Path::new("user.rb"), source, 500);
+
+        let active_scope = result.symbols.iter().find(|s| s.name == "active");
+        assert!(
+            active_scope.is_some(),
+            "Rails scope :active should be indexed"
+        );
+        assert_eq!(active_scope.unwrap().qualified, "User.active");
+        assert_eq!(active_scope.unwrap().kind, SymbolKind::Function);
+
+        let recent_scope = result.symbols.iter().find(|s| s.name == "recent");
+        assert!(
+            recent_scope.is_some(),
+            "Rails scope :recent should be indexed"
+        );
+        assert_eq!(recent_scope.unwrap().qualified, "User.recent");
+
+        let admins_scope = result.symbols.iter().find(|s| s.name == "admins");
+        assert!(
+            admins_scope.is_some(),
+            "Rails scope :admins should be indexed"
+        );
+        assert_eq!(admins_scope.unwrap().qualified, "User.admins");
+    }
+
+    #[test]
+    fn extracts_delegate_methods() {
+        // delegate is common in Rails for composition
+        let source = r#"
+class User
+  delegate :name, :email, to: :profile
+  delegate :company_name, to: :company, prefix: true
+  delegate :admin?, to: :role, allow_nil: true
+end
+"#;
+        let result = extract_symbols(Path::new("user.rb"), source, 500);
+
+        // delegate creates methods that forward to another object
+        let name_delegate = result.symbols.iter().find(|s| s.name == "name");
+        assert!(
+            name_delegate.is_some(),
+            "delegate :name should be indexed as User#name"
+        );
+        assert_eq!(name_delegate.unwrap().qualified, "User#name");
+
+        let email_delegate = result.symbols.iter().find(|s| s.name == "email");
+        assert!(
+            email_delegate.is_some(),
+            "delegate :email should be indexed as User#email"
+        );
+
+        // prefix: true creates company_company_name
+        let company_name = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "company_company_name");
+        assert!(
+            company_name.is_some(),
+            "delegate with prefix should create prefixed method"
+        );
+
+        let admin = result.symbols.iter().find(|s| s.name == "admin?");
+        assert!(admin.is_some(), "delegate :admin? should be indexed");
+    }
+
+    #[test]
+    fn extracts_module_function() {
+        // module_function makes methods callable both ways
+        let source = r#"
+module Utils
+  module_function
+
+  def format_date(date)
+    date.strftime("%Y-%m-%d")
+  end
+
+  def format_time(time)
+    time.strftime("%H:%M:%S")
+  end
+end
+"#;
+        let result = extract_symbols(Path::new("utils.rb"), source, 500);
+
+        // module_function methods should be indexed as both instance and class methods
+        // At minimum, they should be found
+        let format_date = result.symbols.iter().find(|s| s.name == "format_date");
+        assert!(
+            format_date.is_some(),
+            "module_function methods should be indexed"
+        );
+
+        let format_time = result.symbols.iter().find(|s| s.name == "format_time");
+        assert!(
+            format_time.is_some(),
+            "module_function methods should be indexed"
+        );
+    }
+
+    #[test]
+    fn tracks_private_visibility() {
+        // Visibility modifiers are important for understanding API surface
+        let source = r#"
+class User
+  def public_method
+  end
+
+  private
+
+  def private_helper
+  end
+
+  def another_private
+  end
+
+  protected
+
+  def protected_method
+  end
+
+  public
+
+  def back_to_public
+  end
+end
+"#;
+        let result = extract_symbols(Path::new("user.rb"), source, 500);
+
+        let public_method = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "public_method")
+            .unwrap();
+        assert_eq!(
+            public_method.visibility,
+            Visibility::Public,
+            "Methods before 'private' should be public"
+        );
+
+        let private_helper = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "private_helper")
+            .unwrap();
+        assert_eq!(
+            private_helper.visibility,
+            Visibility::Private,
+            "Methods after 'private' should be private"
+        );
+
+        let another_private = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "another_private")
+            .unwrap();
+        assert_eq!(
+            another_private.visibility,
+            Visibility::Private,
+            "Methods after 'private' should remain private"
+        );
+
+        let protected_method = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "protected_method")
+            .unwrap();
+        assert_eq!(
+            protected_method.visibility,
+            Visibility::Internal, // Using Internal for protected
+            "Methods after 'protected' should be protected"
+        );
+
+        let back_to_public = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "back_to_public")
+            .unwrap();
+        assert_eq!(
+            back_to_public.visibility,
+            Visibility::Public,
+            "Methods after 'public' should be public again"
+        );
+    }
+
+    #[test]
+    fn extracts_class_methods_via_define_method() {
+        // define_method is used for dynamic method definition
+        // Note: Dynamic interpolation (#{role}) can't be indexed statically
+        // but static symbol args can be
+        let source = r#"
+class User
+  define_method :custom_method do
+    "custom"
+  end
+
+  define_method :another_method do |arg|
+    arg.to_s
+  end
+end
+"#;
+        let result = extract_symbols(Path::new("user.rb"), source, 500);
+
+        // Static define_method calls should be indexed
+        let custom_method = result.symbols.iter().find(|s| s.name == "custom_method");
+        assert!(
+            custom_method.is_some(),
+            "define_method :custom_method should be indexed"
+        );
+        assert_eq!(custom_method.unwrap().qualified, "User#custom_method");
+
+        let another_method = result.symbols.iter().find(|s| s.name == "another_method");
+        assert!(
+            another_method.is_some(),
+            "define_method :another_method should be indexed"
+        );
     }
 }
