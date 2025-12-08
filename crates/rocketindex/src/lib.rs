@@ -22,6 +22,7 @@ pub mod parse;
 pub mod pidfile;
 pub mod resolve;
 pub mod spider;
+pub mod stacktrace;
 pub mod type_cache;
 pub mod watch;
 
@@ -31,6 +32,7 @@ pub use fsproj::{find_fsproj_files, parse_fsproj, FsprojInfo};
 pub use index::{CodeIndex, Reference};
 pub use parse::{extract_symbols, ParseWarning, SyntaxError};
 pub use resolve::ResolveResult;
+pub use stacktrace::{parse_stacktrace, StackFrame, StacktraceLanguage, StacktraceResult};
 pub use type_cache::{MemberKind, TypeCache, TypeCacheSchema, TypeMember, TypedSymbol};
 
 /// A location in source code (file, line, column) with start and end positions
