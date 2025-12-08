@@ -482,9 +482,32 @@ fn extract_struct_fields(
             if field.kind() == "field_declaration" {
                 // A field can have multiple names: x, y int
                 if let Some(name_node) = field.child_by_field_name("name") {
+                    // Named field: has explicit field_identifier
                     if let Ok(name) = name_node.utf8_text(source) {
                         let qualified = format!("{}.{}", parent_qualified, name);
                         let visibility = extract_visibility(name);
+
+                        result.symbols.push(Symbol {
+                            name: name.to_string(),
+                            qualified,
+                            kind: SymbolKind::Member,
+                            location: node_to_location(file, &name_node),
+                            visibility,
+                            language: "go".to_string(),
+                            parent: Some(parent_qualified.to_string()),
+                            mixins: None,
+                            attributes: None,
+                            implements: None,
+                            doc: None,
+                            signature: None,
+                        });
+                    }
+                } else {
+                    // Embedded field: no field_identifier, type name becomes field name
+                    // Handle both `Type` and `*Type` patterns
+                    if let Some((name, name_node)) = extract_embedded_field_name(&field, source) {
+                        let qualified = format!("{}.{}", parent_qualified, name);
+                        let visibility = extract_visibility(&name);
 
                         result.symbols.push(Symbol {
                             name: name.to_string(),
@@ -505,6 +528,64 @@ fn extract_struct_fields(
             }
         }
     }
+}
+
+/// Extract embedded field name from a field_declaration without a name
+///
+/// Handles patterns like:
+/// - `State` (type_identifier)
+/// - `*State` (* followed by type_identifier)
+/// - `pkg.Type` (qualified_type - for now we just use the type part)
+fn extract_embedded_field_name<'a>(
+    field: &'a tree_sitter::Node<'a>,
+    source: &[u8],
+) -> Option<(String, tree_sitter::Node<'a>)> {
+    // Look for type_identifier directly in the field_declaration
+    for i in 0..field.child_count() {
+        if let Some(child) = field.child(i) {
+            match child.kind() {
+                "type_identifier" => {
+                    // Simple embedded field: `SecurityOptions`
+                    if let Ok(name) = child.utf8_text(source) {
+                        return Some((name.to_string(), child));
+                    }
+                }
+                "pointer_type" => {
+                    // Pointer embedded field: `*State` - but this is for named fields like `*stream.Config`
+                    // For embedded pointers like `*State`, the structure is:
+                    // field_declaration -> * -> type_identifier
+                    // NOT field_declaration -> pointer_type -> ...
+                    // So this case handles `*pkg.Type` which is a named field
+                }
+                "qualified_type" => {
+                    // Qualified embedded field: `pkg.Type` - use the type part
+                    if let Some(type_node) = find_child_by_kind(&child, "type_identifier") {
+                        if let Ok(name) = type_node.utf8_text(source) {
+                            return Some((name.to_string(), type_node));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Check for `*Type` pattern where `*` is a direct child followed by type_identifier
+    // This is the embedded pointer pattern
+    let mut found_star = false;
+    for i in 0..field.child_count() {
+        if let Some(child) = field.child(i) {
+            if child.kind() == "*" {
+                found_star = true;
+            } else if found_star && child.kind() == "type_identifier" {
+                if let Ok(name) = child.utf8_text(source) {
+                    return Some((name.to_string(), child));
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Extract interface method signatures
@@ -806,5 +887,63 @@ const (
 
         assert!(result.symbols.iter().any(|s| s.name == "StatusOK"));
         assert!(result.symbols.iter().any(|s| s.name == "StatusNotFound"));
+    }
+
+    #[test]
+    fn extracts_embedded_struct_fields() {
+        let source = r#"
+package container
+
+type Container struct {
+    StreamConfig *stream.Config
+    *State
+    Root         string
+    SecurityOptions
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        // Container struct should be found
+        let container = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Container")
+            .expect("Should find Container");
+        assert_eq!(container.kind, SymbolKind::Class);
+
+        // Named fields should be indexed
+        let stream_config = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "StreamConfig" && s.qualified == "container.Container.StreamConfig")
+            .expect("Should find StreamConfig");
+        assert_eq!(stream_config.kind, SymbolKind::Member);
+
+        let root = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Root" && s.qualified == "container.Container.Root")
+            .expect("Should find Root");
+        assert_eq!(root.kind, SymbolKind::Member);
+
+        // Embedded pointer field: *State should be indexed as Container.State
+        let state = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "State" && s.qualified == "container.Container.State")
+            .expect("Should find embedded State");
+        assert_eq!(state.kind, SymbolKind::Member);
+        assert_eq!(state.parent, Some("container.Container".to_string()));
+
+        // Embedded value field: SecurityOptions should be indexed
+        let security = result
+            .symbols
+            .iter()
+            .find(|s| {
+                s.name == "SecurityOptions" && s.qualified == "container.Container.SecurityOptions"
+            })
+            .expect("Should find embedded SecurityOptions");
+        assert_eq!(security.kind, SymbolKind::Member);
     }
 }
