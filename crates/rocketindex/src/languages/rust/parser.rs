@@ -15,6 +15,15 @@ thread_local! {
             .expect("tree-sitter-rust grammar incompatible with tree-sitter version");
         parser
     });
+
+    // Separate parser for re-parsing macro bodies (to avoid RefCell borrow conflicts)
+    static MACRO_PARSER: RefCell<tree_sitter::Parser> = RefCell::new({
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("tree-sitter-rust grammar incompatible with tree-sitter version");
+        parser
+    });
 }
 
 pub struct RustParser;
@@ -503,6 +512,16 @@ fn extract_recursive(
             extract_use_statement(node, source, result);
         }
 
+        "macro_invocation" => {
+            // Handle macro invocations like cfg_rt! { pub fn spawn(...) }
+            // The content inside braces is tokenized, not parsed as items.
+            // We need to re-parse the token_tree content as Rust source.
+            if let Some(token_tree) = find_child_by_kind(node, "token_tree") {
+                extract_from_macro_body(&token_tree, source, file, result, parent_path, max_depth);
+            }
+            return; // Don't recurse normally - we've handled the content
+        }
+
         _ => {}
     }
 
@@ -510,6 +529,365 @@ fn extract_recursive(
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             extract_recursive(&child, source, file, result, parent_path, max_depth - 1);
+        }
+    }
+}
+
+/// Extract symbols from macro body content by re-parsing as Rust source.
+/// Macro invocations like `cfg_rt! { pub fn spawn(...) }` have their body
+/// tokenized but not parsed. We extract the inner content and parse it.
+fn extract_from_macro_body(
+    token_tree: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+    parent_path: Option<&str>,
+    max_depth: usize,
+) {
+    // Get the content between the braces
+    let start = token_tree.start_byte();
+    let end = token_tree.end_byte();
+
+    if start >= end || start >= source.len() {
+        return;
+    }
+
+    // Extract the token tree content (includes the braces)
+    let content = match std::str::from_utf8(&source[start..end.min(source.len())]) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    // Skip if it's parentheses () - we only care about braces {}
+    if content.starts_with('(') || content.starts_with('[') {
+        return;
+    }
+
+    // Remove the outer braces to get the inner content
+    let inner = content.trim();
+    if !inner.starts_with('{') || !inner.ends_with('}') {
+        return;
+    }
+    let inner = &inner[1..inner.len() - 1];
+
+    // Re-parse the inner content as Rust source using MACRO_PARSER
+    // (separate parser to avoid RefCell borrow conflicts with RUST_PARSER)
+    MACRO_PARSER.with(|parser| {
+        let mut parser = parser.borrow_mut();
+        if let Some(tree) = parser.parse(inner, None) {
+            let root = tree.root_node();
+
+            // Calculate the byte offset for locations
+            // The inner content starts after the opening brace
+            let inner_start = start + 1; // +1 for the '{'
+
+            // Walk the parsed tree and extract symbols
+            extract_from_reparsed_tree(
+                &root,
+                inner.as_bytes(),
+                source,
+                file,
+                result,
+                parent_path,
+                max_depth,
+                inner_start,
+                token_tree.start_position().row as u32,
+            );
+        }
+    });
+}
+
+/// Extract symbols from a re-parsed macro body.
+/// Adjusts locations to account for the offset within the original source.
+#[allow(clippy::too_many_arguments)]
+fn extract_from_reparsed_tree(
+    node: &tree_sitter::Node,
+    inner_source: &[u8],
+    _original_source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+    parent_path: Option<&str>,
+    max_depth: usize,
+    _byte_offset: usize,
+    row_offset: u32,
+) {
+    if max_depth == 0 {
+        return;
+    }
+
+    match node.kind() {
+        "function_item" | "function_signature_item" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(inner_source) {
+                    let qualified = qualified_name(name, parent_path);
+                    let visibility = extract_visibility(node, inner_source);
+                    let doc = extract_doc_comments(node, inner_source);
+                    let signature = extract_function_signature(node, inner_source);
+
+                    // Adjust location for the macro offset
+                    let mut loc = node_to_location(file, &name_node);
+                    loc.line += row_offset;
+
+                    result.symbols.push(Symbol {
+                        name: name.to_string(),
+                        qualified,
+                        kind: SymbolKind::Function,
+                        location: loc,
+                        visibility,
+                        language: "rust".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: extract_attributes(node, inner_source),
+                        implements: None,
+                        doc,
+                        signature,
+                    });
+                }
+            }
+        }
+
+        "struct_item" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(inner_source) {
+                    let qualified = qualified_name(name, parent_path);
+                    let visibility = extract_visibility(node, inner_source);
+                    let doc = extract_doc_comments(node, inner_source);
+
+                    let mut loc = node_to_location(file, &name_node);
+                    loc.line += row_offset;
+
+                    result.symbols.push(Symbol {
+                        name: name.to_string(),
+                        qualified,
+                        kind: SymbolKind::Class,
+                        location: loc,
+                        visibility,
+                        language: "rust".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: extract_attributes(node, inner_source),
+                        implements: None,
+                        doc,
+                        signature: None,
+                    });
+                }
+            }
+        }
+
+        "enum_item" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(inner_source) {
+                    let qualified = qualified_name(name, parent_path);
+                    let visibility = extract_visibility(node, inner_source);
+                    let doc = extract_doc_comments(node, inner_source);
+
+                    let mut loc = node_to_location(file, &name_node);
+                    loc.line += row_offset;
+
+                    result.symbols.push(Symbol {
+                        name: name.to_string(),
+                        qualified: qualified.clone(),
+                        kind: SymbolKind::Union,
+                        location: loc,
+                        visibility,
+                        language: "rust".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: extract_attributes(node, inner_source),
+                        implements: None,
+                        doc,
+                        signature: None,
+                    });
+                }
+            }
+        }
+
+        "trait_item" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(inner_source) {
+                    let qualified = qualified_name(name, parent_path);
+                    let visibility = extract_visibility(node, inner_source);
+                    let doc = extract_doc_comments(node, inner_source);
+
+                    let mut loc = node_to_location(file, &name_node);
+                    loc.line += row_offset;
+
+                    result.symbols.push(Symbol {
+                        name: name.to_string(),
+                        qualified: qualified.clone(),
+                        kind: SymbolKind::Interface,
+                        location: loc,
+                        visibility,
+                        language: "rust".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: extract_attributes(node, inner_source),
+                        implements: None,
+                        doc,
+                        signature: None,
+                    });
+                }
+            }
+        }
+
+        "impl_item" => {
+            // Handle impl blocks inside macros
+            let type_name = extract_impl_type_name(node, inner_source);
+            if let Some(type_name) = type_name {
+                let impl_path = match parent_path {
+                    Some(p) => format!("{}::{}", p, type_name),
+                    None => type_name.clone(),
+                };
+
+                if let Some(body) = find_child_by_kind(node, "declaration_list") {
+                    for i in 0..body.child_count() {
+                        if let Some(child) = body.child(i) {
+                            extract_from_reparsed_tree(
+                                &child,
+                                inner_source,
+                                _original_source,
+                                file,
+                                result,
+                                Some(&impl_path),
+                                max_depth - 1,
+                                _byte_offset,
+                                row_offset,
+                            );
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        "mod_item" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(inner_source) {
+                    let qualified = qualified_name(name, parent_path);
+                    let visibility = extract_visibility(node, inner_source);
+                    let doc = extract_doc_comments(node, inner_source);
+
+                    let mut loc = node_to_location(file, &name_node);
+                    loc.line += row_offset;
+
+                    result.symbols.push(Symbol {
+                        name: name.to_string(),
+                        qualified: qualified.clone(),
+                        kind: SymbolKind::Module,
+                        location: loc,
+                        visibility,
+                        language: "rust".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: extract_attributes(node, inner_source),
+                        implements: None,
+                        doc,
+                        signature: None,
+                    });
+
+                    // Recurse into module body
+                    if let Some(body) = find_child_by_kind(node, "declaration_list") {
+                        for i in 0..body.child_count() {
+                            if let Some(child) = body.child(i) {
+                                extract_from_reparsed_tree(
+                                    &child,
+                                    inner_source,
+                                    _original_source,
+                                    file,
+                                    result,
+                                    Some(&qualified),
+                                    max_depth - 1,
+                                    _byte_offset,
+                                    row_offset,
+                                );
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
+        "const_item" | "static_item" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(inner_source) {
+                    let qualified = qualified_name(name, parent_path);
+                    let visibility = extract_visibility(node, inner_source);
+                    let doc = extract_doc_comments(node, inner_source);
+
+                    let mut loc = node_to_location(file, &name_node);
+                    loc.line += row_offset;
+
+                    result.symbols.push(Symbol {
+                        name: name.to_string(),
+                        qualified,
+                        kind: SymbolKind::Value,
+                        location: loc,
+                        visibility,
+                        language: "rust".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: None,
+                        implements: None,
+                        doc,
+                        signature: None,
+                    });
+                }
+            }
+        }
+
+        "type_item" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(inner_source) {
+                    let qualified = qualified_name(name, parent_path);
+                    let visibility = extract_visibility(node, inner_source);
+                    let doc = extract_doc_comments(node, inner_source);
+
+                    let mut loc = node_to_location(file, &name_node);
+                    loc.line += row_offset;
+
+                    result.symbols.push(Symbol {
+                        name: name.to_string(),
+                        qualified,
+                        kind: SymbolKind::Type,
+                        location: loc,
+                        visibility,
+                        language: "rust".to_string(),
+                        parent: None,
+                        mixins: None,
+                        attributes: None,
+                        implements: None,
+                        doc,
+                        signature: None,
+                    });
+                }
+            }
+        }
+
+        "macro_invocation" => {
+            // Skip nested macro invocations for now - we only handle one level of macros.
+            // This avoids RefCell borrow conflicts since we're already inside MACRO_PARSER.
+            // In practice, nested macros containing function definitions are rare.
+            return;
+        }
+
+        _ => {}
+    }
+
+    // Recurse into children
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            extract_from_reparsed_tree(
+                &child,
+                inner_source,
+                _original_source,
+                file,
+                result,
+                parent_path,
+                max_depth - 1,
+                _byte_offset,
+                row_offset,
+            );
         }
     }
 }
@@ -1039,5 +1417,78 @@ pub struct Data {
         assert!(data.attributes.is_some());
         let attrs = data.attributes.as_ref().unwrap();
         assert!(attrs.iter().any(|a| a.contains("derive")));
+    }
+
+    #[test]
+    fn extracts_function_inside_macro_invocation() {
+        let source = r#"
+cfg_rt! {
+    /// Spawns a new task.
+    pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+    {
+        todo!()
+    }
+}
+"#;
+        // Debug: parse and print the tree structure
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        fn print_tree(node: tree_sitter::Node, source: &str, indent: usize) {
+            let prefix = "  ".repeat(indent);
+            eprintln!(
+                "{}[{}] {} ({}:{})",
+                prefix,
+                node.kind(),
+                if node.child_count() == 0 {
+                    node.utf8_text(source.as_bytes()).unwrap_or("")
+                } else {
+                    ""
+                },
+                node.start_position().row,
+                node.start_position().column
+            );
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    print_tree(child, source, indent + 1);
+                }
+            }
+        }
+        print_tree(tree.root_node(), source, 0);
+
+        let result = extract_symbols(std::path::Path::new("test.rs"), source, 100);
+
+        // Debug: print all symbols found
+        eprintln!("\n=== Symbols found ===");
+        for sym in &result.symbols {
+            eprintln!("Found symbol: {} (kind: {:?})", sym.name, sym.kind);
+        }
+
+        let spawn = result.symbols.iter().find(|s| s.name == "spawn");
+        assert!(spawn.is_some(), "Should find spawn function inside macro");
+        let spawn = spawn.unwrap();
+        assert_eq!(spawn.kind, SymbolKind::Function);
+        assert_eq!(spawn.visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn extracts_struct_inside_macro_invocation() {
+        let source = r#"
+cfg_net! {
+    /// A TCP listener.
+    pub struct TcpListener {
+        io: PollEvented<mio::net::TcpListener>,
+    }
+}
+"#;
+        let result = extract_symbols(std::path::Path::new("test.rs"), source, 100);
+
+        let tcp = result.symbols.iter().find(|s| s.name == "TcpListener");
+        assert!(tcp.is_some(), "Should find TcpListener struct inside macro");
     }
 }

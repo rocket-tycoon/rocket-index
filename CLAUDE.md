@@ -119,7 +119,7 @@ exclude_dirs = ["vendor", "generated"]  # Additional exclusions
 max_recursion_depth = 1000              # For deeply nested code (default: 500)
 ```
 
-Default exclusions: `node_modules`, `bin`, `obj`, `packages`, `.git`, `.vs`, `.idea`
+Default exclusions: `node_modules`, `bin`, `obj`, `.git`, `.vs`, `.idea`
 
 ## Language Support
 

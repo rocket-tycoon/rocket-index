@@ -6,15 +6,10 @@ use serde::Deserialize;
 use std::path::Path;
 
 /// Default directories to exclude from indexing.
-pub const DEFAULT_EXCLUDE_DIRS: &[&str] = &[
-    "node_modules",
-    "bin",
-    "obj",
-    "packages",
-    ".git",
-    ".vs",
-    ".idea",
-];
+///
+/// Note: `packages` was removed because pnpm/npm/yarn workspaces use it for
+/// source code. NuGet packages contain mostly binaries that aren't indexed anyway.
+pub const DEFAULT_EXCLUDE_DIRS: &[&str] = &["node_modules", "bin", "obj", ".git", ".vs", ".idea"];
 
 /// RocketIndex configuration.
 #[derive(Debug, Clone, Deserialize)]
