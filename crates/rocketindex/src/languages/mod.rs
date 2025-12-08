@@ -1,3 +1,4 @@
+pub mod csharp;
 pub mod fsharp;
 pub mod go;
 pub mod java;

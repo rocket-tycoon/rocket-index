@@ -39,6 +39,7 @@ tree-sitter-go = "0.23.4"
 tree-sitter-typescript = "0.23.2"
 tree-sitter-javascript = "0.23.1"
 tree-sitter-java = "0.23.5"
+tree-sitter-c-sharp = "0.23.1"
 
 # Unix process checks for PID file coordination
 [target.'cfg(unix)'.dependencies]

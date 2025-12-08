@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::languages::{fsharp, go, java, javascript, python, ruby, rust, typescript};
+use crate::languages::{csharp, fsharp, go, java, javascript, python, ruby, rust, typescript};
 use crate::{Location, Reference, Symbol};
 
 /// A syntax error detected during parsing.
@@ -73,6 +73,7 @@ pub fn extract_symbols(file: &Path, source: &str, max_depth: usize) -> ParseResu
         "rs" => rust::RustParser.extract_symbols(file, source, max_depth),
         "go" => go::GoParser.extract_symbols(file, source, max_depth),
         "java" => java::JavaParser.extract_symbols(file, source, max_depth),
+        "cs" => csharp::CSharpParser.extract_symbols(file, source, max_depth),
         "ts" | "tsx" => typescript::TypeScriptParser.extract_symbols(file, source, max_depth),
         "js" | "jsx" | "mjs" | "cjs" => {
             javascript::JavaScriptParser.extract_symbols(file, source, max_depth)
