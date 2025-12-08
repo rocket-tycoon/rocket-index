@@ -311,15 +311,25 @@ enum Commands {
         symbol: String,
     },
 
+    /// Analyze a stacktrace and enrich each frame with code context
+    Analyze {
+        /// Stacktrace text (if not provided, reads from stdin)
+        stacktrace: Option<String>,
+
+        /// Only include user code frames (filter out framework/library code)
+        #[arg(long)]
+        user_only: bool,
+    },
+
     /// Set up editor integrations (slash commands, rules, etc.)
     Setup {
-        /// Editor to set up: claude, cursor, copilot
+        /// Editor to set up: claude, cursor, copilot, zed, gemini
         editor: String,
     },
 
     /// Start a coding session (runs setup if needed, then starts watch mode)
     Start {
-        /// Target agent: claude, cursor, copilot
+        /// Target agent: claude, cursor, copilot, zed, gemini
         agent: String,
     },
 
@@ -409,6 +419,10 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
         Commands::Doctor => cmd_doctor(format, quiet),
         Commands::Doc { symbol } => cmd_doc(&symbol, format, quiet),
         Commands::Enrich { symbol } => cmd_enrich(&symbol, format, quiet),
+        Commands::Analyze {
+            stacktrace,
+            user_only,
+        } => cmd_analyze(stacktrace.as_deref(), user_only, format, quiet),
         Commands::Setup { editor } => cmd_setup(&editor, format, quiet),
         Commands::Start { agent } => cmd_start(&agent, format, quiet),
         Commands::Completions { shell } => {
@@ -2319,6 +2333,157 @@ fn cmd_enrich(symbol: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
     Ok(exit_codes::SUCCESS)
 }
 
+/// Analyze a stacktrace and enrich each frame with code context
+fn cmd_analyze(
+    stacktrace: Option<&str>,
+    user_only: bool,
+    format: OutputFormat,
+    quiet: bool,
+) -> Result<u8> {
+    use rocketindex::parse_stacktrace;
+    use std::io::Read;
+
+    warn_if_no_session(quiet);
+
+    // Get stacktrace text from argument or stdin
+    let trace_text = match stacktrace {
+        Some(text) => text.to_string(),
+        None => {
+            let mut buffer = String::new();
+            std::io::stdin().read_to_string(&mut buffer)?;
+            buffer
+        }
+    };
+
+    if trace_text.trim().is_empty() {
+        if format == OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "error": "No stacktrace provided",
+                    "usage": "cat stacktrace.txt | rkt analyze"
+                })
+            );
+        } else {
+            eprintln!("No stacktrace provided. Pipe stacktrace text to stdin or pass as argument.");
+        }
+        return Ok(exit_codes::ERROR);
+    }
+
+    // Parse the stacktrace
+    let result = parse_stacktrace(&trace_text);
+
+    if result.frames.is_empty() {
+        if format == OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "error": "No stack frames found",
+                    "unparsed_lines": result.unparsed_lines.len()
+                })
+            );
+        } else {
+            eprintln!("No stack frames found in input.");
+        }
+        return Ok(exit_codes::NOT_FOUND);
+    }
+
+    // Filter frames if user_only
+    let frames: Vec<_> = if user_only {
+        result.frames.iter().filter(|f| f.is_user_code).collect()
+    } else {
+        result.frames.iter().collect()
+    };
+
+    // Try to load index for enrichment
+    let sqlite_index = load_sqlite_index().ok();
+    let code_index = load_code_index().ok();
+
+    // Build enriched output
+    let mut enriched_frames = Vec::new();
+    for frame in &frames {
+        let mut enriched = serde_json::json!({
+            "symbol": frame.symbol,
+            "file": frame.file,
+            "line": frame.line,
+            "column": frame.column,
+            "is_user_code": frame.is_user_code,
+            "language": frame.language.map(|l| l.to_string()),
+        });
+
+        // Try to resolve symbol in index
+        if let (Some(ref sqlite), Some(ref code_idx)) = (&sqlite_index, &code_index) {
+            if let Ok(Some(sym)) = sqlite.find_by_qualified(&frame.symbol) {
+                // Add resolved location
+                enriched["resolved"] = serde_json::json!({
+                    "file": sym.location.file.display().to_string(),
+                    "line": sym.location.line,
+                    "kind": sym.kind.to_string(),
+                });
+
+                // Get callers count
+                let callers = reverse_spider(code_idx, &sym.qualified, 1);
+                let caller_count = callers.nodes.iter().filter(|n| n.depth == 1).count();
+                enriched["callers_count"] = serde_json::json!(caller_count);
+            } else if let Ok(matches) = sqlite.search(&frame.symbol, 1, None) {
+                if let Some(sym) = matches.first() {
+                    enriched["resolved"] = serde_json::json!({
+                        "file": sym.location.file.display().to_string(),
+                        "line": sym.location.line,
+                        "kind": sym.kind.to_string(),
+                    });
+
+                    let callers = reverse_spider(code_idx, &sym.qualified, 1);
+                    let caller_count = callers.nodes.iter().filter(|n| n.depth == 1).count();
+                    enriched["callers_count"] = serde_json::json!(caller_count);
+                }
+            }
+        }
+
+        enriched_frames.push(enriched);
+    }
+
+    // Output result
+    let output = serde_json::json!({
+        "frames": enriched_frames,
+        "summary": {
+            "total_frames": result.frames.len(),
+            "user_frames": result.frames.iter().filter(|f| f.is_user_code).count(),
+            "displayed_frames": frames.len(),
+            "resolved_frames": enriched_frames.iter().filter(|f| f.get("resolved").is_some()).count(),
+            "detected_language": result.detected_language.map(|l| l.to_string()),
+        }
+    });
+
+    if format == OutputFormat::Json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        // Text format
+        println!("Stacktrace Analysis");
+        println!("===================");
+        if let Some(lang) = result.detected_language {
+            println!("Language: {}", lang);
+        }
+        println!(
+            "Frames: {} total, {} user code\n",
+            result.frames.len(),
+            result.frames.iter().filter(|f| f.is_user_code).count()
+        );
+
+        for (i, frame) in frames.iter().enumerate() {
+            let marker = if frame.is_user_code { "→" } else { " " };
+            let location = match (&frame.file, frame.line) {
+                (Some(f), Some(l)) => format!("{}:{}", f.display(), l),
+                (Some(f), None) => f.display().to_string(),
+                _ => "unknown".to_string(),
+            };
+            println!("{} {}. {} ({})", marker, i + 1, frame.symbol, location);
+        }
+    }
+
+    Ok(exit_codes::SUCCESS)
+}
+
 /// Set up editor integrations
 fn cmd_setup(editor: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
     let cwd = std::env::current_dir()?;
@@ -2327,29 +2492,20 @@ fn cmd_setup(editor: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
         "claude" | "claude-code" => setup_claude_code(&cwd, format, quiet),
         "cursor" => setup_cursor(&cwd, format, quiet),
         "copilot" | "github-copilot" => setup_copilot(&cwd, format, quiet),
-        "vscode" => {
-            if format == OutputFormat::Json {
-                println!(
-                    "{}",
-                    serde_json::json!({"error": "VSCode setup not yet implemented"})
-                );
-            } else {
-                eprintln!("VSCode setup not yet implemented. Coming soon!");
-            }
-            Ok(exit_codes::NOT_FOUND)
-        }
+        "zed" => setup_zed(&cwd, format, quiet),
+        "gemini" | "gemini-cli" => setup_gemini(&cwd, format, quiet),
         _ => {
             if format == OutputFormat::Json {
                 println!(
                     "{}",
                     serde_json::json!({
                         "error": "Unknown editor",
-                        "supported": ["claude", "cursor", "copilot", "vscode"]
+                        "supported": ["claude", "cursor", "copilot", "zed", "gemini"]
                     })
                 );
             } else {
                 eprintln!("Unknown editor: {}", editor);
-                eprintln!("Supported editors: claude, cursor, copilot, vscode");
+                eprintln!("Supported editors: claude, cursor, copilot, zed, gemini");
             }
             Ok(exit_codes::ERROR)
         }
@@ -2369,6 +2525,9 @@ fn cmd_start(agent: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
         "cursor",
         "copilot",
         "github-copilot",
+        "zed",
+        "gemini",
+        "gemini-cli",
     ];
     if !valid_agents.contains(&agent_lower.as_str()) {
         if format == OutputFormat::Json {
@@ -3213,6 +3372,228 @@ This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) f
         }
         println!();
         println!("GitHub Copilot will now see RocketIndex guidance.");
+    }
+
+    Ok(exit_codes::SUCCESS)
+}
+
+/// Set up Zed editor configuration
+/// Zed reads rules from multiple files: .rules, CLAUDE.md, AGENTS.md, etc.
+/// We create .rules (Zed's primary format) and update CLAUDE.md if it exists.
+fn setup_zed(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
+    let mut created_files = Vec::new();
+
+    ensure_initial_index(cwd, format, quiet)?;
+
+    // Create AGENTS.md in .rocketindex/ (shared with other editors)
+    let agents_md_path = cwd.join(".rocketindex").join("AGENTS.md");
+    if let Some(parent) = agents_md_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let agents_section = skills::get_agents_summary();
+    let agents_content = std::fs::read_to_string(&agents_md_path).unwrap_or_default();
+
+    if !agents_content.contains("RocketIndex") {
+        let new_content = if agents_content.is_empty() {
+            format!("# Agent Instructions\n\n{}", agents_section)
+        } else {
+            format!("{}\n\n{}", agents_content.trim_end(), agents_section)
+        };
+        std::fs::write(&agents_md_path, new_content)?;
+        created_files.push(agents_md_path.display().to_string());
+    }
+
+    // Create .rules file (Zed's primary rules file)
+    let rules_path = cwd.join(".rules");
+    let rules_content = std::fs::read_to_string(&rules_path).unwrap_or_default();
+
+    let rocketindex_section = r#"## RocketIndex Code Navigation
+
+This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for fast code navigation.
+
+**Before exploring the codebase:**
+1. Run `rkt index` to build/update the symbol index
+2. Use `rkt def "Symbol"` to find definitions
+3. Use `rkt callers "Symbol"` before refactoring to understand impact
+4. Use `rkt spider "Entry.point" -d 3` to explore dependencies
+
+**Key commands:**
+- `rkt def "MyModule.myFunction"` - Jump to definition
+- `rkt symbols "pattern*"` - Search symbols (supports wildcards)
+- `rkt callers "Symbol"` - Find all callers (impact analysis)
+- `rkt spider "Entry.point" -d 3` - Dependency graph from entry point
+- `rkt blame "src/file.fs:42"` - Git blame for a line
+- `rkt doctor` - Check index health
+
+**Tips:**
+- Use `--concise` flag for minimal JSON output
+- The index is stored in `.rocketindex/` (add to .gitignore)
+- Run `rkt index` after significant changes
+- See `.rocketindex/AGENTS.md` for detailed command reference
+"#;
+
+    // Only add if not already present (idempotent)
+    if !rules_content.contains("RocketIndex") {
+        if rules_content.is_empty() {
+            // Create new file with header
+            let new_content = format!("# Project Rules\n\n{}\n", rocketindex_section);
+            std::fs::write(&rules_path, new_content)?;
+            created_files.push(rules_path.display().to_string());
+        } else {
+            // Append to existing file
+            let updated = format!("{}\n\n{}", rules_content.trim_end(), rocketindex_section);
+            std::fs::write(&rules_path, updated)?;
+        }
+    }
+
+    // Update CLAUDE.md if it exists (Zed also reads this file)
+    let claude_md_path = cwd.join("CLAUDE.md");
+    if claude_md_path.exists() {
+        let claude_content = std::fs::read_to_string(&claude_md_path).unwrap_or_default();
+        let rocketindex_note = "**Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.\n   For definitions, callers, and dependencies use `rkt`. See `.rocketindex/AGENTS.md` for commands.\n";
+
+        if !claude_content.contains("RocketIndex") {
+            let updated = if let Some(pos) = claude_content.find("\n\n") {
+                format!(
+                    "{}\n\n{}\n{}",
+                    &claude_content[..pos],
+                    rocketindex_note,
+                    &claude_content[pos + 2..]
+                )
+            } else {
+                format!("{}\n\n{}", claude_content, rocketindex_note)
+            };
+            std::fs::write(&claude_md_path, updated)?;
+        }
+    }
+
+    if format == OutputFormat::Json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "editor": "zed",
+                "rules_file": rules_path.display().to_string(),
+                "created": created_files,
+                "usage": "Zed will now see RocketIndex guidance in .rules file",
+                "tip": "Use Cmd+Alt+L (Mac) or Ctrl+Alt+L (Linux) to access Zed's Rules Library for global rules"
+            })
+        );
+    } else if !quiet {
+        if created_files.iter().any(|f| f.contains(".rules")) {
+            println!("Zed setup complete!");
+            println!("  Created: {}", rules_path.display());
+        } else if rules_content.contains("RocketIndex") {
+            println!("Zed already configured with RocketIndex guidance.");
+        } else {
+            println!("Zed setup complete!");
+            println!("  Updated: {}", rules_path.display());
+        }
+        if created_files.iter().any(|f| f.contains("AGENTS.md")) {
+            println!("  Created: {}", agents_md_path.display());
+        }
+        println!();
+        println!("Zed will now see RocketIndex guidance in .rules file.");
+        println!();
+        println!("Tip: Use Cmd+Alt+L (Mac) or Ctrl+Alt+L (Linux) to access");
+        println!("     Zed's Rules Library for global/reusable rules.");
+    }
+
+    Ok(exit_codes::SUCCESS)
+}
+
+/// Set up Gemini CLI configuration
+/// Gemini CLI uses GEMINI.md as its default context file (similar to CLAUDE.md)
+fn setup_gemini(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
+    let mut created_files = Vec::new();
+
+    ensure_initial_index(cwd, format, quiet)?;
+
+    // Create AGENTS.md in .rocketindex/ (shared with other editors)
+    let agents_md_path = cwd.join(".rocketindex").join("AGENTS.md");
+    if let Some(parent) = agents_md_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let agents_section = skills::get_agents_summary();
+    let agents_content = std::fs::read_to_string(&agents_md_path).unwrap_or_default();
+
+    if !agents_content.contains("RocketIndex") {
+        let new_content = if agents_content.is_empty() {
+            format!("# Agent Instructions\n\n{}", agents_section)
+        } else {
+            format!("{}\n\n{}", agents_content.trim_end(), agents_section)
+        };
+        std::fs::write(&agents_md_path, new_content)?;
+        created_files.push(agents_md_path.display().to_string());
+    }
+
+    // Create/update GEMINI.md file (Gemini CLI's default context file)
+    let gemini_md_path = cwd.join("GEMINI.md");
+    let gemini_content = std::fs::read_to_string(&gemini_md_path).unwrap_or_default();
+
+    let rocketindex_section = r#"## RocketIndex Code Navigation
+
+This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for fast code navigation.
+
+**Before exploring the codebase:**
+1. Run `rkt index` to build/update the symbol index
+2. Use `rkt def "Symbol"` to find definitions
+3. Use `rkt callers "Symbol"` before refactoring to understand impact
+4. Use `rkt spider "Entry.point" -d 3` to explore dependencies
+
+**Key commands:**
+- `rkt def "MyModule.myFunction"` - Jump to definition
+- `rkt symbols "pattern*"` - Search symbols (supports wildcards)
+- `rkt callers "Symbol"` - Find all callers (impact analysis)
+- `rkt spider "Entry.point" -d 3` - Dependency graph from entry point
+- `rkt blame "src/file.fs:42"` - Git blame for a line
+- `rkt doctor` - Check index health
+
+**Tips:**
+- Use `--concise` flag for minimal JSON output
+- The index is stored in `.rocketindex/` (add to .gitignore)
+- Run `rkt index` after significant changes
+- See `.rocketindex/AGENTS.md` for detailed command reference
+"#;
+
+    // Only add if not already present (idempotent)
+    if !gemini_content.contains("RocketIndex") {
+        if gemini_content.is_empty() {
+            // Create new file with header
+            let new_content = format!("# Project Instructions\n\n{}\n", rocketindex_section);
+            std::fs::write(&gemini_md_path, new_content)?;
+            created_files.push(gemini_md_path.display().to_string());
+        } else {
+            // Append to existing file
+            let updated = format!("{}\n\n{}", gemini_content.trim_end(), rocketindex_section);
+            std::fs::write(&gemini_md_path, updated)?;
+        }
+    }
+
+    if format == OutputFormat::Json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "editor": "gemini",
+                "gemini_md": gemini_md_path.display().to_string(),
+                "created": created_files,
+                "usage": "Gemini CLI will now see RocketIndex guidance in GEMINI.md"
+            })
+        );
+    } else if !quiet {
+        if created_files.iter().any(|f| f.contains("GEMINI.md")) {
+            println!("Gemini CLI setup complete!");
+            println!("  Created: {}", gemini_md_path.display());
+        } else if gemini_content.contains("RocketIndex") {
+            println!("Gemini CLI already configured with RocketIndex guidance.");
+        } else {
+            println!("Gemini CLI setup complete!");
+            println!("  Updated: {}", gemini_md_path.display());
+        }
+        if created_files.iter().any(|f| f.contains("AGENTS.md")) {
+            println!("  Created: {}", agents_md_path.display());
+        }
+        println!();
+        println!("Gemini CLI will now see RocketIndex guidance in GEMINI.md.");
     }
 
     Ok(exit_codes::SUCCESS)
