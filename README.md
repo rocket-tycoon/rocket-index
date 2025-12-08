@@ -10,18 +10,26 @@ It provides a high-performance CLI that acts as an **O(1) Oracle** for your agen
 ### 1. Install
 
 **macOS (Homebrew)**
+
 ```bash
 brew install rocket-tycoon/tap/rocketindex
 ```
 
 **Windows (Scoop)**
+
 ```powershell
 scoop bucket add rocket-tycoon https://github.com/rocket-tycoon/scoop-bucket
 scoop install rocketindex
 ```
 
-**Linux / Manual**
-Download the latest release from [GitHub Releases](https://github.com/rocket-tycoon/rocket-index/releases).
+**Linux**
+
+```bash
+# Download latest release (adjust version as needed)
+curl -LO https://github.com/rocket-tycoon/rocket-index/releases/latest/download/rocketindex-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf rocketindex-x86_64-unknown-linux-gnu.tar.gz
+sudo mv rkt rocketindex-lsp /usr/local/bin/
+```
 
 ### 2. Start RocketIndex
 Run this in a separate terminal. It will set up your agent, index your codebase, and watch for changes.
@@ -115,10 +123,14 @@ $ rkt def "spawn"
 ## Language Support
 | Language | Extensions |
 | :--- | :--- |
+| **C** | `.c`, `.h` |
+| **C#** | `.cs` |
+| **C++** | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.hh` |
 | **F#** | `.fs`, `.fsi`, `.fsx` |
 | **Go** | `.go` |
 | **Java** | `.java` |
 | **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` |
+| **PHP** | `.php` |
 | **Python** | `.py`, `.pyi` |
 | **Ruby** | `.rb` |
 | **Rust** | `.rs` |
