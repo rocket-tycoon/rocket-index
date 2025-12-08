@@ -290,6 +290,7 @@ fn start_accepts_valid_agent_names() -> TestResult {
         "copilot",
         "github-copilot",
         "zed",
+        "gemini",
     ];
 
     for agent in valid_agents {
@@ -483,6 +484,138 @@ fn start_zed_is_recognized() -> TestResult {
         assert!(
             !stdout.contains("Unknown agent"),
             "Agent 'zed' should be recognized as valid"
+        );
+    }
+    // Timeout is expected and acceptable - means watch tried to start
+
+    Ok(())
+}
+
+// ============================================================================
+// Gemini CLI setup tests
+// ============================================================================
+
+#[test]
+fn setup_gemini_creates_correct_files() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Run setup gemini
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "gemini", "--quiet"])
+        .assert()
+        .success();
+
+    // Verify index was created
+    workspace.assert_exists(".rocketindex/index.db");
+
+    // Verify AGENTS.md creation in .rocketindex/
+    workspace.assert_exists(".rocketindex/AGENTS.md");
+    let agents_content = workspace.read_file(".rocketindex/AGENTS.md")?;
+    assert!(
+        agents_content.contains("RocketIndex") && agents_content.contains("rkt callers"),
+        "AGENTS.md content incorrect"
+    );
+
+    // Verify GEMINI.md file creation (Gemini CLI's default context file)
+    workspace.assert_exists("GEMINI.md");
+    let gemini_md = workspace.read_file("GEMINI.md")?;
+    assert!(
+        gemini_md.contains("RocketIndex"),
+        "GEMINI.md should contain RocketIndex instructions"
+    );
+    assert!(
+        gemini_md.contains("rkt"),
+        "GEMINI.md should contain rkt commands"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn setup_gemini_updates_existing_gemini_md() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Create existing GEMINI.md file
+    fs::write(
+        workspace.path("GEMINI.md"),
+        "# My Project\n\nExisting project instructions.\n",
+    )?;
+
+    // Run setup gemini
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "gemini", "--quiet"])
+        .assert()
+        .success();
+
+    workspace.assert_exists(".rocketindex/index.db");
+
+    // Verify content was appended, not replaced
+    let gemini_md = workspace.read_file("GEMINI.md")?;
+    assert!(
+        gemini_md.contains("Existing project instructions"),
+        "Original content should be preserved"
+    );
+    assert!(
+        gemini_md.contains("RocketIndex"),
+        "RocketIndex section should be added"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn setup_gemini_idempotent() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Run setup gemini twice
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "gemini", "--quiet"])
+        .assert()
+        .success();
+
+    workspace.assert_exists(".rocketindex/index.db");
+
+    let first_content = workspace.read_file("GEMINI.md")?;
+
+    Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["setup", "gemini", "--quiet"])
+        .assert()
+        .success();
+
+    let second_content = workspace.read_file("GEMINI.md")?;
+
+    // Content should be identical - no duplicate sections
+    assert_eq!(
+        first_content, second_content,
+        "Running setup gemini twice should produce identical content"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn start_gemini_is_recognized() -> TestResult {
+    let workspace = SetupWorkspace::new()?;
+
+    // Create an index so it doesn't run full setup wizard
+    fs::create_dir_all(workspace.path(".rocketindex"))?;
+
+    // Verify 'gemini' is accepted as a valid agent
+    let output = Command::cargo_bin("rkt")?
+        .current_dir(workspace.root())
+        .args(["start", "gemini", "--format", "json"])
+        .timeout(std::time::Duration::from_millis(500))
+        .output();
+
+    if let Ok(out) = output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !stdout.contains("Unknown agent"),
+            "Agent 'gemini' should be recognized as valid"
         );
     }
     // Timeout is expected and acceptable - means watch tried to start
