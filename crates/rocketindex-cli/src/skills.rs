@@ -577,6 +577,7 @@ rkt spider "functionToChange" -d 2  # What does it depend on?
 | `rkt spider "Symbol" -d N --reverse` | Reverse dependencies | `rkt spider "util" -d 2 --reverse` |
 | `rkt symbols "pattern*"` | Search symbols | `rkt symbols "*Service*"` |
 | `rkt subclasses "Parent"` | Find implementations | `rkt subclasses "IHandler"` |
+| `rkt enrich "Symbol"` | Debugging context | `rkt enrich "UserService.getUser"` |
 | `rkt blame "file:line"` | Git blame | `rkt blame "src/api.rb:42"` |
 | `rkt history "Symbol"` | Git history | `rkt history "PaymentService"` |
 | `rkt doctor` | Health check | Verify index status |
@@ -606,6 +607,30 @@ rkt spider "sharedFunction" --reverse -d 2  # Reverse dependency tree
 rkt subclasses "BaseClass"          # Find subclasses/implementations
 rkt refs "InterfaceName"            # Find all references (implementations + usage)
 ```
+
+### Debugging Stacktraces
+
+When debugging a stacktrace, use `rkt enrich` to get context for each frame:
+
+```bash
+rkt enrich "UserService.getUser"
+```
+
+This returns callers count, dependencies, recent blame, and documentation - everything needed to understand the error context.
+
+**Workflow:**
+
+1. **Identify user-code frames** - Skip framework/library lines (node_modules, java.*, etc.)
+2. **Enrich the top user frame**:
+   ```bash
+   rkt enrich "Symbol"     # Get full context for debugging
+   rkt callers "Symbol"    # Other call sites with same bug?
+   rkt blame "Symbol"      # Recent changes that might have caused this?
+   ```
+3. **After fixing, check impact**:
+   ```bash
+   rkt callers "FixedFunction"   # Do other callers need the same fix?
+   ```
 
 ## Output Flags
 

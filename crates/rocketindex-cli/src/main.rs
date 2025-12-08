@@ -41,6 +41,7 @@ mod exit_codes {
 }
 
 mod guidelines;
+mod mcp;
 mod skills;
 
 // File change tracking utilities (used by setup wizards)
@@ -198,13 +199,13 @@ enum Commands {
 
     /// Find references to a symbol or list references in a file
     Refs {
+        /// Symbol to find all uses of (across entire codebase)
+        #[arg(conflicts_with = "file")]
+        symbol: Option<String>,
+
         /// File to analyze (lists all references in the file)
         #[arg(short, long, conflicts_with = "symbol")]
         file: Option<PathBuf>,
-
-        /// Symbol to find all uses of (across entire codebase)
-        #[arg(short, long, conflicts_with = "file")]
-        symbol: Option<String>,
 
         /// Number of context lines to show around each reference
         #[arg(short, long, default_value = "0")]
@@ -339,6 +340,29 @@ enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
+
+    /// Start MCP server for AI assistant integration
+    Serve {
+        #[command(subcommand)]
+        action: Option<ServeAction>,
+    },
+}
+
+/// Actions for the serve subcommand
+#[derive(Subcommand)]
+enum ServeAction {
+    /// Add a project to the MCP server configuration
+    Add {
+        /// Path to the project root directory
+        path: PathBuf,
+    },
+    /// Remove a project from the MCP server configuration
+    Remove {
+        /// Path to the project root directory
+        path: PathBuf,
+    },
+    /// List registered projects
+    List,
 }
 
 fn main() -> ExitCode {
@@ -427,6 +451,80 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
         Commands::Start { agent } => cmd_start(&agent, format, quiet),
         Commands::Completions { shell } => {
             generate(shell, &mut Cli::command(), "rkt", &mut std::io::stdout());
+            Ok(exit_codes::SUCCESS)
+        }
+
+        Commands::Serve { action } => cmd_serve(action),
+    }
+}
+
+/// Start MCP server or manage projects
+fn cmd_serve(action: Option<ServeAction>) -> Result<u8> {
+    use mcp::McpConfig;
+    use std::sync::Arc;
+
+    // Build async runtime
+    let rt = tokio::runtime::Runtime::new()?;
+
+    match action {
+        None => {
+            // Start the MCP server
+            rt.block_on(async {
+                let manager = Arc::new(
+                    mcp::ProjectManager::new()
+                        .await
+                        .context("Failed to initialize project manager")?,
+                );
+                mcp::server::run_server(manager).await
+            })?;
+            Ok(exit_codes::SUCCESS)
+        }
+
+        Some(ServeAction::Add { path }) => {
+            let canonical = path
+                .canonicalize()
+                .with_context(|| format!("Path not found: {}", path.display()))?;
+
+            let mut config = McpConfig::load();
+            if config.projects.contains(&canonical) {
+                println!("Project already registered: {}", canonical.display());
+            } else {
+                config.add_project(canonical.clone());
+                config.save()?;
+                println!("Added project: {}", canonical.display());
+            }
+            Ok(exit_codes::SUCCESS)
+        }
+
+        Some(ServeAction::Remove { path }) => {
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+
+            let mut config = McpConfig::load();
+            if config.projects.contains(&canonical) {
+                config.remove_project(&canonical);
+                config.save()?;
+                println!("Removed project: {}", canonical.display());
+            } else {
+                println!("Project not registered: {}", canonical.display());
+            }
+            Ok(exit_codes::SUCCESS)
+        }
+
+        Some(ServeAction::List) => {
+            let config = McpConfig::load();
+            if config.projects.is_empty() {
+                println!("No projects registered.");
+            } else {
+                println!("Registered projects:");
+                for project in &config.projects {
+                    let status = if project.join(".rocketindex/index.db").exists() {
+                        "indexed"
+                    } else {
+                        "not indexed"
+                    };
+                    println!("  {} ({})", project.display(), status);
+                }
+            }
             Ok(exit_codes::SUCCESS)
         }
     }
@@ -2735,13 +2833,8 @@ This setup will:
   2. Configure agents (optional)
   3. Create .rocketindex/AGENTS.md (command reference)
   4. Update CLAUDE.md (project instructions)
-
-Press Enter to continue..."#
+"#
     );
-
-    let _ = dialoguer::Input::<String>::new()
-        .allow_empty(true)
-        .interact_text()?;
 
     Ok(())
 }
@@ -2792,12 +2885,8 @@ Estimated time: ~1-3 seconds per 1,000 files
     match cmd_index(cwd, false, format, quiet) {
         Ok(code) if code == exit_codes::SUCCESS => {
             if !quiet {
-                println!("Indexed in {:.1?}\n", started.elapsed());
+                println!("Indexed in {:.1?}", started.elapsed());
             }
-            println!("Press Enter to continue...");
-            let _ = dialoguer::Input::<String>::new()
-                .allow_empty(true)
-                .interact_text()?;
             Ok(true)
         }
         Ok(code) => anyhow::bail!("Indexing failed (exit code {})", code),
@@ -2951,13 +3040,8 @@ Choose the snippet that matches each agent's role:
 | > See `.rocketindex/AGENTS.md` for full command reference.          |
 |                                                                     |
 +---------------------------------------------------------------------+
-
-Press Enter to continue..."#
+"#
             );
-
-            let _ = dialoguer::Input::<String>::new()
-                .allow_empty(true)
-                .interact_text()?;
         }
 
         AgentSetupChoice::Skip => {
@@ -3059,11 +3143,6 @@ Creating project configuration...
             println!("  * .gitignore                Added .rocketindex/index.db");
         }
     }
-
-    println!("\nPress Enter to continue...");
-    let _ = dialoguer::Input::<String>::new()
-        .allow_empty(true)
-        .interact_text()?;
 
     Ok(())
 }

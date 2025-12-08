@@ -31,6 +31,10 @@ tree-sitter-fsharp = "0.1.0"
 # LSP dependencies
 tower-lsp = "0.20"
 
+# MCP (Model Context Protocol) server
+rmcp = { version = "0.10", features = ["server", "transport-io"] }
+dirs = "5.0"
+
 # CLI dependencies
 clap = { version = "4.0", features = ["derive"] }
 dialoguer = "0.11"

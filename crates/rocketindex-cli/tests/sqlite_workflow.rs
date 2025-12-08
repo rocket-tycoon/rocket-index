@@ -588,7 +588,7 @@ fn refs_symbol_finds_usages_across_files() -> TestResult {
     // Find references to createUser (defined in Domain, used in Services)
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["refs", "--symbol", "createUser", "--format", "text"])
+        .args(["refs", "createUser", "--format", "text"])
         .assert()
         .success()
         .stdout(contains("createUser"));
@@ -610,15 +610,7 @@ fn refs_symbol_with_context_shows_surrounding_lines() -> TestResult {
     // Find references with context
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args([
-            "refs",
-            "--symbol",
-            "createUser",
-            "--context",
-            "1",
-            "--format",
-            "text",
-        ])
+        .args(["refs", "createUser", "--context", "1", "--format", "text"])
         .assert()
         .success()
         // Should show the surrounding code
@@ -641,7 +633,7 @@ fn refs_symbol_json_includes_location() -> TestResult {
     // Find references with JSON output
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
-        .args(["refs", "--symbol", "createUser", "--format", "json"])
+        .args(["refs", "createUser", "--format", "json"])
         .assert()
         .success()
         .stdout(contains("\"file\""))
@@ -690,7 +682,7 @@ fn refs_requires_file_or_symbol() -> TestResult {
         .assert()
         .success();
 
-    // Calling refs without --file or --symbol should fail
+    // Calling refs without file or symbol should fail
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["refs", "--format", "text"])
