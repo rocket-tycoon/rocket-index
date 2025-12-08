@@ -171,6 +171,16 @@ impl ProjectManager {
         Ok(())
     }
 
+    /// Register a project without persisting to config (for testing)
+    #[cfg(test)]
+    pub async fn register_in_memory(&self, root: PathBuf) -> Result<()> {
+        let canonical = root.canonicalize().unwrap_or(root);
+        let state = ProjectState::load(canonical.clone())?;
+        let mut projects = self.projects.write().await;
+        projects.insert(canonical.clone(), Mutex::new(state));
+        Ok(())
+    }
+
     /// Unregister a project
     #[allow(dead_code)]
     pub async fn unregister(&self, root: &Path) -> Result<bool> {
@@ -267,6 +277,29 @@ impl ProjectManager {
         results
     }
 
+    /// Fuzzy search across all projects
+    pub async fn fuzzy_search_all_projects(
+        &self,
+        pattern: &str,
+        limit: usize,
+    ) -> Vec<(PathBuf, Vec<rocketindex::Symbol>)> {
+        let projects = self.projects.read().await;
+        let mut results = Vec::new();
+
+        for (root, mutex) in projects.iter() {
+            let state = mutex.lock().expect("ProjectState mutex poisoned");
+            // Distance 3 allows for typos
+            if let Ok(fuzzy_results) = state.sqlite.fuzzy_search(pattern, 3, limit, None) {
+                if !fuzzy_results.is_empty() {
+                    let symbols = fuzzy_results.into_iter().map(|(s, _)| s).collect();
+                    results.push((root.clone(), symbols));
+                }
+            }
+        }
+
+        results
+    }
+
     /// Find definition across all projects
     pub async fn find_definition_all(&self, symbol: &str) -> Vec<(PathBuf, rocketindex::Symbol)> {
         let projects = self.projects.read().await;
@@ -308,11 +341,12 @@ impl ProjectManager {
     pub async fn reindex_project(&self, root: &Path) -> Result<usize> {
         let canonical = root.canonicalize()?;
 
-        // Run rkt index in the project directory
-        let output = std::process::Command::new("rkt")
+        // Run rkt index in the project directory (async to not block server)
+        let output = tokio::process::Command::new("rkt")
             .arg("index")
             .current_dir(&canonical)
             .output()
+            .await
             .with_context(|| "Failed to run 'rkt index'")?;
 
         if !output.status.success() {
@@ -331,5 +365,36 @@ impl ProjectManager {
         }
 
         anyhow::bail!("Project not found after reindex")
+    }
+
+    /// Ensure a project is registered, creating the index if necessary (JIT)
+    pub async fn ensure_registered(&self, root: PathBuf) -> Result<()> {
+        let canonical = root
+            .canonicalize()
+            .with_context(|| format!("Failed to canonicalize path: {}", root.display()))?;
+
+        // Try to register first
+        if self.register(canonical.clone()).await.is_err() {
+            // If failed, likely missing index. Try to create it.
+            info!("JIT indexing project: {}", canonical.display());
+
+            // Run rkt index (async to not block server)
+            let output = tokio::process::Command::new("rkt")
+                .arg("index")
+                .current_dir(&canonical)
+                .output()
+                .await
+                .with_context(|| "Failed to run 'rkt index'")?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::bail!("JIT rkt index failed: {}", stderr);
+            }
+
+            // Try register again
+            self.register(canonical).await?;
+        }
+
+        Ok(())
     }
 }

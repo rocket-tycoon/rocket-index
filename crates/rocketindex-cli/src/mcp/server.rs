@@ -228,6 +228,20 @@ impl RocketIndexServer {
                     "required": ["path"]
                 }),
             ),
+            tool(
+                "describe_project",
+                "Get a comprehensive semantic map of the project. Lists files and top-level symbols (classes, modules) to help you understand the project structure.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to the project root directory (or subdirectory)"
+                        }
+                    },
+                    "required": ["path"]
+                }),
+            ),
         ]
     }
 }
@@ -337,6 +351,12 @@ impl ServerHandler for RocketIndexServer {
                     let input: tools::ReindexProjectInput = serde_json::from_value(args)
                         .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                     Ok(tools::reindex_project(manager, input).await)
+                }
+
+                "describe_project" => {
+                    let input: tools::DescribeProjectInput = serde_json::from_value(args)
+                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                    Ok(tools::describe_project(manager, input).await)
                 }
 
                 _ => Ok(CallToolResult::error(vec![Content::text(format!(

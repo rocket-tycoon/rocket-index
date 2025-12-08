@@ -8,6 +8,7 @@ pub mod enrich;
 pub mod project;
 pub mod references;
 pub mod spider;
+pub mod structure;
 pub mod symbols;
 
 pub use callers::*;
@@ -16,4 +17,5 @@ pub use enrich::*;
 pub use project::*;
 pub use references::*;
 pub use spider::*;
+pub use structure::*;
 pub use symbols::*;
