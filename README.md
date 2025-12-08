@@ -12,7 +12,7 @@ It provides a high-performance CLI that acts as an **O(1) Oracle** for your agen
 **macOS (Homebrew)**
 
 ```bash
-brew install rocket-tycoon/tap/rocketindex
+brew install rocket-tycoon/tap/rocket-index
 ```
 
 **Windows (Scoop)**
