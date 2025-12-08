@@ -119,9 +119,9 @@ jobs:
           echo "SHA256 (Linux): $SHA_LINUX"
 
           # Update formula
-          cat > homebrew-tap/Formula/rocketindex.rb << EOF
-          class Rocketindex < Formula
-            desc "Rocket-fast polyglot language server and code indexer"
+          cat > homebrew-tap/Formula/rocket-index.rb << EOF
+          class RocketIndex < Formula
+            desc "Rocket-fast polyglot code indexer for AI coding agents"
             homepage "https://github.com/rocket-tycoon/rocket-index"
             license "MIT"
             version "${VERSION#v}"
@@ -158,8 +158,8 @@ jobs:
           cd homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/rocketindex.rb
-          git commit -m "Update rocketindex to ${{ github.ref_name }}"
+          git add Formula/rocket-index.rb
+          git commit -m "Update rocket-index to ${{ github.ref_name }}"
           git push
 
   update-scoop:
