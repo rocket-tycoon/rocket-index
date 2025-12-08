@@ -235,6 +235,11 @@ fn extract_recursive(
             extract_import_statement(node, source, result);
         }
 
+        "expression_statement" => {
+            // Look for prototype method assignments: Foo.prototype.method = function() {}
+            extract_prototype_method_assignment(node, source, file, result);
+        }
+
         _ => {}
     }
 
@@ -359,6 +364,12 @@ fn extract_variable_declarations(
                                         extract_function_signature(&value, source),
                                     )
                                 } else {
+                                    // Extract object literal properties if value is an object
+                                    if value.kind() == "object" {
+                                        extract_object_literal_properties(
+                                            &value, source, file, result, &qualified,
+                                        );
+                                    }
                                     (SymbolKind::Value, None)
                                 }
                             } else {
@@ -414,6 +425,162 @@ fn extract_extends(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
         }
     }
     None
+}
+
+/// Extract properties from object literals: const X = { a, b: c }
+///
+/// Handles both shorthand properties ({ map }) and pair properties ({ key: value }).
+fn extract_object_literal_properties(
+    object_node: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+    object_path: &str,
+) {
+    for i in 0..object_node.child_count() {
+        if let Some(child) = object_node.child(i) {
+            match child.kind() {
+                // Shorthand property: { map } -> Children.map
+                "shorthand_property_identifier" => {
+                    if let Ok(name) = child.utf8_text(source) {
+                        let qualified = format!("{}.{}", object_path, name);
+                        result.symbols.push(Symbol {
+                            name: name.to_string(),
+                            qualified,
+                            kind: SymbolKind::Member,
+                            location: node_to_location(file, &child),
+                            visibility: Visibility::Public,
+                            language: "javascript".to_string(),
+                            parent: Some(object_path.to_string()),
+                            mixins: None,
+                            attributes: None,
+                            implements: None,
+                            doc: None,
+                            signature: None,
+                        });
+                    }
+                }
+                // Pair property: { key: value } -> Object.key
+                "pair" => {
+                    if let Some(key_node) = child.child_by_field_name("key") {
+                        if key_node.kind() == "property_identifier" {
+                            if let Ok(name) = key_node.utf8_text(source) {
+                                let qualified = format!("{}.{}", object_path, name);
+                                result.symbols.push(Symbol {
+                                    name: name.to_string(),
+                                    qualified,
+                                    kind: SymbolKind::Member,
+                                    location: node_to_location(file, &key_node),
+                                    visibility: Visibility::Public,
+                                    language: "javascript".to_string(),
+                                    parent: Some(object_path.to_string()),
+                                    mixins: None,
+                                    attributes: None,
+                                    implements: None,
+                                    doc: None,
+                                    signature: None,
+                                });
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Extract prototype method assignments: Foo.prototype.method = function() {}
+///
+/// This is a classic JavaScript pattern for defining instance methods before ES6 classes.
+fn extract_prototype_method_assignment(
+    node: &tree_sitter::Node, // expression_statement
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+) {
+    // Look for assignment_expression child
+    if let Some(assign) = find_child_by_kind(node, "assignment_expression") {
+        // Get left side (member_expression)
+        if let Some(left) = assign.child_by_field_name("left") {
+            if left.kind() == "member_expression" {
+                // Check for pattern: Something.prototype.methodName
+                if let Some((class_name, method_name, method_name_node)) =
+                    extract_prototype_pattern(&left, source)
+                {
+                    // Get right side - should be a function_expression
+                    if let Some(right) = assign.child_by_field_name("right") {
+                        if right.kind() == "function_expression" || right.kind() == "arrow_function"
+                        {
+                            let qualified = format!("{}.{}", class_name, method_name);
+                            let doc = extract_doc_comments(node, source);
+                            let signature = extract_function_signature(&right, source);
+
+                            result.symbols.push(Symbol {
+                                name: method_name.to_string(),
+                                qualified,
+                                kind: SymbolKind::Function,
+                                location: node_to_location(file, &method_name_node),
+                                visibility: Visibility::Public,
+                                language: "javascript".to_string(),
+                                parent: Some(class_name.to_string()),
+                                mixins: None,
+                                attributes: None,
+                                implements: None,
+                                doc,
+                                signature,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Extract the pattern Foo.prototype.methodName from a member_expression
+/// Returns (class_name, method_name, method_name_node) if pattern matches
+fn extract_prototype_pattern<'a>(
+    node: &'a tree_sitter::Node<'a>,
+    source: &[u8],
+) -> Option<(String, String, tree_sitter::Node<'a>)> {
+    // node should be: Foo.prototype.methodName
+    // Structure:
+    //   member_expression
+    //     member_expression (Foo.prototype)
+    //       identifier (Foo)
+    //       property_identifier (prototype)
+    //     property_identifier (methodName)
+
+    // Get the method name (property on the right)
+    let method_name_node = node.child_by_field_name("property")?;
+    let method_name = method_name_node.utf8_text(source).ok()?;
+
+    // Get the object (left side: Foo.prototype)
+    let obj = node.child_by_field_name("object")?;
+    if obj.kind() != "member_expression" {
+        return None;
+    }
+
+    // Check that the property is "prototype"
+    let proto_prop = obj.child_by_field_name("property")?;
+    let proto_text = proto_prop.utf8_text(source).ok()?;
+    if proto_text != "prototype" {
+        return None;
+    }
+
+    // Get the class name (left side of Foo.prototype)
+    let class_node = obj.child_by_field_name("object")?;
+    if class_node.kind() != "identifier" {
+        return None;
+    }
+    let class_name = class_node.utf8_text(source).ok()?;
+
+    Some((
+        class_name.to_string(),
+        method_name.to_string(),
+        method_name_node,
+    ))
 }
 
 /// Extract import statements
@@ -684,5 +851,107 @@ export default class DataProcessor {
             .find(|s| s.name == "DataProcessor")
             .expect("Should find DataProcessor");
         assert_eq!(class.kind, SymbolKind::Class);
+    }
+
+    #[test]
+    fn extracts_prototype_method_assignments() {
+        let source = r#"
+function Component(props) {
+    this.props = props;
+}
+
+Component.prototype.setState = function(partialState, callback) {
+    // implementation
+};
+
+Component.prototype.forceUpdate = function(callback) {
+    // implementation
+};
+"#;
+        let result = extract_symbols(std::path::Path::new("test.js"), source, 100);
+
+        // The constructor function should be found
+        let comp = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Component")
+            .expect("Should find Component");
+        assert_eq!(comp.kind, SymbolKind::Function);
+
+        // Prototype method assignments should be indexed as methods
+        let set_state = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "setState")
+            .expect("Should find setState");
+        assert_eq!(set_state.kind, SymbolKind::Function);
+        assert_eq!(set_state.qualified, "Component.setState");
+        assert_eq!(set_state.parent, Some("Component".to_string()));
+
+        let force_update = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "forceUpdate")
+            .expect("Should find forceUpdate");
+        assert_eq!(force_update.kind, SymbolKind::Function);
+        assert_eq!(force_update.qualified, "Component.forceUpdate");
+    }
+
+    #[test]
+    fn extracts_object_literal_properties() {
+        let source = r#"
+const Children = {
+    map,
+    forEach,
+    count,
+};
+
+const React = {
+    createElement: createElement,
+    Component: Component,
+};
+"#;
+        let result = extract_symbols(std::path::Path::new("test.js"), source, 100);
+
+        // Children object should be found
+        let children = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Children")
+            .expect("Should find Children");
+        assert_eq!(children.kind, SymbolKind::Value);
+
+        // Shorthand properties should be indexed as members
+        let map = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "map" && s.qualified == "Children.map")
+            .expect("Should find Children.map");
+        assert_eq!(map.kind, SymbolKind::Member);
+        assert_eq!(map.parent, Some("Children".to_string()));
+
+        let for_each = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "forEach" && s.qualified == "Children.forEach")
+            .expect("Should find Children.forEach");
+        assert_eq!(for_each.kind, SymbolKind::Member);
+
+        // React object should be found
+        let react = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "React")
+            .expect("Should find React");
+        assert_eq!(react.kind, SymbolKind::Value);
+
+        // Pair properties should be indexed as members
+        let create_element = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "createElement" && s.qualified == "React.createElement")
+            .expect("Should find React.createElement");
+        assert_eq!(create_element.kind, SymbolKind::Member);
+        assert_eq!(create_element.parent, Some("React".to_string()));
     }
 }
