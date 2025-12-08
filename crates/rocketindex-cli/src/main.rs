@@ -18,11 +18,13 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use rocketindex::git;
 use rocketindex::{
+    batch::{BatchProcessor, BatchStats, DEFAULT_BATCH_INTERVAL},
     config::Config,
     db::DEFAULT_DB_NAME,
     find_fsproj_files, parse_fsproj,
+    pidfile::{acquire_watch_lock, find_watch_process, PidFileGuard},
     spider::{format_spider_result, reverse_spider, spider},
-    watch::{find_source_files_with_config, is_supported_file},
+    watch::find_source_files_with_config,
     CodeIndex, SqliteIndex,
 };
 
@@ -1641,13 +1643,37 @@ fn cmd_symbols(
 
 /// Watch for file changes
 fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
-    use rocketindex::watch::FileWatcher;
+    use rocketindex::pidfile::PidFileError;
+    use rocketindex::watch::{DebouncedFileWatcher, DEFAULT_DEBOUNCE_DURATION};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     let root = root
         .canonicalize()
         .context("Failed to resolve root directory")?;
+
+    // Acquire PID file lock to ensure only one watch process runs per directory
+    let _pid_guard: PidFileGuard = match acquire_watch_lock(&root) {
+        Ok(guard) => guard,
+        Err(PidFileError::AlreadyRunning(pid)) => {
+            if format == OutputFormat::Json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "error": "AlreadyRunning",
+                        "pid": pid,
+                        "message": format!("Watch mode is already running (pid {})", pid)
+                    })
+                );
+            } else {
+                eprintln!("Watch mode is already running (pid {})", pid);
+            }
+            return Ok(exit_codes::ERROR);
+        }
+        Err(e) => {
+            anyhow::bail!("Failed to acquire watch lock: {}", e);
+        }
+    };
 
     // First, ensure index exists
     if !quiet {
@@ -1659,8 +1685,16 @@ fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     let config = Config::load(&root);
     let max_depth = config.max_recursion_depth;
 
-    let mut watcher = FileWatcher::new(&root).context("Failed to create file watcher")?;
+    // Open SQLite index for batch processing
+    let db_path = root.join(".rocketindex").join(DEFAULT_DB_NAME);
+    let index = SqliteIndex::open(&db_path).context("Failed to open index")?;
+
+    let mut watcher = DebouncedFileWatcher::new(&root, DEFAULT_DEBOUNCE_DURATION)
+        .context("Failed to create file watcher")?;
     watcher.start().context("Failed to start watching")?;
+
+    // Create batch processor for efficient event handling
+    let mut batch = BatchProcessor::new(DEFAULT_BATCH_INTERVAL, max_depth);
 
     // Set up graceful shutdown handler
     let running = Arc::new(AtomicBool::new(true));
@@ -1671,34 +1705,44 @@ fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     })
     .context("Failed to set Ctrl+C handler")?;
 
-    println!("Watching for changes... (Ctrl+C to stop)");
+    if !quiet {
+        println!(
+            "Watching for changes ({}ms debounce, {}ms batch)... (Ctrl+C to stop)",
+            DEFAULT_DEBOUNCE_DURATION.as_millis(),
+            DEFAULT_BATCH_INTERVAL.as_millis()
+        );
+    }
 
     while running.load(Ordering::SeqCst) {
-        // Use timeout to periodically check shutdown flag
-        if let Some(event) = watcher.wait_timeout(std::time::Duration::from_millis(500)) {
-            match event {
-                rocketindex::watch::WatchEvent::Created(path)
-                | rocketindex::watch::WatchEvent::Modified(path) => {
-                    if is_supported_file(&path) {
-                        println!("Updated: {}", path.display());
-                        update_single_file(&root, &path, max_depth)?;
+        // Wait for debounced events with timeout to check shutdown flag
+        let events = watcher.wait_timeout(std::time::Duration::from_millis(100));
+
+        // Add events to the batch processor
+        batch.add_events(events);
+
+        // Check if it's time to flush the batch
+        if batch.should_flush() {
+            match batch.flush(&index) {
+                Ok(stats) => {
+                    if !quiet && (stats.files_updated > 0 || stats.files_deleted > 0) {
+                        print_batch_stats(&stats, format);
                     }
                 }
-                rocketindex::watch::WatchEvent::Deleted(path) => {
-                    if is_supported_file(&path) {
-                        println!("Deleted: {}", path.display());
-                        remove_file_from_index(&root, &path)?;
+                Err(e) => {
+                    tracing::warn!("Batch flush failed: {}", e);
+                    if !quiet {
+                        eprintln!("Warning: Failed to update index: {}", e);
                     }
                 }
-                rocketindex::watch::WatchEvent::Renamed(old, new) => {
-                    if is_supported_file(&old) || is_supported_file(&new) {
-                        println!("Renamed: {} -> {}", old.display(), new.display());
-                        remove_file_from_index(&root, &old)?;
-                        if is_supported_file(&new) {
-                            update_single_file(&root, &new, max_depth)?;
-                        }
-                    }
-                }
+            }
+        }
+    }
+
+    // Flush any remaining events before shutdown
+    if !batch.is_empty() {
+        if let Ok(stats) = batch.flush(&index) {
+            if !quiet && (stats.files_updated > 0 || stats.files_deleted > 0) {
+                print_batch_stats(&stats, format);
             }
         }
     }
@@ -1706,6 +1750,36 @@ fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     println!("\nShutting down watch mode...");
     watcher.stop().ok(); // Best effort cleanup
     Ok(exit_codes::SUCCESS)
+}
+
+/// Print batch processing statistics
+fn print_batch_stats(stats: &BatchStats, format: OutputFormat) {
+    if format == OutputFormat::Json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "batch_processed",
+                "files_updated": stats.files_updated,
+                "files_deleted": stats.files_deleted,
+                "symbols_inserted": stats.symbols_inserted,
+                "references_inserted": stats.references_inserted,
+                "duration_ms": stats.duration.as_millis()
+            })
+        );
+    } else {
+        if stats.files_updated > 0 {
+            println!(
+                "Updated {} file(s): {} symbols, {} references ({}ms)",
+                stats.files_updated,
+                stats.symbols_inserted,
+                stats.references_inserted,
+                stats.duration.as_millis()
+            );
+        }
+        if stats.files_deleted > 0 {
+            println!("Deleted {} file(s) from index", stats.files_deleted);
+        }
+    }
 }
 
 /// Load the SQLite index from disk
@@ -1772,39 +1846,6 @@ fn load_code_index() -> Result<CodeIndex> {
 fn get_line_content(file: &PathBuf, line: usize) -> Option<String> {
     let content = std::fs::read_to_string(file).ok()?;
     content.lines().nth(line - 1).map(|s| s.to_string())
-}
-
-/// Update a single file in the index
-fn update_single_file(root: &Path, file: &Path, max_depth: usize) -> Result<()> {
-    let db_path = root.join(".rocketindex").join(DEFAULT_DB_NAME);
-    let index = SqliteIndex::open(&db_path)?;
-
-    index.clear_file(file)?;
-
-    if let Ok(source) = std::fs::read_to_string(file) {
-        let result = rocketindex::extract_symbols(file, &source, max_depth);
-        for symbol in &result.symbols {
-            index.insert_symbol(symbol)?;
-        }
-        for reference in &result.references {
-            index.insert_reference(file, reference)?;
-        }
-        for (line, open) in result.opens.iter().enumerate() {
-            index.insert_open(file, open, line as u32 + 1)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Remove a file from the index
-fn remove_file_from_index(root: &Path, file: &Path) -> Result<()> {
-    let db_path = root.join(".rocketindex").join(DEFAULT_DB_NAME);
-    let index = SqliteIndex::open(&db_path)?;
-
-    index.clear_file(file)?;
-
-    Ok(())
 }
 
 /// Show git blame for a symbol or file location
@@ -2380,95 +2421,6 @@ fn cmd_start(agent: &str, format: OutputFormat, quiet: bool) -> Result<u8> {
 
     // Start watch mode (this will also rebuild/update index if needed)
     cmd_watch(&cwd, format, quiet)
-}
-
-/// Find a running rkt watch process for the given directory
-fn find_watch_process(cwd: &Path) -> Option<u32> {
-    use std::process::Command;
-
-    // Get our own PID to filter it out (pgrep -f can match the grep pattern in our cmdline)
-    let our_pid = std::process::id();
-
-    // Use pgrep to find rkt watch processes
-    let output = Command::new("pgrep")
-        .args(["-f", "rkt watch"])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Ok(pid) = line.trim().parse::<u32>() {
-            // Skip our own process
-            if pid == our_pid {
-                continue;
-            }
-            // Verify this process is watching our directory
-            if is_watch_for_directory(pid, cwd) {
-                return Some(pid);
-            }
-        }
-    }
-
-    None
-}
-
-/// Check if a watch process is for the given directory
-/// Returns true if we can confirm it's for this directory, OR if we can't verify (fallback)
-/// Returns false only if we can confirm it's for a DIFFERENT directory
-fn is_watch_for_directory(pid: u32, cwd: &Path) -> bool {
-    use std::process::Command;
-
-    // On macOS, use lsof to check the process's current working directory
-    #[cfg(target_os = "macos")]
-    {
-        let output = Command::new("lsof")
-            .args(["-p", &pid.to_string(), "-Fn"])
-            .output()
-            .ok();
-
-        if let Some(output) = output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let cwd_str = cwd.display().to_string();
-
-            // Look for the cwd line in lsof output (format: "ncwd" followed by path)
-            for line in stdout.lines() {
-                if line.starts_with('n') && line.len() > 1 {
-                    let path = &line[1..];
-                    // If we find a cwd entry, check if it matches
-                    if path == cwd_str {
-                        return true;
-                    }
-                }
-            }
-            // lsof succeeded but didn't find matching cwd - it's a different directory
-            // However, lsof output is complex; if we're not sure, fall back to true
-        }
-        // lsof failed - can't verify, assume it's ours
-        true
-    }
-
-    // On Linux, check /proc/{pid}/cwd
-    #[cfg(target_os = "linux")]
-    {
-        let proc_cwd = PathBuf::from(format!("/proc/{}/cwd", pid));
-        if let Ok(link_target) = std::fs::read_link(&proc_cwd) {
-            // We can verify - return whether it matches
-            return link_target == cwd;
-        }
-        // Can't read /proc - assume it's ours
-        true
-    }
-
-    // Fallback for other platforms: assume it's for our directory
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        let _ = (pid, cwd);
-        true
-    }
 }
 
 /// Warn if no active session (watch mode) is running

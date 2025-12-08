@@ -19,6 +19,7 @@ tree-sitter-fsharp = { workspace = true }
 
 # File watching for incremental updates
 notify = { workspace = true }
+notify-debouncer-full = "0.6"
 
 # XML parsing for .fsproj files
 quick-xml = { workspace = true }
@@ -38,6 +39,10 @@ tree-sitter-go = "0.23.4"
 tree-sitter-typescript = "0.23.2"
 tree-sitter-javascript = "0.23.1"
 tree-sitter-java = "0.23.5"
+
+# Unix process checks for PID file coordination
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 criterion = "0.5"

@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub mod batch;
 pub mod config;
 pub mod db;
 pub mod external_index;
@@ -18,6 +19,7 @@ pub mod git;
 pub mod index;
 pub mod languages;
 pub mod parse;
+pub mod pidfile;
 pub mod resolve;
 pub mod spider;
 pub mod type_cache;
