@@ -11,9 +11,11 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
 use serde_json::json;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 
+use super::config::McpConfig;
 use super::tools;
+use super::watcher_pool::WatcherPool;
 use super::ProjectManager;
 
 /// Helper to convert JSON value to Arc<JsonObject> for tool schemas
@@ -370,6 +372,25 @@ impl ServerHandler for RocketIndexServer {
 
 /// Run the MCP server on stdio
 pub async fn run_server(manager: Arc<ProjectManager>) -> anyhow::Result<()> {
+    // Load config for watcher settings
+    let config = McpConfig::load();
+
+    // Create watcher pool if auto_watch is enabled
+    let watcher_pool = if config.auto_watch {
+        let pool = WatcherPool::new(manager.clone(), config.debounce_ms);
+
+        // Start watching all registered projects
+        for project in manager.all_projects().await {
+            if let Err(e) = pool.start_watching(project.clone()).await {
+                warn!("Failed to start watching {}: {}", project.display(), e);
+            }
+        }
+
+        Some(pool)
+    } else {
+        None
+    };
+
     let server = RocketIndexServer::new(manager);
     let transport = rmcp::transport::stdio();
 
@@ -379,6 +400,12 @@ pub async fn run_server(manager: Arc<ProjectManager>) -> anyhow::Result<()> {
 
     // Wait for the server to complete
     running.waiting().await?;
+
+    // Stop all watchers on shutdown
+    if let Some(pool) = watcher_pool {
+        info!("Stopping file watchers...");
+        pool.stop_all().await;
+    }
 
     Ok(())
 }
