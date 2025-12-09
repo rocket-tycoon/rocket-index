@@ -130,12 +130,12 @@ run_benchmark() {
 
     local output
     if [ "$with_rkt" = "true" ]; then
-        # Allow MCP tools without interactive permission prompts
+        # Bypass permission prompts for MCP tools in headless mode
         output=$(claude -p "$prompt" \
             --model "$MODEL" \
             --output-format json \
             --max-turns "$MAX_TURNS" \
-            --allowedTools "mcp__rocketindex*" \
+            --permission-mode bypassPermissions \
             2>/dev/null)
     else
         output=$(claude -p "$prompt" \
