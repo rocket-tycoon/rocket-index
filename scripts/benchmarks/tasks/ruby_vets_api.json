@@ -1,0 +1,46 @@
+{
+  "repo": "~/test-ri/vets-api",
+  "language": "ruby",
+  "description": "VA.gov vets-api - Large Rails application (7,470 files, 37K symbols)",
+  "tasks": [
+    {
+      "id": "find_definition_factory",
+      "category": "find_definition",
+      "difficulty": "easy",
+      "prompt": "Where is ApiProviderFactory defined? Return just the file path and line number.",
+      "expected_file": "lib/disability_compensation/factories/api_provider_factory.rb",
+      "expected_line": 20
+    },
+    {
+      "id": "find_callers_factory",
+      "category": "find_callers",
+      "difficulty": "medium",
+      "prompt": "Find all functions that call ApiProviderFactory. List each caller with its file path and function name.",
+      "expected_contains": [
+        "disability_compensation_forms_controller.rb",
+        "intent_to_files_controller.rb",
+        "form526_claim_fast_tracking_concern.rb",
+        "submit_form0781.rb",
+        "submit_uploads.rb"
+      ],
+      "expected_count_min": 10
+    },
+    {
+      "id": "find_references_exception",
+      "category": "find_references",
+      "difficulty": "medium",
+      "prompt": "Find all usages of BackendServiceException in the codebase. How many references are there?",
+      "expected_count_min": 50
+    },
+    {
+      "id": "spider_form526",
+      "category": "spider",
+      "difficulty": "hard",
+      "prompt": "Trace the dependency graph from SubmitForm526AllClaim. What classes does it depend on within 3 levels?",
+      "expected_contains": [
+        "Form526Submission",
+        "ApiProviderFactory"
+      ]
+    }
+  ]
+}

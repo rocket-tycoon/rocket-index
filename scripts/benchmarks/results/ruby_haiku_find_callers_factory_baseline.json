@@ -1,0 +1,21 @@
+{
+  "task_id": "find_callers_factory",
+  "category": "find_callers",
+  "difficulty": "medium",
+  "model": "haiku",
+  "runs": 1,
+  "without_rkt": {
+    "avg_turns": 15,
+    "success_rate": 0.0,
+    "duration_ms": 22190,
+    "cost_usd": 0.091
+  },
+  "with_rkt": {
+    "avg_turns": 4,
+    "success_rate": 1.0,
+    "duration_ms": 17228,
+    "cost_usd": 0.069
+  },
+  "turn_reduction_percent": 73,
+  "notes": "Without RKT: hit 15 turn limit and failed. With RKT: found 25 callers in 4 turns."
+}

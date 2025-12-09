@@ -1,0 +1,41 @@
+{
+  "repo": "test-repos/rust/tokio",
+  "language": "rust",
+  "description": "Tokio async runtime (751 files, 10K symbols)",
+  "tasks": [
+    {
+      "id": "find_definition_spawn",
+      "category": "find_definition",
+      "difficulty": "easy",
+      "prompt": "Where is the main spawn function defined in tokio? Return just the file path and line number.",
+      "expected_file": "tokio/src/task/spawn.rs",
+      "expected_contains": ["spawn"]
+    },
+    {
+      "id": "find_callers_runtime_new",
+      "category": "find_callers",
+      "difficulty": "medium",
+      "prompt": "Find all functions that call Runtime::new. List each caller with its file path and function name.",
+      "expected_contains": [
+        "runtime"
+      ],
+      "expected_count_min": 5
+    },
+    {
+      "id": "find_references_joinhandle",
+      "category": "find_references",
+      "difficulty": "medium",
+      "prompt": "Find all usages of JoinHandle in the codebase. How many references are there?",
+      "expected_count_min": 20
+    },
+    {
+      "id": "spider_tokio_main",
+      "category": "spider",
+      "difficulty": "hard",
+      "prompt": "Trace the dependency graph from the tokio::main macro. What types does it depend on within 3 levels?",
+      "expected_contains": [
+        "Runtime"
+      ]
+    }
+  ]
+}

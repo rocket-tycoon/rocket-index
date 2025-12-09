@@ -1,0 +1,37 @@
+{
+  "repo": "test-repos/typescript/nestjs",
+  "language": "typescript",
+  "description": "NestJS framework (~500 files, enterprise backend)",
+  "tasks": [
+    {
+      "id": "find_definition_injectable",
+      "category": "find_definition",
+      "difficulty": "easy",
+      "prompt": "Where is the Injectable decorator defined? Return just the file path and line number.",
+      "expected_contains": ["injectable.decorator.ts"]
+    },
+    {
+      "id": "find_callers_controller",
+      "category": "find_callers",
+      "difficulty": "medium",
+      "prompt": "Find all classes that use the @Controller decorator. List each with its file path.",
+      "expected_count_min": 5
+    },
+    {
+      "id": "find_references_httpexception",
+      "category": "find_references",
+      "difficulty": "medium",
+      "prompt": "Find all usages of HttpException in the codebase. How many references are there?",
+      "expected_count_min": 10
+    },
+    {
+      "id": "spider_nestfactory",
+      "category": "spider",
+      "difficulty": "hard",
+      "prompt": "Trace the dependency graph from NestFactory.create. What classes does it depend on within 3 levels?",
+      "expected_contains": [
+        "NestApplication"
+      ]
+    }
+  ]
+}
