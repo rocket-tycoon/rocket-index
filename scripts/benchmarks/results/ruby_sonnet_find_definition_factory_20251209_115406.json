@@ -1,0 +1,16 @@
+{
+  "task_id": "find_definition_factory",
+  "category": "find_definition",
+  "difficulty": "easy",
+  "model": "sonnet",
+  "runs": 1,
+  "without_rkt": {
+    "avg_turns": 11.0,
+    "success_rate": 1.00
+  },
+  "with_rkt": {
+    "avg_turns": 2.0,
+    "success_rate": 1.00
+  },
+  "turn_reduction_percent": 81
+}
