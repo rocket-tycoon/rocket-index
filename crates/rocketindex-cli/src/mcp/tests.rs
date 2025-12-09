@@ -169,3 +169,78 @@ async fn test_find_definition_hint() {
     assert!(json.contains("\"isError\":true"));
     assert!(json.contains("Use `describe_project`"));
 }
+
+// Note: This test modifies global CWD which can cause race conditions with parallel tests.
+// Run with `cargo test -- --test-threads=1` if this test fails intermittently.
+#[tokio::test]
+async fn test_cwd_based_project_resolution() {
+    // Setup a project with an index
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    // Create a project marker (Cargo.toml)
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
+
+    // Create a source file
+    let file_path = src.join("lib.rs");
+    std::fs::write(&file_path, "pub fn hello() {}").unwrap();
+
+    // Create DB with a symbol
+    let db_path = root.join(".rocketindex").join("index.db");
+    std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let index = SqliteIndex::create(&db_path).unwrap();
+
+    let sym = Symbol::new(
+        "hello".to_string(),
+        "lib.hello".to_string(),
+        SymbolKind::Function,
+        Location::new(file_path.clone(), 1, 0),
+        Visibility::Public,
+        "rust".to_string(),
+    );
+    index.insert_symbol(&sym).unwrap();
+    drop(index);
+
+    // Save the original CWD to restore later
+    let original_cwd = std::env::current_dir().unwrap();
+
+    // Change CWD to the test project
+    std::env::set_current_dir(root).unwrap();
+
+    // Create a fresh ProjectManager (after CWD change)
+    // The manager should auto-detect and JIT-register the CWD project
+    let manager = Arc::new(ProjectManager::new().await.unwrap());
+
+    // Call find_definition WITHOUT project_root - should use CWD
+    let input = FindDefinitionInput {
+        symbol: "hello".to_string(),
+        file: None,
+        project_root: None, // Key: not specifying project_root
+        include_context: false,
+    };
+
+    let result = find_definition(manager, input).await;
+    let json = serde_json::to_string(&result).unwrap();
+
+    // Restore original CWD
+    std::env::set_current_dir(original_cwd).unwrap();
+
+    // Verify we found the symbol from CWD project
+    assert!(
+        !json.contains("\"isError\":true"),
+        "Should find symbol via CWD project: {}",
+        json
+    );
+    assert!(
+        json.contains("hello"),
+        "Should find 'hello' symbol: {}",
+        json
+    );
+    assert!(
+        json.contains("lib.hello"),
+        "Should have qualified name: {}",
+        json
+    );
+}
