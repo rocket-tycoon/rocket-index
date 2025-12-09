@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{find_child_by_kind, node_to_location, LanguageParser, ParseResult};
-use crate::{Symbol, SymbolKind, Visibility};
+use crate::{Reference, Symbol, SymbolKind, Visibility};
 
 // Thread-local parser reuse - avoids creating a new parser per file
 thread_local! {
@@ -479,6 +479,30 @@ fn extract_recursive(
                         }
                     }
                     return;
+                }
+            }
+        }
+
+        // Extract references from identifiers and type identifiers
+        "identifier" | "type_identifier" | "property_identifier" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
+        // Extract references from member expressions (like obj.method)
+        "member_expression" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
                 }
             }
         }
@@ -996,6 +1020,295 @@ fn extract_import_statement(node: &tree_sitter::Node, source: &[u8], result: &mu
     }
 }
 
+/// Check if a node is an ancestor of another node
+fn is_descendant_of(node: &tree_sitter::Node, ancestor_kind: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == ancestor_kind {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+/// Determine if an identifier is in a reference context (usage, not definition)
+fn is_reference_context(node: &tree_sitter::Node) -> bool {
+    is_reference_context_with_depth(node, 0)
+}
+
+fn is_reference_context_with_depth(node: &tree_sitter::Node, depth: usize) -> bool {
+    // Prevent infinite recursion
+    if depth > 20 {
+        return false;
+    }
+
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    let parent_kind = parent.kind();
+
+    // Definition contexts - NOT references
+    match parent_kind {
+        // Function/method definitions - name is definition
+        "function_declaration" | "method_definition" | "method_signature" => {
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if name_node.id() == node.id() {
+                    return false; // This is the function name being defined
+                }
+            }
+        }
+
+        // Class/interface definitions
+        "class_declaration" | "abstract_class_declaration" | "interface_declaration" => {
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if name_node.id() == node.id() {
+                    return false; // This is the class/interface name being defined
+                }
+            }
+        }
+
+        // Variable declarations
+        "variable_declarator" => {
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if name_node.id() == node.id() {
+                    return false; // This is the variable name being defined
+                }
+            }
+        }
+
+        // Type alias definitions
+        "type_alias_declaration" => {
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if name_node.id() == node.id() {
+                    return false; // This is the type alias name being defined
+                }
+            }
+        }
+
+        // Enum definitions
+        "enum_declaration" => {
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if name_node.id() == node.id() {
+                    return false; // This is the enum name being defined
+                }
+            }
+        }
+
+        // Namespace/module definitions
+        "module" | "internal_module" => {
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if name_node.id() == node.id() {
+                    return false; // This is the namespace name being defined
+                }
+            }
+        }
+
+        // Property definitions in class/interface
+        "public_field_definition" | "property_signature" => {
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if name_node.id() == node.id() {
+                    return false; // This is the property name being defined
+                }
+            }
+        }
+
+        // Parameter definitions (including constructor parameter properties)
+        "required_parameter" | "optional_parameter" | "rest_parameter" => {
+            // Check if this is the parameter name itself
+            if let Some(pattern_node) = parent.child_by_field_name("pattern") {
+                if pattern_node.id() == node.id() {
+                    return false;
+                }
+            }
+            // Also check direct identifier child for simpler cases
+            for i in 0..parent.child_count() {
+                if let Some(child) = parent.child(i) {
+                    if child.kind() == "identifier" && child.id() == node.id() {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // Formal parameters wrapper - check nested
+        "formal_parameters" => {
+            return is_reference_context_with_depth(&parent, depth + 1);
+        }
+
+        // Enum members
+        "enum_assignment" => {
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if name_node.id() == node.id() {
+                    return false; // This is the enum member name being defined
+                }
+            }
+        }
+
+        // Import statements - imported names are definitions in this file
+        "import_clause" | "import_specifier" | "named_imports" => {
+            return false; // Import names are definitions
+        }
+
+        // Export specifiers - may be re-exporting
+        "export_specifier" => {
+            return false; // Export names in export { } are not typical references
+        }
+
+        // Object pattern (destructuring) - creates bindings
+        "object_pattern" | "array_pattern" => {
+            // Inside destructuring patterns, identifiers are definitions
+            return false;
+        }
+
+        // Shorthand property identifiers in object patterns
+        "shorthand_property_identifier_pattern" => {
+            return false; // These are binding definitions
+        }
+
+        // For-in/for-of variable declarations
+        "for_in_statement" | "for_statement" => {
+            // The first child in for...in/of is typically the declaration
+            if let Some(left) = parent.child(1) {
+                if is_descendant_of(node, "lexical_declaration") {
+                    return false;
+                }
+                // Check if we're in a direct identifier being assigned
+                if left.id() == node.id() {
+                    return false;
+                }
+            }
+        }
+
+        // Extends/implements clauses - these ARE references to other types
+        "extends_clause" | "extends_type_clause" | "implements_clause" => {
+            return true;
+        }
+
+        // Type annotations - type identifiers are references
+        "type_annotation" | "type_arguments" | "generic_type" => {
+            return true;
+        }
+
+        // Type parameters (like <T>) - the type parameter name is a definition
+        "type_parameter" => {
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if name_node.id() == node.id() {
+                    return false; // This is the type parameter name being defined
+                }
+            }
+        }
+
+        // Call expressions, member expressions - arguments/objects are references
+        "call_expression" | "new_expression" => {
+            return true;
+        }
+
+        // Member expressions - both object and property can be references
+        "member_expression" => {
+            return true;
+        }
+
+        // Binary/unary expressions - operands are references
+        "binary_expression" | "unary_expression" | "update_expression" => {
+            return true;
+        }
+
+        // Return/throw statements - values are references
+        "return_statement" | "throw_statement" => {
+            return true;
+        }
+
+        // Assignment - RHS is reference, LHS identifier may be too if not declaration
+        "assignment_expression" => {
+            // Right side is always a reference
+            if let Some(right) = parent.child_by_field_name("right") {
+                if is_descendant_of(node, "assignment_expression")
+                    && node.start_byte() >= right.start_byte()
+                {
+                    return true;
+                }
+            }
+            // Left side of assignment to existing variable is also a reference (technically)
+            return true;
+        }
+
+        // Subscript expressions (array access)
+        "subscript_expression" => {
+            return true;
+        }
+
+        // Conditional expressions
+        "ternary_expression" | "conditional_expression" => {
+            return true;
+        }
+
+        // Arguments - always references
+        "arguments" => {
+            return true;
+        }
+
+        // Array/object literals - values inside are references
+        "array" | "object" => {
+            return true;
+        }
+
+        // Pair (key-value in object) - value is reference, key is not
+        "pair" => {
+            if let Some(value) = parent.child_by_field_name("value") {
+                if node.id() == value.id() || is_descendant_of(node, "pair") {
+                    return true;
+                }
+            }
+            // Key is not a reference
+            if let Some(key) = parent.child_by_field_name("key") {
+                if node.id() == key.id() {
+                    return false;
+                }
+            }
+        }
+
+        // Template literals - interpolations are references
+        "template_substitution" => {
+            return true;
+        }
+
+        // Parenthesized expression - check parent
+        "parenthesized_expression" => {
+            return is_reference_context_with_depth(&parent, depth + 1);
+        }
+
+        // Statement block, expression statement - check parent
+        "statement_block" | "expression_statement" | "program" => {
+            return is_reference_context_with_depth(&parent, depth + 1);
+        }
+
+        // JSX - element names can be references (components)
+        "jsx_element" | "jsx_self_closing_element" | "jsx_opening_element" => {
+            // JSX element names like <MyComponent> are references
+            return true;
+        }
+
+        // JSX expression container - values are references
+        "jsx_expression" => {
+            return true;
+        }
+
+        _ => {}
+    }
+
+    // Default: if in expression context, likely a reference
+    // Check if we're inside a function/method body
+    if is_descendant_of(node, "statement_block") {
+        return true;
+    }
+
+    // Conservative: if in doubt, check parent
+    is_reference_context_with_depth(&parent, depth + 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1422,6 +1735,49 @@ export const App = () => {
             result.errors.is_empty(),
             "Expected no syntax errors, found: {:?}",
             result.errors
+        );
+    }
+
+    #[test]
+    fn extracts_typescript_references() {
+        let source = r#"
+interface User {
+    name: string;
+    email: string;
+}
+
+function greet(user: User): string {
+    return `Hello, ${user.name}!`;
+}
+
+function main(): void {
+    const users: User[] = [];
+    for (const user of users) {
+        console.log(greet(user));
+    }
+}
+"#;
+        let result = extract_symbols(std::path::Path::new("test.ts"), source, 100);
+
+        assert!(
+            !result.references.is_empty(),
+            "Should extract references from TypeScript code"
+        );
+
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should have references to User type
+        assert!(
+            ref_names.contains(&"User"),
+            "Should have reference to User: {:?}",
+            ref_names
+        );
+
+        // Should have references to greet function
+        assert!(
+            ref_names.contains(&"greet"),
+            "Should have reference to greet: {:?}",
+            ref_names
         );
     }
 }

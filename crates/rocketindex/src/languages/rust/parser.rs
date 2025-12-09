@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{find_child_by_kind, node_to_location, LanguageParser, ParseResult};
-use crate::{Symbol, SymbolKind, Visibility};
+use crate::{Reference, Symbol, SymbolKind, Visibility};
 
 // Thread-local parser reuse - avoids creating a new parser per file
 thread_local! {
@@ -522,6 +522,18 @@ fn extract_recursive(
             return; // Don't recurse normally - we've handled the content
         }
 
+        // Extract references from identifiers and type identifiers
+        "identifier" | "type_identifier" | "scoped_identifier" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
         _ => {}
     }
 
@@ -595,6 +607,154 @@ fn extract_from_macro_body(
             );
         }
     });
+}
+
+/// Maximum recursion depth for helper functions to prevent stack overflow
+const MAX_HELPER_DEPTH: usize = 50;
+
+/// Check if an identifier node is in a reference context (not a definition).
+/// Returns true if the identifier is being used/referenced, false if it's being defined.
+fn is_reference_context(node: &tree_sitter::Node) -> bool {
+    is_reference_context_with_depth(node, 0)
+}
+
+fn is_reference_context_with_depth(node: &tree_sitter::Node, depth: usize) -> bool {
+    // Prevent stack overflow on deeply nested parent chains
+    if depth > MAX_HELPER_DEPTH {
+        return false; // Conservative: treat unknown deep context as definition
+    }
+
+    if let Some(parent) = node.parent() {
+        match parent.kind() {
+            // Definition contexts - these are NOT references
+            "function_item" | "function_signature_item" => {
+                // Check if this is the function name (not a type or expression in the body)
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false; // This is the function name definition
+                    }
+                }
+                // Otherwise it's a reference (type, expression in body, etc.)
+                is_reference_context_with_depth(&parent, depth + 1)
+            }
+            "struct_item" | "enum_item" | "trait_item" | "union_item" => {
+                // Check if this is the type name being defined
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false;
+                    }
+                }
+                is_reference_context_with_depth(&parent, depth + 1)
+            }
+            "mod_item" => {
+                // Module name definition
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false;
+                    }
+                }
+                is_reference_context_with_depth(&parent, depth + 1)
+            }
+            "const_item" | "static_item" => {
+                // Const/static name definition
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false;
+                    }
+                }
+                is_reference_context_with_depth(&parent, depth + 1)
+            }
+            "type_item" => {
+                // Type alias name definition
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false;
+                    }
+                }
+                is_reference_context_with_depth(&parent, depth + 1)
+            }
+            "let_declaration" => {
+                // Variable binding in let statement - check if it's the pattern
+                if let Some(pattern) = parent.child_by_field_name("pattern") {
+                    if pattern.id() == node.id() || is_descendant_of(node, &pattern) {
+                        return false; // Variable binding, not a reference
+                    }
+                }
+                // Otherwise it's a reference (in the value expression or type)
+                true
+            }
+            "parameter" => {
+                // Function parameter binding - check if it's the pattern
+                if let Some(pattern) = parent.child_by_field_name("pattern") {
+                    if pattern.id() == node.id() || is_descendant_of(node, &pattern) {
+                        return false;
+                    }
+                }
+                is_reference_context_with_depth(&parent, depth + 1)
+            }
+            "field_declaration" => {
+                // Struct field definition - check if it's the field name
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false;
+                    }
+                }
+                // Type references in field declaration are references
+                true
+            }
+            "enum_variant" => {
+                // Enum variant definition
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false;
+                    }
+                }
+                is_reference_context_with_depth(&parent, depth + 1)
+            }
+            "use_declaration" | "use_clause" | "scoped_use_list" | "use_as_clause" | "use_list" => {
+                // Use statements are imports, not references in the traditional sense
+                // But we want to capture them as references for "find usages"
+                true
+            }
+            "impl_item" => {
+                // impl blocks: the type being implemented is a reference
+                // but trait names are also references
+                true
+            }
+            // Clear reference contexts
+            "call_expression" | "field_expression" | "method_call_expression" => true,
+            "binary_expression" | "unary_expression" => true,
+            "return_expression" | "break_expression" => true,
+            "index_expression" | "range_expression" => true,
+            "reference_expression" | "dereference_expression" => true,
+            "try_expression" | "await_expression" => true,
+            "closure_expression" => true,
+            "tuple_expression" | "array_expression" => true,
+            "if_expression" | "match_expression" | "while_expression" | "for_expression" => true,
+            "block" | "expression_statement" => true,
+            "arguments" => true,
+            "generic_type" | "type_arguments" | "scoped_type_identifier" => true,
+            "where_clause" | "trait_bounds" | "type_bound" => true,
+
+            // Continue checking parent for ambiguous contexts
+            _ => is_reference_context_with_depth(&parent, depth + 1),
+        }
+    } else {
+        // No parent - likely top-level, not a reference
+        false
+    }
+}
+
+/// Check if a node is a descendant of another node
+fn is_descendant_of(node: &tree_sitter::Node, ancestor: &tree_sitter::Node) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.id() == ancestor.id() {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
 }
 
 /// Extract symbols from a re-parsed macro body.
@@ -1124,6 +1284,50 @@ fn extract_use_statement(node: &tree_sitter::Node, source: &[u8], result: &mut P
 mod tests {
     use super::*;
     use crate::parse::extract_symbols;
+
+    #[test]
+    fn extracts_rust_references() {
+        let source = r#"
+use std::io::Read;
+
+fn process(reader: &dyn Read) -> String {
+    let result = String::new();
+    reader.read_to_string(&mut result).unwrap();
+    result
+}
+
+fn main() {
+    process(&std::io::stdin());
+}
+"#;
+        let result = extract_symbols(std::path::Path::new("test.rs"), source, 100);
+
+        // Should have references to:
+        // - String (type usage and method call)
+        // - Read (trait usage)
+        // - process (function call)
+        // - read_to_string (method call)
+        // - stdin (function call)
+
+        assert!(
+            !result.references.is_empty(),
+            "Should extract references from Rust code"
+        );
+
+        // Check specific references we expect
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        assert!(
+            ref_names.iter().any(|n| n.contains("String")),
+            "Should have reference to String, found: {:?}",
+            ref_names
+        );
+        assert!(
+            ref_names.iter().any(|n| n.contains("process")),
+            "Should have reference to process, found: {:?}",
+            ref_names
+        );
+    }
 
     #[test]
     fn extracts_rust_struct() {

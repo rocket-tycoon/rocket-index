@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{node_to_location, LanguageParser, ParseResult};
-use crate::{Symbol, SymbolKind, Visibility};
+use crate::{Reference, Symbol, SymbolKind, Visibility};
 
 // Thread-local parser reuse - avoids creating a new parser per file
 thread_local! {
@@ -49,6 +49,9 @@ impl LanguageParser for CSharpParser {
                 0,
             );
 
+            // Extract references in a separate pass
+            extract_references_recursive(&root, source.as_bytes(), file, &mut result);
+
             result
         })
     }
@@ -72,6 +75,36 @@ fn extract_file_scoped_namespace(root: &tree_sitter::Node, source: &[u8]) -> Opt
 
 fn node_text(node: &tree_sitter::Node, source: &[u8]) -> String {
     node.utf8_text(source).unwrap_or_default().to_string()
+}
+
+/// Extract XML doc comments (/// style) preceding a node
+fn extract_doc_comments(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut docs = Vec::new();
+
+    let mut prev = node.prev_sibling();
+    while let Some(sib) = prev {
+        match sib.kind() {
+            "comment" => {
+                if let Ok(text) = sib.utf8_text(source) {
+                    // C# XML doc comments start with ///
+                    if text.starts_with("///") {
+                        let doc = text.trim_start_matches("///").trim();
+                        if !doc.is_empty() {
+                            docs.insert(0, doc.to_string());
+                        }
+                    }
+                }
+                prev = sib.prev_sibling();
+            }
+            _ => break, // Stop at non-comment
+        }
+    }
+
+    if docs.is_empty() {
+        None
+    } else {
+        Some(docs.join("\n"))
+    }
 }
 
 fn extract_recursive(
@@ -244,6 +277,21 @@ fn extract_recursive(
                 "file_scoped_namespace_declaration" => {
                     // Already handled at the top level - just skip this node
                 }
+                "using_directive" => {
+                    // Extract using statement for name resolution
+                    // Handles: using System; using System.Collections.Generic;
+                    for i in 0..child.child_count() {
+                        if let Some(name_child) = child.child(i) {
+                            if name_child.kind() == "qualified_name"
+                                || name_child.kind() == "identifier"
+                            {
+                                if let Ok(text) = name_child.utf8_text(source) {
+                                    result.opens.push(text.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
                 _ => {
                     // Recurse into other nodes (e.g., file-scoped namespace content)
                     extract_recursive(
@@ -278,6 +326,7 @@ fn extract_type_declaration(
     };
 
     let visibility = extract_visibility(node, source);
+    let doc = extract_doc_comments(node, source);
 
     Some(Symbol {
         name,
@@ -290,7 +339,7 @@ fn extract_type_declaration(
         mixins: None,
         attributes: None,
         implements: None,
-        doc: None,
+        doc,
         signature: None,
     })
 }
@@ -814,10 +863,206 @@ fn extract_visibility(node: &tree_sitter::Node, source: &[u8]) -> Visibility {
     Visibility::Private
 }
 
+/// Recursively extract references from the AST
+fn extract_references_recursive(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+) {
+    match node.kind() {
+        // Type identifiers in C# are class/struct/interface names used as types
+        "identifier" => {
+            if is_type_reference_context(node, source) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
+        // Qualified names like System.Console
+        "qualified_name" => {
+            if is_type_reference_context(node, source) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+            // Don't recurse into qualified_name children - we want the full name
+            return;
+        }
+
+        // Generic types like List<User>
+        "generic_name" => {
+            if is_type_reference_context(node, source) {
+                // Extract just the base type name (not the type arguments)
+                if let Some(name_node) = node.child(0) {
+                    if name_node.kind() == "identifier" {
+                        if let Ok(name) = name_node.utf8_text(source) {
+                            result.references.push(Reference {
+                                name: name.to_string(),
+                                location: node_to_location(file, &name_node),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        _ => {}
+    }
+
+    // Recurse into children
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            extract_references_recursive(&child, source, file, result);
+        }
+    }
+}
+
+/// Determine if an identifier or qualified_name is used as a type reference
+fn is_type_reference_context(node: &tree_sitter::Node, source: &[u8]) -> bool {
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    match parent.kind() {
+        // Class/interface/struct definition - this is a definition, not a reference
+        "class_declaration"
+        | "interface_declaration"
+        | "struct_declaration"
+        | "enum_declaration"
+        | "record_declaration"
+        | "record_struct_declaration"
+        | "delegate_declaration" => {
+            // Check if this is the name being defined
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if node.id() == name_node.id() {
+                    return false;
+                }
+            }
+            // Could be in base list - that's a reference
+            if is_descendant_of(node, "base_list") {
+                return true;
+            }
+            false
+        }
+
+        // Variable declaration - the type is a reference
+        "variable_declaration" => true,
+
+        // Parameter - the type is a reference
+        "parameter" => true,
+
+        // Method return type
+        "method_declaration"
+        | "constructor_declaration"
+        | "operator_declaration"
+        | "conversion_operator_declaration" => {
+            // Type before the name is a reference
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if node.end_byte() < name_node.start_byte() {
+                    return true;
+                }
+            }
+            false
+        }
+
+        // Property type
+        "property_declaration" | "indexer_declaration" | "event_declaration" => true,
+
+        // Object creation expression - the type is a reference
+        "object_creation_expression" => true,
+
+        // Cast expression - the type is a reference
+        "cast_expression" => true,
+
+        // Type argument (generics)
+        "type_argument_list" => true,
+
+        // Base list (inheritance)
+        "base_list" => true,
+
+        // Type constraint
+        "type_parameter_constraint" | "type_parameter_constraints_clause" => true,
+
+        // Array type
+        "array_type" => true,
+
+        // Nullable type
+        "nullable_type" => true,
+
+        // typeof expression
+        "typeof_expression" => true,
+
+        // is/as pattern
+        "is_expression" | "as_expression" | "is_pattern_expression" => true,
+
+        // Catch clause
+        "catch_declaration" => true,
+
+        // Member access - check if this is a class name in static access like Helper.Greet
+        "member_access_expression" => {
+            // Check if this is the first child (the object being accessed) and starts with uppercase
+            if let Some(first_child) = parent.child(0) {
+                if node.id() == first_child.id() {
+                    // Check if name starts with uppercase (convention for class names)
+                    if let Ok(name) = node.utf8_text(source) {
+                        if let Some(first_char) = name.chars().next() {
+                            return first_char.is_uppercase();
+                        }
+                    }
+                }
+            }
+            false
+        }
+
+        // Invocation expression - check for static method calls
+        "invocation_expression" => {
+            // If this identifier is in a member_access_expression that's the function being called
+            if let Some(first_child) = parent.child(0) {
+                if first_child.kind() == "member_access_expression" {
+                    // This will be handled by member_access_expression case above
+                    return false;
+                }
+                // Direct identifier call - could be a type for constructor call
+                if node.id() == first_child.id() {
+                    if let Ok(name) = node.utf8_text(source) {
+                        if let Some(first_char) = name.chars().next() {
+                            return first_char.is_uppercase();
+                        }
+                    }
+                }
+            }
+            false
+        }
+
+        _ => false,
+    }
+}
+
+/// Check if a node is a descendant of a node with the given kind
+fn is_descendant_of(node: &tree_sitter::Node, kind: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == kind {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::LanguageParser;
+    use crate::parse::{extract_symbols, LanguageParser};
 
     #[test]
     fn test_basic_class() {
@@ -1223,5 +1468,128 @@ public class GlobalClass {
         let class = result.symbols.iter().find(|s| s.name == "GlobalClass");
         assert!(class.is_some(), "class without namespace should be indexed");
         assert_eq!(class.unwrap().qualified, "GlobalClass");
+    }
+
+    #[test]
+    fn extracts_doc_comments() {
+        let source = r#"
+namespace MyApp;
+
+/// <summary>
+/// Represents a user in the system.
+/// </summary>
+/// <remarks>
+/// Users can have multiple roles.
+/// </remarks>
+public class User {
+    public string Name { get; set; }
+}
+
+/// <summary>
+/// A helper class for utilities.
+/// </summary>
+public static class Helper {
+}
+"#;
+        let parser = CSharpParser;
+        let result = parser.extract_symbols(Path::new("User.cs"), source, 100);
+
+        // Class should have doc
+        let user = result.symbols.iter().find(|s| s.name == "User").unwrap();
+        assert!(user.doc.is_some(), "User class should have doc");
+        assert!(
+            user.doc.as_ref().unwrap().contains("<summary>"),
+            "User doc should contain <summary>: {:?}",
+            user.doc
+        );
+
+        // Helper should have doc
+        let helper = result.symbols.iter().find(|s| s.name == "Helper").unwrap();
+        assert!(helper.doc.is_some(), "Helper class should have doc");
+    }
+
+    #[test]
+    fn extracts_using_directives() {
+        let source = r#"
+using System;
+using System.Collections.Generic;
+using MyApp.Models;
+
+namespace MyApp;
+
+public class Service {
+    public void Run() { }
+}
+"#;
+        let parser = CSharpParser;
+        let result = parser.extract_symbols(Path::new("Service.cs"), source, 100);
+
+        assert!(!result.opens.is_empty(), "Should extract using directives");
+        assert!(
+            result.opens.contains(&"System".to_string()),
+            "Should have 'System' in opens: {:?}",
+            result.opens
+        );
+        assert!(
+            result
+                .opens
+                .contains(&"System.Collections.Generic".to_string()),
+            "Should have 'System.Collections.Generic' in opens: {:?}",
+            result.opens
+        );
+        assert!(
+            result.opens.contains(&"MyApp.Models".to_string()),
+            "Should have 'MyApp.Models' in opens: {:?}",
+            result.opens
+        );
+    }
+
+    #[test]
+    fn extracts_csharp_references() {
+        let source = r#"
+namespace MyApp;
+
+public class Main {
+    public static void Run(string[] args) {
+        User user = new User("Alice");
+        string greeting = Helper.Greet(user);
+        Console.WriteLine(greeting);
+    }
+}
+
+class User {
+    private string name;
+    public User(string name) { this.name = name; }
+    public string GetName() { return name; }
+}
+
+class Helper {
+    public static string Greet(User user) {
+        return "Hello, " + user.GetName();
+    }
+}
+"#;
+        let result = extract_symbols(Path::new("Main.cs"), source, 500);
+
+        assert!(
+            !result.references.is_empty(),
+            "Should extract references from C# code"
+        );
+
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should have references to User (in Main.Run)
+        assert!(
+            ref_names.contains(&"User"),
+            "Should have reference to User: {:?}",
+            ref_names
+        );
+
+        // Should have references to Helper
+        assert!(
+            ref_names.contains(&"Helper"),
+            "Should have reference to Helper: {:?}",
+            ref_names
+        );
     }
 }

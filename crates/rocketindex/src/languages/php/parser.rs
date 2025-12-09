@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{find_child_by_kind, node_to_location, LanguageParser, ParseResult};
-use crate::{Symbol, SymbolKind, Visibility};
+use crate::{Reference, Symbol, SymbolKind, Visibility};
 
 // Thread-local parser reuse - avoids creating a new parser per file
 thread_local! {
@@ -43,6 +43,9 @@ impl LanguageParser for PhpParser {
                 None, // namespace
                 max_depth,
             );
+
+            // Extract references in a separate pass
+            extract_references_recursive(&root, source.as_bytes(), file, &mut result);
 
             result
         })
@@ -687,6 +690,154 @@ fn extract_enum_case(
     }
 }
 
+/// Recursively extract type references from the AST
+fn extract_references_recursive(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+) {
+    match node.kind() {
+        // name is a class/interface/trait name in PHP
+        "name" => {
+            if is_type_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+        // qualified_name for namespaced types like \App\Models\User
+        "qualified_name" => {
+            if is_type_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+                return; // Don't recurse into qualified_name children
+            }
+        }
+        _ => {}
+    }
+
+    // Recurse into children
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            extract_references_recursive(&child, source, file, result);
+        }
+    }
+}
+
+/// Check if a node is in a context where it represents a type reference (not a definition)
+fn is_type_reference_context(node: &tree_sitter::Node) -> bool {
+    // A name is a reference when it's NOT in a definition context
+    // It's a definition when it's:
+    // 1. The name in a class/interface/trait/enum declaration
+    // 2. A namespace definition
+    // 3. A function/method name
+
+    let mut current = *node;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            // Class/interface/trait/enum definitions - the name is NOT a reference
+            "class_declaration"
+            | "interface_declaration"
+            | "trait_declaration"
+            | "enum_declaration" => {
+                // Check if we're the name being defined
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false; // This is the definition, not a reference
+                    }
+                }
+                // Else we might be in extends/implements, which are references
+            }
+
+            // Namespace definition - the name is NOT a reference
+            "namespace_definition" => {
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() || name_node.id() == current.id() {
+                        return false;
+                    }
+                }
+            }
+
+            // Function/method declarations - the name is NOT a reference
+            "function_definition" | "method_declaration" => {
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false;
+                    }
+                }
+                // Return type, parameter types are references
+            }
+
+            // Property type hints are references
+            "property_declaration" => {
+                // Property name is NOT a reference, but property type IS
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            // Type hints in parameters, return types, etc. are references
+            "type_list" | "union_type" | "intersection_type" | "nullable_type"
+            | "optional_type" | "named_type" => {
+                return true;
+            }
+
+            // Base clause (extends/implements)
+            "base_clause" | "class_interface_clause" => {
+                return true;
+            }
+
+            // new expression - class being instantiated is a reference
+            "object_creation_expression" => {
+                return true;
+            }
+
+            // Static method calls - class name is a reference
+            "scoped_call_expression" => {
+                // The first child (scope) is the class name
+                if let Some(scope) = parent.child_by_field_name("scope") {
+                    if scope.id() == node.id() || scope.id() == current.id() {
+                        return true;
+                    }
+                }
+            }
+
+            // instanceof - class name is a reference
+            "instanceof_expression" => {
+                return true;
+            }
+
+            // catch - exception type is a reference
+            "catch_clause" => {
+                return true;
+            }
+
+            // use statements import types (but aren't direct references in the code sense)
+            // We skip use statements as they are imports rather than usage references
+            "namespace_use_declaration" | "namespace_use_clause" => {
+                return false;
+            }
+
+            _ => {}
+        }
+        current = parent;
+    }
+
+    // Default: if we reach here with a name, it's likely a reference
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1015,5 +1166,41 @@ class ApiController {
         assert!(class_sym.attributes.is_some());
         let attrs = class_sym.attributes.as_ref().unwrap();
         assert!(attrs.iter().any(|a| a.contains("Route")));
+    }
+
+    #[test]
+    fn extracts_php_references() {
+        use crate::parse::extract_symbols;
+
+        let source = r#"<?php
+namespace App\Services;
+
+use App\Models\User;
+use App\Contracts\Repository;
+
+class UserService implements Repository {
+    private User $user;
+
+    public function createUser(string $name): User {
+        $user = new User();
+        $user->name = $name;
+        return $user;
+    }
+
+    public function find(int $id): ?User {
+        return User::find($id);
+    }
+}
+"#;
+        let result = extract_symbols(std::path::Path::new("UserService.php"), source, 100);
+
+        let ref_names: Vec<&str> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should extract references to User type (property type, return type, new expression, static call)
+        assert!(
+            ref_names.contains(&"User"),
+            "Should extract references from PHP code: {:?}",
+            ref_names
+        );
     }
 }

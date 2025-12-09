@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{find_child_by_kind, node_to_location, LanguageParser, ParseResult};
-use crate::{Symbol, SymbolKind, Visibility};
+use crate::{Reference, Symbol, SymbolKind, Visibility};
 
 // Thread-local parser reuse - avoids creating a new parser per file
 thread_local! {
@@ -356,6 +356,30 @@ fn extract_recursive(
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i) {
                     extract_imports(&child, source, result);
+                }
+            }
+        }
+
+        // Extract references from identifiers
+        "identifier" | "type_identifier" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
+        // Extract references from selector expressions (like fmt.Println)
+        "selector_expression" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
                 }
             }
         }
@@ -716,6 +740,165 @@ fn extract_const_or_var_spec(
             });
         }
     }
+}
+
+/// Check if a node is a descendant of a node with the given kind
+fn is_descendant_of(node: &tree_sitter::Node, kind: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == kind {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+/// Determine if an identifier/type_identifier node is in a reference context (not a definition)
+fn is_reference_context(node: &tree_sitter::Node) -> bool {
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    let parent_kind = parent.kind();
+
+    // Definition contexts (NOT references)
+    // Function/method declarations - the name field
+    if parent_kind == "function_declaration" || parent_kind == "method_declaration" {
+        if let Some(name_node) = parent.child_by_field_name("name") {
+            if name_node.id() == node.id() {
+                return false;
+            }
+        }
+    }
+
+    // Type spec definitions
+    if parent_kind == "type_spec" {
+        if let Some(name_node) = parent.child_by_field_name("name") {
+            if name_node.id() == node.id() {
+                return false;
+            }
+        }
+    }
+
+    // Const/var spec definitions - the name field
+    if parent_kind == "const_spec" || parent_kind == "var_spec" {
+        if let Some(name_node) = parent.child_by_field_name("name") {
+            if name_node.id() == node.id() {
+                return false;
+            }
+        }
+    }
+
+    // Field declarations (struct field names)
+    if parent_kind == "field_declaration" {
+        if let Some(name_node) = parent.child_by_field_name("name") {
+            if name_node.id() == node.id() {
+                return false;
+            }
+        }
+    }
+
+    // Method spec definitions (interface methods)
+    if parent_kind == "method_spec" || parent_kind == "method_elem" {
+        if let Some(name_node) = parent.child_by_field_name("name") {
+            if name_node.id() == node.id() {
+                return false;
+            }
+        }
+    }
+
+    // Parameter names
+    if parent_kind == "parameter_declaration" {
+        if let Some(name_node) = parent.child_by_field_name("name") {
+            if name_node.id() == node.id() {
+                return false;
+            }
+        }
+    }
+
+    // Short variable declarations (left side) - x := expr
+    if (parent_kind == "short_var_declaration" || parent_kind == "expression_list")
+        && is_descendant_of(node, "short_var_declaration")
+    {
+        let mut p = node.parent();
+        while let Some(parent) = p {
+            if parent.kind() == "short_var_declaration" {
+                // Check if we're on the left side (before :=)
+                if let Some(left) = parent.child_by_field_name("left") {
+                    if node.start_byte() >= left.start_byte() && node.end_byte() <= left.end_byte()
+                    {
+                        return false;
+                    }
+                }
+                break;
+            }
+            p = parent.parent();
+        }
+    }
+
+    // Import specs (package identifier)
+    if parent_kind == "import_spec" || parent_kind == "package_clause" {
+        return false;
+    }
+
+    // Package identifiers in package clause
+    if parent_kind == "package_identifier" || node.kind() == "package_identifier" {
+        return false;
+    }
+
+    // Skip identifiers that are keywords or labels
+    if parent_kind == "label_name" || parent_kind == "labeled_statement" {
+        return false;
+    }
+
+    // Range clause variable declarations
+    if parent_kind == "range_clause" {
+        if let Some(left) = parent.child_by_field_name("left") {
+            if node.start_byte() >= left.start_byte() && node.end_byte() <= left.end_byte() {
+                return false;
+            }
+        }
+    }
+
+    // For clause (for i := 0; ...)
+    if parent_kind == "for_clause" {
+        return true; // Let short_var_declaration handle definitions
+    }
+
+    // Receiver parameter declarations
+    if is_descendant_of(node, "parameter_list") {
+        // Could be a receiver, which is a definition
+        if is_descendant_of(node, "method_declaration") {
+            // Check if we're in the receiver field
+            let mut p = node.parent();
+            while let Some(parent) = p {
+                if parent.kind() == "method_declaration" {
+                    if let Some(recv) = parent.child_by_field_name("receiver") {
+                        if node.start_byte() >= recv.start_byte()
+                            && node.end_byte() <= recv.end_byte()
+                        {
+                            // Inside receiver - parameter names are definitions
+                            if let Some(pp) = node.parent() {
+                                if pp.kind() == "parameter_declaration" {
+                                    if let Some(name_node) = pp.child_by_field_name("name") {
+                                        if name_node.id() == node.id() {
+                                            return false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+                p = parent.parent();
+            }
+        }
+    }
+
+    true
 }
 
 #[cfg(test)]
@@ -1338,5 +1521,53 @@ type Container struct {
             })
             .expect("Should find embedded SecurityOptions");
         assert_eq!(security.kind, SymbolKind::Member);
+    }
+
+    #[test]
+    fn extracts_go_references() {
+        let source = r#"
+package main
+
+import "fmt"
+
+type User struct {
+    Name string
+}
+
+func (u *User) Greet() string {
+    return fmt.Sprintf("Hello, %s", u.Name)
+}
+
+func main() {
+    user := &User{Name: "Alice"}
+    message := user.Greet()
+    fmt.Println(message)
+}
+"#;
+        let parser = GoParser;
+        let result = parser.extract_symbols(Path::new("test.go"), source, 100);
+
+        assert!(
+            !result.references.is_empty(),
+            "Should extract references from Go code"
+        );
+
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should have references to User (in main)
+        assert!(
+            ref_names.contains(&"User"),
+            "Should have reference to User: {:?}",
+            ref_names
+        );
+
+        // Should have references to fmt.Println/Sprintf
+        assert!(
+            ref_names
+                .iter()
+                .any(|n| *n == "fmt" || n.contains("Println") || n.contains("Sprintf")),
+            "Should have reference to fmt functions: {:?}",
+            ref_names
+        );
     }
 }

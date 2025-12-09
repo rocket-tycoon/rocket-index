@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{find_child_by_kind, node_to_location, LanguageParser, ParseResult};
-use crate::{Symbol, SymbolKind, Visibility};
+use crate::{Reference, Symbol, SymbolKind, Visibility};
 
 // Thread-local parser reuse - avoids creating a new parser per file
 thread_local! {
@@ -272,7 +272,7 @@ fn extract_recursive(
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i) {
                     let kind = child.kind();
-                    if kind == "class_definition" || kind == "function_definition" {
+                    if kind == "class_definition" {
                         extract_definition_with_decorators(
                             &child,
                             source,
@@ -282,7 +282,19 @@ fn extract_recursive(
                             max_depth,
                             Some(&decorators),
                         );
-                        return;
+                        return; // Class handles its own recursion
+                    } else if kind == "function_definition" {
+                        extract_definition_with_decorators(
+                            &child,
+                            source,
+                            file,
+                            result,
+                            current_module,
+                            max_depth,
+                            Some(&decorators),
+                        );
+                        // Continue to recurse for references (don't return)
+                        break;
                     }
                 }
             }
@@ -311,7 +323,7 @@ fn extract_recursive(
                 max_depth,
                 None,
             );
-            return;
+            // Don't return - continue to recurse into function body for references
         }
 
         "assignment" => {
@@ -398,6 +410,31 @@ fn extract_recursive(
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // Extract references from identifiers
+        "identifier" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
+        // Extract references from attributes (like obj.attr)
+        "attribute" => {
+            // The whole attribute expression is a reference
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
                 }
             }
         }
@@ -529,6 +566,146 @@ fn extract_definition_with_decorators(
 
         _ => {}
     }
+}
+
+/// Maximum recursion depth for helper functions to prevent stack overflow
+const MAX_HELPER_DEPTH: usize = 50;
+
+/// Check if an identifier node is in a reference context (not a definition).
+/// Returns true if the identifier is being used/referenced, false if it's being defined.
+fn is_reference_context(node: &tree_sitter::Node) -> bool {
+    is_reference_context_with_depth(node, 0)
+}
+
+fn is_reference_context_with_depth(node: &tree_sitter::Node, depth: usize) -> bool {
+    // Prevent stack overflow on deeply nested parent chains
+    if depth > MAX_HELPER_DEPTH {
+        return false; // Conservative: treat unknown deep context as definition
+    }
+
+    if let Some(parent) = node.parent() {
+        match parent.kind() {
+            // Definition contexts - these are NOT references
+            "function_definition" => {
+                // Check if this is the function name being defined
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false;
+                    }
+                }
+                // Otherwise it's a reference (in parameters, return type, or body)
+                is_reference_context_with_depth(&parent, depth + 1)
+            }
+            "class_definition" => {
+                // Check if this is the class name being defined
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false;
+                    }
+                }
+                // Superclasses and body are references
+                is_reference_context_with_depth(&parent, depth + 1)
+            }
+            "parameters" | "typed_parameter" | "default_parameter" => {
+                // Parameter names are definitions
+                // But type annotations within parameters are references
+                // The direct child identifier of a parameter is the binding
+                if parent.kind() == "parameters" {
+                    // Parameters is a container - check what the direct parent is
+                    is_reference_context_with_depth(&parent, depth + 1)
+                } else {
+                    // typed_parameter or default_parameter
+                    // First identifier is usually the binding name
+                    if let Some(first_child) = parent.child(0) {
+                        if first_child.id() == node.id() {
+                            return false; // This is the parameter name
+                        }
+                    }
+                    // Otherwise it's a type annotation
+                    true
+                }
+            }
+            "for_statement" => {
+                // The loop variable is a definition
+                if let Some(left) = parent.child_by_field_name("left") {
+                    if left.id() == node.id() || is_descendant_of(node, &left) {
+                        return false;
+                    }
+                }
+                // The iterable is a reference
+                true
+            }
+            "assignment" => {
+                // The left side is a definition (usually)
+                if let Some(left) = parent.child_by_field_name("left") {
+                    if left.id() == node.id() || is_descendant_of(node, &left) {
+                        return false;
+                    }
+                }
+                // The right side is a reference
+                true
+            }
+            "except_clause" => {
+                // The alias in "except Error as e" is a definition
+                if let Some(alias) = parent.child_by_field_name("alias") {
+                    if alias.id() == node.id() {
+                        return false;
+                    }
+                }
+                // The exception type is a reference
+                true
+            }
+            "import_statement" | "import_from_statement" => {
+                // Import names are references to modules
+                true
+            }
+            "with_item" => {
+                // The alias in "with x as y" is a definition
+                if let Some(alias) = parent.child_by_field_name("alias") {
+                    if alias.id() == node.id() || is_descendant_of(node, &alias) {
+                        return false;
+                    }
+                }
+                true
+            }
+            "decorated_definition" => {
+                // Decorators are references
+                true
+            }
+            // Clear reference contexts
+            "call" | "argument_list" | "subscript" | "generic_type" => true,
+            "binary_operator" | "unary_operator" | "boolean_operator" | "not_operator" => true,
+            "comparison_operator" => true,
+            "return_statement" | "yield" => true,
+            "if_statement" | "while_statement" | "conditional_expression" => true,
+            "list" | "tuple" | "dictionary" | "set" => true,
+            "list_comprehension" | "dictionary_comprehension" | "set_comprehension" => true,
+            "generator_expression" => true,
+            "expression_statement" => true,
+            "assert_statement" | "raise_statement" => true,
+            "parenthesized_expression" => true,
+            "type" => true, // Type annotations are references
+            "block" => true,
+
+            // Continue checking parent for ambiguous contexts
+            _ => is_reference_context_with_depth(&parent, depth + 1),
+        }
+    } else {
+        // No parent - likely top-level, not a reference
+        false
+    }
+}
+
+/// Check if a node is a descendant of another node
+fn is_descendant_of(node: &tree_sitter::Node, ancestor: &tree_sitter::Node) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.id() == ancestor.id() {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
 }
 
 fn qualified_name(name: &str, current_module: Option<&str>) -> String {
@@ -1021,5 +1198,44 @@ class Task:
             .find(|s| s.name == "func" && s.qualified == "Task.func")
             .expect("Should find Task.func");
         assert_eq!(func.kind, SymbolKind::Member);
+    }
+
+    #[test]
+    fn extracts_python_references() {
+        let source = r#"
+from typing import List
+
+class User:
+    name: str
+
+def process(users: List[User]) -> int:
+    result = len(users)
+    for user in users:
+        print(user.name)
+    return result
+
+def main():
+    users = [User()]
+    process(users)
+"#;
+        let result = extract_symbols(std::path::Path::new("test.py"), source, 100);
+
+        assert!(
+            !result.references.is_empty(),
+            "Should extract references from Python code"
+        );
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+        // Should have reference to User (in type annotation and instantiation)
+        assert!(
+            ref_names.contains(&"User"),
+            "Should have reference to User: {:?}",
+            ref_names
+        );
+        // Should have reference to process (function call)
+        assert!(
+            ref_names.contains(&"process"),
+            "Should have reference to process: {:?}",
+            ref_names
+        );
     }
 }

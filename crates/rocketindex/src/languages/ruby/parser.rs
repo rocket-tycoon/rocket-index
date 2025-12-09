@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{find_child_by_kind, node_to_location, LanguageParser, ParseResult};
-use crate::{Symbol, SymbolKind, Visibility};
+use crate::{Reference, Symbol, SymbolKind, Visibility};
 
 // Thread-local parser reuse - avoids creating a new parser per file
 thread_local! {
@@ -39,6 +39,35 @@ impl LanguageParser for RubyParser {
 
             result
         })
+    }
+}
+
+/// Extract doc comments (# style) preceding a node
+/// Handles both RDoc and YARD style comments
+fn extract_doc_comments(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut docs = Vec::new();
+
+    let mut prev = node.prev_sibling();
+    while let Some(sib) = prev {
+        match sib.kind() {
+            "comment" => {
+                if let Ok(text) = sib.utf8_text(source) {
+                    // Ruby comments start with #
+                    let doc = text.trim_start_matches('#').trim();
+                    if !doc.is_empty() {
+                        docs.insert(0, doc.to_string());
+                    }
+                }
+                prev = sib.prev_sibling();
+            }
+            _ => break, // Stop at non-comment
+        }
+    }
+
+    if docs.is_empty() {
+        None
+    } else {
+        Some(docs.join("\n"))
     }
 }
 
@@ -171,6 +200,9 @@ fn extract_recursive_inner(
                     // Extract mixins (include/extend/prepend) from the class/module body
                     let mixins = extract_mixins(node, source);
 
+                    // Extract doc comments preceding the class/module
+                    let doc = extract_doc_comments(node, source);
+
                     result.symbols.push(Symbol {
                         name: name.to_string(),
                         qualified: qualified.clone(),
@@ -186,7 +218,7 @@ fn extract_recursive_inner(
                         },
                         attributes: None,
                         implements: None,
-                        doc: None,
+                        doc,
                         signature: None,
                     });
 
@@ -257,6 +289,9 @@ fn extract_recursive_inner(
                         None => name.to_string(),
                     };
 
+                    // Extract doc comments preceding the method
+                    let doc = extract_doc_comments(node, source);
+
                     result.symbols.push(Symbol {
                         name: name.to_string(),
                         qualified,
@@ -268,7 +303,7 @@ fn extract_recursive_inner(
                         mixins: None,
                         attributes: None,
                         implements: None,
-                        doc: None,
+                        doc,
                         signature: None,
                     });
                 }
@@ -326,6 +361,9 @@ fn extract_recursive_inner(
                         None => name.to_string(),
                     };
 
+                    // Extract doc comments preceding the method
+                    let doc = extract_doc_comments(node, source);
+
                     result.symbols.push(Symbol {
                         name: name.to_string(),
                         qualified,
@@ -337,7 +375,7 @@ fn extract_recursive_inner(
                         mixins: None,
                         attributes: None,
                         implements: None,
-                        doc: None,
+                        doc,
                         signature: None,
                     });
                 }
@@ -752,6 +790,30 @@ fn extract_recursive_inner(
             }
         }
 
+        // Extract references from constants (class/module names used in code)
+        "constant" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
+        // Extract references from scope resolutions (like Foo::Bar)
+        "scope_resolution" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
         _ => {}
     }
 
@@ -777,6 +839,50 @@ fn qualified_name(name: &str, current_module: Option<&str>) -> String {
         Some(m) => format!("{}::{}", m, name),
         None => name.to_string(),
     }
+}
+
+/// Determine if a constant node is in a reference context (not a definition)
+fn is_reference_context(node: &tree_sitter::Node) -> bool {
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    let parent_kind = parent.kind();
+
+    // Definition contexts (NOT references)
+
+    // Class definition: class Foo
+    if parent_kind == "class" {
+        if let Some(name_node) = parent.child_by_field_name("name") {
+            if name_node.id() == node.id() {
+                return false;
+            }
+        }
+    }
+
+    // Module definition: module Foo
+    if parent_kind == "module" {
+        if let Some(name_node) = parent.child_by_field_name("name") {
+            if name_node.id() == node.id() {
+                return false;
+            }
+        }
+    }
+
+    // Constant assignment: CONST = value
+    if parent_kind == "assignment" {
+        if let Some(left) = parent.child_by_field_name("left") {
+            if left.id() == node.id() {
+                return false;
+            }
+        }
+    }
+
+    // Superclass in class definition: class Foo < Bar
+    // The superclass is actually a reference, so keep it as is
+
+    true
 }
 
 /// Check if a call node is Struct.new (or similar struct-creating calls)
@@ -1410,6 +1516,103 @@ end
         assert!(
             another_method.is_some(),
             "define_method :another_method should be indexed"
+        );
+    }
+
+    #[test]
+    fn extracts_doc_comments() {
+        // Test top-level class/module doc comments
+        let source = r#"
+# A user representation
+# @author Team
+class User
+end
+
+# A helper module
+module Helper
+end
+"#;
+        let result = extract_symbols(Path::new("test.rb"), source, 500);
+
+        // Class should have doc
+        let user = result.symbols.iter().find(|s| s.name == "User").unwrap();
+        assert!(user.doc.is_some(), "User class should have doc");
+        assert!(
+            user.doc.as_ref().unwrap().contains("user representation"),
+            "User doc should contain 'user representation'"
+        );
+
+        // Module should have doc
+        let helper = result.symbols.iter().find(|s| s.name == "Helper").unwrap();
+        assert!(helper.doc.is_some(), "Helper module should have doc");
+    }
+
+    #[test]
+    fn extracts_doc_comments_for_methods() {
+        // Test top-level method doc comments (methods in class bodies are handled separately)
+        let source = r#"
+# Format the greeting
+# @param name [String] name to greet
+def greet(name)
+  "Hello, #{name}!"
+end
+"#;
+        let result = extract_symbols(Path::new("test.rb"), source, 500);
+
+        // Top-level method should have doc
+        let greet = result.symbols.iter().find(|s| s.name == "greet").unwrap();
+        assert!(greet.doc.is_some(), "greet method should have doc");
+        assert!(
+            greet.doc.as_ref().unwrap().contains("Format the greeting"),
+            "greet doc should contain 'Format the greeting'"
+        );
+    }
+
+    #[test]
+    fn extracts_ruby_references() {
+        let source = r#"
+class User
+  def initialize(name)
+    @name = name
+  end
+
+  def greet
+    Helper.format_greeting(@name)
+  end
+end
+
+class Helper
+  def self.format_greeting(name)
+    "Hello, #{name}!"
+  end
+end
+
+def main
+  user = User.new("Alice")
+  puts user.greet
+end
+"#;
+        let result = extract_symbols(Path::new("test.rb"), source, 500);
+
+        assert!(
+            !result.references.is_empty(),
+            "Should extract references from Ruby code"
+        );
+
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should have references to User (in main)
+        assert!(
+            ref_names.contains(&"User"),
+            "Should have reference to User: {:?}",
+            ref_names
+        );
+
+        // Should have references to Helper
+        assert!(
+            ref_names.contains(&"Helper"),
+            "Should have reference to Helper: {:?}",
+            ref_names
         );
     }
 }

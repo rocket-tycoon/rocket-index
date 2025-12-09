@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{find_child_by_kind, node_to_location, LanguageParser, ParseResult};
-use crate::{Symbol, SymbolKind, Visibility};
+use crate::{Reference, Symbol, SymbolKind, Visibility};
 
 // Thread-local parser reuse - avoids creating a new parser per file
 thread_local! {
@@ -583,6 +583,42 @@ fn extract_recursive(
             }
         }
 
+        // Extract references from type identifiers (class/interface names used in code)
+        "type_identifier" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
+        // Extract references from scoped type identifiers (qualified names like com.example.User)
+        "scoped_type_identifier" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
+        // Extract references from identifiers that are class references (static method calls like Helper.greet)
+        "identifier" => {
+            if is_class_reference_identifier(node, source) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
         _ => {}
     }
 
@@ -591,6 +627,160 @@ fn extract_recursive(
         if let Some(child) = node.child(i) {
             extract_recursive(&child, source, file, result, package, max_depth - 1);
         }
+    }
+}
+
+/// Check if a node is a descendant of a node with the given kind
+fn is_descendant_of(node: &tree_sitter::Node, kind: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == kind {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+/// Determine if a type_identifier node is used as a reference (not a definition)
+/// In Java, type_identifiers that are definitions appear in:
+/// - class_declaration (the class name being defined)
+/// - interface_declaration (the interface name being defined)
+/// - enum_declaration (the enum name being defined)
+/// - annotation_type_declaration (the annotation name being defined)
+fn is_reference_context(node: &tree_sitter::Node) -> bool {
+    // Get the parent node
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    match parent.kind() {
+        // Class/interface/enum declaration - check if this is the name being defined
+        "class_declaration"
+        | "interface_declaration"
+        | "enum_declaration"
+        | "annotation_type_declaration" => {
+            // The name being defined is the direct child identifier
+            // Type identifiers in superclass/implements are references
+            if let Some(name_node) = find_child_by_kind(&parent, "identifier") {
+                // If this node is the name identifier, it's a definition
+                if node.id() == name_node.id() {
+                    return false;
+                }
+            }
+            // Otherwise check if in superclass or superinterfaces context
+            if is_descendant_of(node, "superclass") || is_descendant_of(node, "super_interfaces") {
+                return true;
+            }
+            // Type params are not references
+            if is_descendant_of(node, "type_parameters") {
+                return false;
+            }
+            false
+        }
+
+        // Method/constructor parameter - the type is a reference
+        "formal_parameter" | "spread_parameter" | "receiver_parameter" => true,
+
+        // Local variable declaration - the type is a reference
+        "local_variable_declaration" => true,
+
+        // Field declaration - the type is a reference
+        "field_declaration" => true,
+
+        // Method return type is a reference
+        "method_declaration" | "constructor_declaration" => {
+            // Check if this is the return type (not the method name)
+            // Return type comes before the method name identifier
+            if let Some(name_node) = find_child_by_kind(&parent, "identifier") {
+                if node.end_byte() < name_node.start_byte() {
+                    return true;
+                }
+            }
+            false
+        }
+
+        // Object creation expression - type is a reference
+        "object_creation_expression" => true,
+
+        // Cast expression - type is a reference
+        "cast_expression" => true,
+
+        // Type arguments (generics) - types are references
+        "type_arguments" => true,
+
+        // Generic type - the base type is a reference
+        "generic_type" => true,
+
+        // Array type - the element type is a reference
+        "array_type" => true,
+
+        // Instanceof expression - type is a reference
+        "instanceof_expression" => true,
+
+        // Catch clause - exception type is a reference
+        "catch_formal_parameter" => true,
+
+        // Type bound in generics
+        "type_bound" => true,
+
+        // Variable declarator - skip (handled by parent)
+        "variable_declarator" => false,
+
+        // Default: not a reference context
+        _ => false,
+    }
+}
+
+/// Determine if an identifier node is a class reference (e.g., Helper in Helper.greet())
+/// In Java, class names start with uppercase by convention
+fn is_class_reference_identifier(node: &tree_sitter::Node, source: &[u8]) -> bool {
+    // Get the identifier text
+    let name = match node.utf8_text(source) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+
+    // Class names in Java start with uppercase by convention
+    let first_char = match name.chars().next() {
+        Some(c) => c,
+        None => return false,
+    };
+
+    if !first_char.is_uppercase() {
+        return false;
+    }
+
+    // Get the parent node
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    match parent.kind() {
+        // Method invocation: Helper.greet() - object is a class reference for static calls
+        "method_invocation" => {
+            // Check if this identifier is the object (first child), not the method name
+            if let Some(first_child) = parent.child(0) {
+                first_child.id() == node.id()
+            } else {
+                false
+            }
+        }
+
+        // Field access: Helper.CONSTANT
+        "field_access" => {
+            // Check if this identifier is the object (first child)
+            if let Some(first_child) = parent.child(0) {
+                first_child.id() == node.id()
+            } else {
+                false
+            }
+        }
+
+        // Don't treat other contexts as class references
+        _ => false,
     }
 }
 
@@ -664,7 +854,7 @@ fn extract_enum_constants(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::LanguageParser;
+    use crate::parse::{extract_symbols, LanguageParser};
 
     #[test]
     fn extracts_java_class() {
@@ -1044,6 +1234,55 @@ public record Point(int x, int y) {
         assert_eq!(
             method.unwrap().qualified,
             "com.example.Point.distanceFromOrigin"
+        );
+    }
+
+    #[test]
+    fn extracts_java_references() {
+        let source = r#"
+package com.example;
+
+public class Main {
+    public static void main(String[] args) {
+        User user = new User("Alice");
+        String greeting = Helper.greet(user);
+        System.out.println(greeting);
+    }
+}
+
+class User {
+    private String name;
+    public User(String name) { this.name = name; }
+    public String getName() { return name; }
+}
+
+class Helper {
+    public static String greet(User user) {
+        return "Hello, " + user.getName();
+    }
+}
+"#;
+        let result = extract_symbols(Path::new("Main.java"), source, 500);
+
+        assert!(
+            !result.references.is_empty(),
+            "Should extract references from Java code"
+        );
+
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should have references to User (in main)
+        assert!(
+            ref_names.contains(&"User"),
+            "Should have reference to User: {:?}",
+            ref_names
+        );
+
+        // Should have references to Helper
+        assert!(
+            ref_names.contains(&"Helper"),
+            "Should have reference to Helper: {:?}",
+            ref_names
         );
     }
 }

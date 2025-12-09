@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{find_child_by_kind, node_to_location, LanguageParser, ParseResult};
-use crate::{Symbol, SymbolKind, Visibility};
+use crate::{Reference, Symbol, SymbolKind, Visibility};
 
 // Thread-local parser reuse - avoids creating a new parser per file
 thread_local! {
@@ -238,6 +238,30 @@ fn extract_recursive(
         "expression_statement" => {
             // Look for prototype method assignments: Foo.prototype.method = function() {}
             extract_prototype_method_assignment(node, source, file, result);
+        }
+
+        // Extract references from identifiers
+        "identifier" | "property_identifier" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
+        // Extract references from member expressions (like obj.method)
+        "member_expression" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
         }
 
         _ => {}
@@ -591,6 +615,181 @@ fn extract_import_statement(node: &tree_sitter::Node, source: &[u8], result: &mu
             result.opens.push(module_path.to_string());
         }
     }
+}
+
+/// Check if a node is an ancestor of another node
+fn is_descendant_of(node: &tree_sitter::Node, ancestor_kind: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == ancestor_kind {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+/// Determine if an identifier is in a reference context (usage, not definition)
+fn is_reference_context(node: &tree_sitter::Node) -> bool {
+    is_reference_context_with_depth(node, 0)
+}
+
+fn is_reference_context_with_depth(node: &tree_sitter::Node, depth: usize) -> bool {
+    // Prevent infinite recursion
+    if depth > 20 {
+        return false;
+    }
+
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    let parent_kind = parent.kind();
+
+    match parent_kind {
+        // Function/method definitions - name is definition
+        "function_declaration" | "method_definition" => {
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if name_node.id() == node.id() {
+                    return false;
+                }
+            }
+        }
+
+        // Class definitions
+        "class_declaration" => {
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if name_node.id() == node.id() {
+                    return false;
+                }
+            }
+        }
+
+        // Variable declarations
+        "variable_declarator" => {
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                if name_node.id() == node.id() {
+                    return false;
+                }
+            }
+        }
+
+        // Parameter definitions
+        "formal_parameters" => {
+            // Parameters are definitions
+            return false;
+        }
+
+        // Import statements
+        "import_clause" | "import_specifier" | "named_imports" => {
+            return false;
+        }
+
+        // Export specifiers
+        "export_specifier" => {
+            return false;
+        }
+
+        // Object/array patterns (destructuring)
+        "object_pattern" | "array_pattern" => {
+            return false;
+        }
+
+        // Shorthand property identifiers in patterns
+        "shorthand_property_identifier_pattern" => {
+            return false;
+        }
+
+        // Property definition in object literal (key is definition)
+        "pair" => {
+            if let Some(key) = parent.child_by_field_name("key") {
+                if node.id() == key.id() {
+                    return false;
+                }
+            }
+            // Value side is a reference
+            return true;
+        }
+
+        // Field definitions in class
+        "field_definition" => {
+            if let Some(name_node) = parent.child_by_field_name("property") {
+                if name_node.id() == node.id() {
+                    return false;
+                }
+            }
+        }
+
+        // Call expressions - function being called is a reference
+        "call_expression" | "new_expression" => {
+            return true;
+        }
+
+        // Member expressions
+        "member_expression" => {
+            return true;
+        }
+
+        // Binary/unary expressions
+        "binary_expression" | "unary_expression" | "update_expression" => {
+            return true;
+        }
+
+        // Return/throw statements
+        "return_statement" | "throw_statement" => {
+            return true;
+        }
+
+        // Assignment - both sides can be references
+        "assignment_expression" => {
+            return true;
+        }
+
+        // Subscript expressions (array access)
+        "subscript_expression" => {
+            return true;
+        }
+
+        // Conditional expressions
+        "ternary_expression" | "conditional_expression" => {
+            return true;
+        }
+
+        // Arguments - always references
+        "arguments" => {
+            return true;
+        }
+
+        // Array/object literals - values inside are references
+        "array" | "object" => {
+            return true;
+        }
+
+        // Template substitution
+        "template_substitution" => {
+            return true;
+        }
+
+        // Parenthesized expression - check parent
+        "parenthesized_expression" => {
+            return is_reference_context_with_depth(&parent, depth + 1);
+        }
+
+        // Statement block, expression statement - check parent
+        "statement_block" | "expression_statement" | "program" => {
+            return is_reference_context_with_depth(&parent, depth + 1);
+        }
+
+        _ => {}
+    }
+
+    // Default: if in expression context, likely a reference
+    if is_descendant_of(node, "statement_block") {
+        return true;
+    }
+
+    is_reference_context_with_depth(&parent, depth + 1)
 }
 
 #[cfg(test)]
@@ -953,5 +1152,47 @@ const React = {
             .expect("Should find React.createElement");
         assert_eq!(create_element.kind, SymbolKind::Member);
         assert_eq!(create_element.parent, Some("React".to_string()));
+    }
+
+    #[test]
+    fn extracts_javascript_references() {
+        let source = r#"
+class User {
+    constructor(name) {
+        this.name = name;
+    }
+}
+
+function greet(user) {
+    return `Hello, ${user.name}!`;
+}
+
+function main() {
+    const user = new User("Alice");
+    console.log(greet(user));
+}
+"#;
+        let result = extract_symbols(std::path::Path::new("test.js"), source, 100);
+
+        assert!(
+            !result.references.is_empty(),
+            "Should extract references from JavaScript code"
+        );
+
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should have references to User class
+        assert!(
+            ref_names.contains(&"User"),
+            "Should have reference to User: {:?}",
+            ref_names
+        );
+
+        // Should have references to greet function
+        assert!(
+            ref_names.contains(&"greet"),
+            "Should have reference to greet: {:?}",
+            ref_names
+        );
     }
 }

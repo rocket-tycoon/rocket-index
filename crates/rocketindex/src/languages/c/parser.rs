@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{find_child_by_kind, node_to_location, LanguageParser, ParseResult};
-use crate::{Symbol, SymbolKind, Visibility};
+use crate::{Reference, Symbol, SymbolKind, Visibility};
 
 // Thread-local parser reuse - avoids creating a new parser per file
 thread_local! {
@@ -36,6 +36,9 @@ impl LanguageParser for CParser {
             let root = tree.root_node();
 
             extract_recursive(&root, source.as_bytes(), file, &mut result, None, max_depth);
+
+            // Extract references in a separate pass
+            extract_references_recursive(&root, source.as_bytes(), file, &mut result);
 
             result
         })
@@ -725,6 +728,106 @@ fn extract_enum_values(
     }
 }
 
+/// Recursively extract type references from the AST
+fn extract_references_recursive(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+) {
+    // type_identifier is a custom type name (struct, typedef, etc.)
+    if node.kind() == "type_identifier" && is_type_reference_context(node) {
+        if let Ok(name) = node.utf8_text(source) {
+            result.references.push(Reference {
+                name: name.to_string(),
+                location: node_to_location(file, node),
+            });
+        }
+    }
+
+    // Recurse into children
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            extract_references_recursive(&child, source, file, result);
+        }
+    }
+}
+
+/// Check if a node is in a context where it represents a type reference (not a definition)
+fn is_type_reference_context(node: &tree_sitter::Node) -> bool {
+    // A type_identifier is a reference when it's NOT in a definition context
+    // It's a definition when it's:
+    // 1. The name in a struct/enum/union specifier
+    // 2. The name being defined in a typedef
+
+    let mut current = *node;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            // In struct/enum/union specifiers, the type_identifier can be either:
+            // - The name being defined: struct User { ... } - NOT a reference
+            // - A reference: struct User user; - IS a reference (User is used, not defined)
+            "struct_specifier" | "union_specifier" | "enum_specifier" => {
+                // Check if this is the name being defined (has a body sibling)
+                // or just a reference to an existing type (no body)
+                let has_body = parent.child_by_field_name("body").is_some();
+                if has_body {
+                    // If there's a body, and we're the name, this is a definition
+                    if let Some(name_node) = parent.child_by_field_name("name") {
+                        if name_node.id() == node.id() {
+                            return false; // This is the definition, not a reference
+                        }
+                    }
+                }
+                // No body means this is a forward declaration or type usage - that's a reference
+                return true;
+            }
+
+            // In typedef, the type being aliased is a reference, but the new name is a definition
+            "type_definition" => {
+                // The first type_identifier child is typically the type being aliased (reference)
+                // The last type_identifier (in a type_declarator) is the new name (definition)
+                // Simple heuristic: if we're a direct child of type_definition, we're the source type
+                if current.id() == node.id() {
+                    // Direct child type_identifier = the type being aliased = reference
+                    return true;
+                }
+                return false;
+            }
+
+            // In declarations (parameters, variables, return types), type_identifier is a reference
+            "declaration"
+            | "parameter_declaration"
+            | "field_declaration"
+            | "function_definition"
+            | "pointer_declarator"
+            | "abstract_pointer_declarator" => {
+                return true;
+            }
+
+            // Cast expressions use the type
+            "cast_expression" => {
+                return true;
+            }
+
+            // sizeof(Type) uses the type
+            "sizeof_expression" => {
+                return true;
+            }
+
+            // Compound literal (Type){...}
+            "compound_literal_expression" => {
+                return true;
+            }
+
+            _ => {}
+        }
+        current = parent;
+    }
+
+    // Default: if we reach here with a type_identifier, it's likely a reference
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -920,5 +1023,36 @@ int add(int a, int b) {
         let add = result.symbols.iter().find(|s| s.name == "add").unwrap();
         assert!(add.doc.is_some());
         assert!(add.doc.as_ref().unwrap().contains("Adds two numbers"));
+    }
+
+    #[test]
+    fn extracts_c_references() {
+        use crate::parse::extract_symbols;
+
+        let source = r#"
+#include "user.h"
+
+typedef struct User User;
+
+void greet(User* user) {
+    printf("Hello, %s\n", user->name);
+}
+
+User* create_user(const char* name) {
+    User* user = (User*)malloc(sizeof(User));
+    user->name = name;
+    return user;
+}
+"#;
+        let result = extract_symbols(Path::new("test.c"), source, 100);
+
+        let ref_names: Vec<&str> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should extract references to User type (parameter, return type, cast, sizeof)
+        assert!(
+            ref_names.contains(&"User"),
+            "Should extract references from C code: {:?}",
+            ref_names
+        );
     }
 }

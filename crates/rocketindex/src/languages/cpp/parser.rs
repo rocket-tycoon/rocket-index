@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{find_child_by_kind, node_to_location, LanguageParser, ParseResult};
-use crate::{Symbol, SymbolKind, Visibility};
+use crate::{Reference, Symbol, SymbolKind, Visibility};
 
 // Thread-local parser reuse - avoids creating a new parser per file
 thread_local! {
@@ -36,6 +36,9 @@ impl LanguageParser for CppParser {
             let root = tree.root_node();
 
             extract_recursive(&root, source.as_bytes(), file, &mut result, None, max_depth);
+
+            // Extract references in a separate pass
+            extract_references_recursive(&root, source.as_bytes(), file, &mut result);
 
             result
         })
@@ -721,6 +724,150 @@ fn extract_enum_values(
     }
 }
 
+/// Recursively extract type references from the AST
+fn extract_references_recursive(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+) {
+    match node.kind() {
+        // type_identifier is a custom type name (class, struct, typedef, etc.)
+        "type_identifier" => {
+            if is_type_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+        // qualified_identifier for namespaced types like std::vector
+        "qualified_identifier" => {
+            if is_type_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+                return; // Don't recurse into qualified_identifier children
+            }
+        }
+        _ => {}
+    }
+
+    // Recurse into children
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            extract_references_recursive(&child, source, file, result);
+        }
+    }
+}
+
+/// Check if a node is in a context where it represents a type reference (not a definition)
+fn is_type_reference_context(node: &tree_sitter::Node) -> bool {
+    // A type_identifier is a reference when it's NOT in a definition context
+    // It's a definition when it's:
+    // 1. The name in a class/struct/enum specifier
+    // 2. The name being defined in a typedef
+    // 3. A namespace definition
+
+    let mut current = *node;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            // In class/struct/enum specifiers, the type_identifier can be either:
+            // - The name being defined: class User { ... } - NOT a reference
+            // - A reference: User user; - IS a reference (User is used, not defined)
+            "class_specifier" | "struct_specifier" | "enum_specifier" => {
+                // Check if this is the name being defined (has a body sibling)
+                // or just a reference to an existing type (no body)
+                let has_body = parent.child_by_field_name("body").is_some();
+                if has_body {
+                    // If there's a body, and we're the name, this is a definition
+                    if let Some(name_node) = parent.child_by_field_name("name") {
+                        if name_node.id() == node.id() {
+                            return false; // This is the definition, not a reference
+                        }
+                    }
+                }
+                // No body means this is a forward declaration or type usage - that's a reference
+                return true;
+            }
+
+            // In type alias (using X = Y) or typedef, the aliased type is a reference
+            "type_definition" | "alias_declaration" => {
+                // The type being aliased is a reference
+                // The new name being defined is not
+                if let Some(declarator) = parent.child_by_field_name("declarator") {
+                    if declarator.id() == current.id() || declarator.id() == node.id() {
+                        return false; // This is the new name being defined
+                    }
+                }
+                return true;
+            }
+
+            // Namespace definitions - the name is not a reference
+            "namespace_definition" => {
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false;
+                    }
+                }
+            }
+
+            // In declarations (parameters, variables, return types), type_identifier is a reference
+            "declaration"
+            | "parameter_declaration"
+            | "field_declaration"
+            | "function_definition"
+            | "function_declarator"
+            | "pointer_declarator"
+            | "reference_declarator"
+            | "abstract_pointer_declarator"
+            | "abstract_reference_declarator" => {
+                return true;
+            }
+
+            // Template arguments use types
+            "template_argument_list" | "template_type" => {
+                return true;
+            }
+
+            // Base class specifiers (inheritance)
+            "base_class_clause" => {
+                return true;
+            }
+
+            // Cast expressions use the type
+            "cast_expression"
+            | "static_cast_expression"
+            | "dynamic_cast_expression"
+            | "reinterpret_cast_expression"
+            | "const_cast_expression" => {
+                return true;
+            }
+
+            // sizeof/typeid use the type
+            "sizeof_expression" | "typeid_expression" => {
+                return true;
+            }
+
+            // new expressions use the type
+            "new_expression" => {
+                return true;
+            }
+
+            _ => {}
+        }
+        current = parent;
+    }
+
+    // Default: if we reach here with a type_identifier, it's likely a reference
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -918,5 +1065,38 @@ public:
 
         let visible = result.symbols.iter().find(|s| s.name == "visible").unwrap();
         assert_eq!(visible.visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn extracts_cpp_references() {
+        use crate::parse::extract_symbols;
+
+        let source = r#"
+#include "user.hpp"
+
+class UserService {
+public:
+    User* createUser(const std::string& name);
+    void deleteUser(User* user);
+private:
+    std::vector<User> users;
+};
+
+User* UserService::createUser(const std::string& name) {
+    User user;
+    users.push_back(user);
+    return &users.back();
+}
+"#;
+        let result = extract_symbols(Path::new("test.cpp"), source, 100);
+
+        let ref_names: Vec<&str> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should extract references to User type (parameter, return type, member variable)
+        assert!(
+            ref_names.contains(&"User"),
+            "Should extract references from C++ code: {:?}",
+            ref_names
+        );
     }
 }
