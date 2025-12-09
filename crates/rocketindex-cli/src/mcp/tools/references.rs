@@ -102,7 +102,7 @@ pub async fn find_references(
         ))]);
     }
 
-    let json = serde_json::to_string_pretty(&all_results).unwrap_or_default();
+    let json = serde_json::to_string(&all_results).unwrap_or_default();
     CallToolResult::success(vec![Content::text(json)])
 }
 

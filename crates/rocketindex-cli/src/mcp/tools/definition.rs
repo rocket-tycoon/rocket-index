@@ -156,7 +156,7 @@ pub async fn find_definition(
         });
     }
 
-    let json = serde_json::to_string_pretty(&output_results).unwrap_or_default();
+    let json = serde_json::to_string(&output_results).unwrap_or_default();
     CallToolResult::success(vec![Content::text(json)])
 }
 

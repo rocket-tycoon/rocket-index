@@ -155,7 +155,7 @@ pub async fn enrich_symbol(
             .flatten();
 
         if let Some(enriched) = result {
-            let json = serde_json::to_string_pretty(&enriched).unwrap_or_default();
+            let json = serde_json::to_string(&enriched).unwrap_or_default();
             return CallToolResult::success(vec![Content::text(json)]);
         }
     }

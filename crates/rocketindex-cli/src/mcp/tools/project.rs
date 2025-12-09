@@ -138,7 +138,7 @@ pub async fn list_projects(manager: Arc<ProjectManager>) -> CallToolResult {
         infos.push(info);
     }
 
-    let json = serde_json::to_string_pretty(&infos).unwrap_or_default();
+    let json = serde_json::to_string(&infos).unwrap_or_default();
     CallToolResult::success(vec![Content::text(json)])
 }
 
