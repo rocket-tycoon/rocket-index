@@ -50,24 +50,24 @@ pub async fn find_definition(
     manager: Arc<ProjectManager>,
     input: FindDefinitionInput,
 ) -> CallToolResult {
-    // Determine which project to search
-    let project_root = if let Some(ref root) = input.project_root {
-        Some(std::path::PathBuf::from(root))
-    } else if let Some(ref file) = input.file {
+    // Special case: if file hint is provided but not in any registered project, give helpful error
+    if let Some(ref file) = input.file {
         let path = std::path::Path::new(file);
-        match manager.project_for_file(path).await {
-            Some(root) => Some(root),
-            None => {
-                // If file is provided but not in any project, suggest JIT
-                return CallToolResult::error(vec![Content::text(format!(
-                    "File '{}' is not part of any registered project. Use `describe_project` on the project root to index it.",
-                    file
-                ))]);
-            }
+        if manager.project_for_file(path).await.is_none() && input.project_root.is_none() {
+            return CallToolResult::error(vec![Content::text(format!(
+                "File '{}' is not part of any registered project. Use `describe_project` on the project root to index it.",
+                file
+            ))]);
         }
-    } else {
-        None
-    };
+    }
+
+    // Determine which project to search (CWD-aware)
+    let project_roots = manager
+        .resolve_projects(input.project_root.as_deref(), input.file.as_deref())
+        .await;
+
+    // For find_definition, we use single-project priority but fall back to multi-project search
+    let project_root = project_roots.first().cloned();
 
     // Search for the symbol
     let (results, is_fuzzy) = if let Some(root) = project_root {

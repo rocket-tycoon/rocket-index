@@ -107,10 +107,11 @@ async fn test_staleness_warning() {
     // Touch the file -> make it newer than index.db
     std::fs::write(&file_path, "class User:\n pass # updated").unwrap();
 
+    // Must provide explicit project_root since CWD is not the test project
     let input = FindDefinitionInput {
         symbol: "User".to_string(),
         file: None,
-        project_root: None,
+        project_root: Some(root.to_str().unwrap().to_string()),
         include_context: false,
     };
 

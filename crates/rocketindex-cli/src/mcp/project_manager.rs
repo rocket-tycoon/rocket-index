@@ -503,4 +503,104 @@ impl ProjectManager {
 
         Ok(())
     }
+
+    /// Get the default project based on CWD.
+    ///
+    /// This is the key method for MCP tool default behavior:
+    /// 1. Check if CWD is inside a registered project
+    /// 2. If not, try to JIT-register the CWD as a project
+    /// 3. Return the project root (or None if CWD is not a valid project)
+    ///
+    /// This ensures that when Claude Code calls tools without explicit project_root,
+    /// they operate on the project the user is working in rather than all projects.
+    pub async fn default_project(&self) -> Option<PathBuf> {
+        let cwd = std::env::current_dir().ok()?;
+
+        // First check if CWD is inside an already-registered project
+        if let Some(root) = self.project_for_file(&cwd).await {
+            return Some(root);
+        }
+
+        // CWD not in any registered project - try to JIT register it
+        // Only if it has a .rocketindex folder or source files we can index
+        if (cwd.join(".rocketindex").exists() || self.looks_like_project(&cwd))
+            && self.ensure_registered(cwd.clone()).await.is_ok()
+        {
+            // After registering, find which project root contains CWD
+            return self.project_for_file(&cwd).await;
+        }
+
+        None
+    }
+
+    /// Check if a directory looks like a project we should auto-index
+    fn looks_like_project(&self, dir: &Path) -> bool {
+        // Check for common project markers
+        let markers = [
+            "Cargo.toml",
+            "package.json",
+            "pyproject.toml",
+            "setup.py",
+            "Gemfile",
+            "go.mod",
+            ".git",
+            "*.fsproj",
+            "*.csproj",
+            "pom.xml",
+            "build.gradle",
+        ];
+
+        for marker in markers {
+            if marker.contains('*') {
+                // Glob pattern
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            let pattern = marker.replace('*', "");
+                            if name.ends_with(&pattern) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            } else if dir.join(marker).exists() {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Get project roots for a tool invocation.
+    ///
+    /// Priority:
+    /// 1. Explicit project_root parameter (if provided)
+    /// 2. Project containing the file parameter (if provided)
+    /// 3. CWD project (via default_project)
+    /// 4. All registered projects (fallback for multi-project scenarios)
+    pub async fn resolve_projects(
+        &self,
+        explicit_root: Option<&str>,
+        file_hint: Option<&str>,
+    ) -> Vec<PathBuf> {
+        // 1. Explicit project root
+        if let Some(root) = explicit_root {
+            return vec![PathBuf::from(root)];
+        }
+
+        // 2. File hint
+        if let Some(file) = file_hint {
+            if let Some(root) = self.project_for_file(std::path::Path::new(file)).await {
+                return vec![root];
+            }
+        }
+
+        // 3. CWD project
+        if let Some(root) = self.default_project().await {
+            return vec![root];
+        }
+
+        // 4. All projects (fallback)
+        self.all_projects().await
+    }
 }

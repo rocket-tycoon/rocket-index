@@ -42,7 +42,8 @@ pub async fn search_symbols(
     manager: Arc<ProjectManager>,
     input: SearchSymbolsInput,
 ) -> CallToolResult {
-    let project_roots = manager.all_projects().await;
+    // Use CWD-aware project resolution (no explicit project_root in this tool)
+    let project_roots = manager.resolve_projects(None, None).await;
 
     if project_roots.is_empty() {
         return CallToolResult::error(vec![Content::text(

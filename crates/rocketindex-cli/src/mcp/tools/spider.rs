@@ -51,12 +51,10 @@ pub async fn analyze_dependencies(
     manager: Arc<ProjectManager>,
     input: AnalyzeDepsInput,
 ) -> CallToolResult {
-    // Determine which project to search
-    let project_roots = if let Some(ref root) = input.project_root {
-        vec![std::path::PathBuf::from(root)]
-    } else {
-        manager.all_projects().await
-    };
+    // Determine which project to search (CWD-aware)
+    let project_roots = manager
+        .resolve_projects(input.project_root.as_deref(), None)
+        .await;
 
     if project_roots.is_empty() {
         return CallToolResult::error(vec![Content::text(
