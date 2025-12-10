@@ -59,13 +59,13 @@ async fn test_fuzzy_fallback_success() {
     // Acquire CWD lock to prevent interference from CWD-modifying tests
     let _guard = CWD_MUTEX.lock().unwrap();
 
-    let (_dir, manager) = setup_project().await;
+    let (dir, manager) = setup_project().await;
 
-    // Search for typo "Usr"
+    // Search for typo "Usr" - must provide project_root since CWD is not the test project
     let input = FindDefinitionInput {
         symbol: "Usr".to_string(),
         file: None,
-        project_root: None,
+        project_root: Some(dir.path().to_str().unwrap().to_string()),
         include_context: false,
     };
 
