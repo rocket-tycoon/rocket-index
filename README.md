@@ -1,45 +1,54 @@
 # RocketIndex 🚀
 > **The Deterministic Navigation Layer for AI Agents.**
 
-RocketIndex is a standalone, polyglot code indexer designed to make your AI coding assistant (Claude Code, Aider, Copilot CLI) **faster, smarter, and more accurate.**
+RocketIndex is a standalone, polyglot code indexer that makes AI coding assistants **faster, smarter, and more accurate** by replacing grep-based guesswork with precise, semantic code navigation.
 
-It provides a high-performance CLI that acts as an **O(1) Oracle** for your agent, allowing it to navigate massive codebases (1M+ lines) with zero hallucination and negligible token usage.
+## Two Ways to Use RocketIndex
 
-## Fast Track
+| Interface | Best For | How It Works |
+| :--- | :--- | :--- |
+| **MCP Server** (Recommended for AI) | AI assistants (Claude, etc.) | Tools appear in agent's native tool list |
+| **CLI Commands** | Humans, scripts, CI/CD | Shell commands with JSON output |
+
+**Why MCP is recommended for AI agents:** Our testing shows that when navigation tools are exposed via MCP, agents use them consistently. With CLI-only instructions (even in AGENTS.md), agents often fall back to grep patterns. [See benchmark results](#mcp-vs-cli-for-ai-agents).
+
+## Quick Start
 
 ### 1. Install
 
 **macOS (Homebrew)**
-
 ```bash
 brew install rocket-tycoon/tap/rocket-index
 ```
 
 **Windows (Scoop)**
-
 ```powershell
 scoop bucket add rocket-tycoon https://github.com/rocket-tycoon/scoop-bucket
 scoop install rocketindex
 ```
 
 **Linux**
-
 ```bash
-# Download latest release (adjust version as needed)
 curl -LO https://github.com/rocket-tycoon/rocket-index/releases/latest/download/rocketindex-x86_64-unknown-linux-gnu.tar.gz
 tar -xzf rocketindex-x86_64-unknown-linux-gnu.tar.gz
 sudo mv rkt rocketindex-lsp /usr/local/bin/
 ```
 
-### 2. Start RocketIndex
-Run this in a separate terminal. It will set up your agent, index your codebase, and watch for changes.
+### 2. Choose Your Setup Path
 
+**For AI Assistants (MCP) - Recommended**
 ```bash
 cd /path/to/your/repo
-rkt start claude   # or: cursor, copilot
+claude mcp add --transport stdio rocketindex -- rkt serve
 ```
+That's it. The MCP server auto-indexes on first use. See [MCP Setup](#mcp-server-for-ai-assistants) for Claude Desktop config.
 
-This runs `rkt setup` (installs slash commands and rules for your agent) then starts watch mode.
+**For Human Use / CLI**
+```bash
+cd /path/to/your/repo
+rkt index                    # Build index
+rkt watch                    # Keep index fresh (run in background terminal)
+```
 
 ## The Problem: Approximate Navigation
 
@@ -59,40 +68,164 @@ RocketIndex uses **Tree-sitter** and **SQLite** to build a precise, relational g
 | **Latency** | **< 10ms** | ~200ms+ | Variable |
 | **Best For** | **Navigation & Refactoring** | Exploration | Simple edits |
 
-## Agent Capabilities
+## MCP Server for AI Assistants
 
-RocketIndex is designed for **Tool Use**. Almost all commands output concise JSON by default (or clean text for LLMs).
+RocketIndex includes an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that exposes code navigation tools directly to AI assistants. This is the **recommended integration method** for AI agents.
 
-### 1. Unified Navigation
-Whether it's F# or Ruby, the commands are the same. The agent doesn't need to know the language specifics.
+### Setup: Claude Desktop
 
-```bash
-# "Where is the User class defined?"
-$ rkt def "User" 
-# -> src/models/User.fs:12
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
-# "Who calls the save method?"
-$ rkt callers "User.save"
-# -> src/controllers/AuthController.fs:45
+```json
+{
+  "mcpServers": {
+    "rocketindex": {
+      "command": "rkt",
+      "args": ["serve"]
+    }
+  }
+}
 ```
 
-### 2. Impact Analysis ("Spidering")
-Before editing a function, an agent can "spider" the dependency graph to see what will break.
+Restart Claude Desktop. RocketIndex tools will appear in Claude's tool list.
+
+### Setup: Claude Code
+
+Run from your project root (RocketIndex MCP is project-local):
 
 ```bash
-# "What depends on this function? Recurse 3 levels deep."
-$ rkt spider "validate_email" --reverse --depth 3
+cd /path/to/your/repo
+claude mcp add --transport stdio rocketindex -- rkt serve
 ```
 
-### 3. Symbol Discovery
-Agents can quickly map out a new codebase without reading file contents.
+This registers the MCP server for this project. Claude Code will auto-start it when you open the project.
+
+### Setup: Gemini CLI
+
+Run from your project root:
 
 ```bash
-# "What services do we have?"
-$ rkt symbols "*Service" --concise
+cd /path/to/your/repo
+gemini mcp add rocketindex rkt serve
 ```
 
-## Performance (Real-World Benchmarks)
+See [Gemini CLI MCP docs](https://geminicli.com/docs/tools/mcp-server/) for more options.
+
+### Setup: Zed Editor
+
+Add to your Zed settings (`~/.config/zed/settings.json`):
+
+```json
+{
+  "context_servers": {
+    "rocketindex": {
+      "command": "rkt",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+See [Zed MCP docs](https://zed.dev/docs/ai/mcp) for more options.
+
+### Available Tools
+
+| Tool | Purpose | Why Better Than Grep |
+| :--- | :--- | :--- |
+| `find_callers` | Find all call sites of a function | Grep finds text matches; this finds actual callers |
+| `analyze_dependencies` | Traverse call graph (forward/reverse) | Grep cannot do graph traversal at all |
+| `enrich_symbol` | Get comprehensive symbol context | Aggregates definition, callers, blame in one call |
+| `find_definition` | Locate where a symbol is defined | Precise location, not 17 candidates to sift |
+| `find_references` | Find all usages of a symbol | Semantic matches, not text matches |
+| `search_symbols` | Search symbols by pattern | Structured results with qualified names |
+| `describe_project` | Get project structure overview | Semantic map, not just file listing |
+
+### Managing Projects
+
+```bash
+rkt serve add /path/to/project     # Register a project
+rkt serve remove /path/to/project  # Remove a project
+rkt serve list                     # List registered projects
+```
+
+Projects are automatically indexed on first use. Configure auto-watch in `~/.config/rocketindex/mcp.json`:
+
+```json
+{
+  "projects": ["/path/to/project1", "/path/to/project2"],
+  "auto_watch": true,
+  "debounce_ms": 200
+}
+```
+
+---
+
+## CLI Commands for Humans & Scripts
+
+The CLI provides the same capabilities as MCP, designed for human use, shell scripts, and CI/CD pipelines.
+
+### Navigation Commands
+
+```bash
+# Find where a symbol is defined
+rkt def "User"                    # -> src/models/User.fs:12
+
+# Find all callers of a function
+rkt callers "User.save"           # -> src/controllers/AuthController.fs:45
+
+# Find all references to a symbol
+rkt refs "Config"                 # All usages across codebase
+```
+
+### Impact Analysis
+
+```bash
+# What depends on this function? (reverse dependency graph)
+rkt spider "validate_email" --reverse --depth 3
+
+# What does this function call? (forward dependency graph)
+rkt spider "main" --depth 5
+```
+
+### Symbol Discovery
+
+```bash
+# Search for symbols by pattern (supports wildcards)
+rkt symbols "*Service" --concise
+
+# Get comprehensive info about a symbol
+rkt enrich "PaymentService.process"
+```
+
+### Watch Mode (Essential for AI Coding Sessions)
+
+Keep the index fresh as files change:
+
+```bash
+# Run in a background terminal during coding sessions
+rkt watch
+```
+
+Without watch mode, the index becomes stale as files are modified.
+
+## MCP vs CLI for AI Agents
+
+We tested whether AI agents would use RocketIndex tools when provided via CLI instructions (AGENTS.md) vs MCP server.
+
+**Task:** "Find all functions that call ApiProviderFactory" in vets-api (7,470 Ruby files, 37K symbols)
+
+| Model | Integration | Turns | Result |
+| :--- | :--- | :--- | :--- |
+| Haiku | **MCP Server** | **2** | Success (16 callers found) |
+| Haiku | CLI (AGENTS.md) | 10 | Failed (max turns) |
+| Sonnet | **MCP Server** | **2** | Success |
+| Sonnet | CLI (AGENTS.md) | 10 | Failed (max turns) |
+
+**Finding:** With MCP, agents immediately use `find_callers`. Without MCP, they fall back to grep patterns even when AGENTS.md explicitly documents the CLI commands. Tool visibility matters more than documentation.
+
+---
+
+## Performance Benchmarks
 
 ### Example: Finding `spawn` in Tokio (751 Rust files)
 
@@ -112,7 +245,7 @@ $ rkt def "spawn"
 ```
 **1 tool call, 221 tokens.**
 
-### Benchmarks
+### Summary
 
 | Metric | RocketIndex | Grep Workflow |
 | :--- | :--- | :--- |

@@ -1,9 +1,17 @@
+// Allow holding std::sync::Mutex across await - these tests intentionally
+// serialize CWD modifications and the lock is never contended in practice.
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 use crate::mcp::tools::definition::{find_definition, FindDefinitionInput};
 use crate::mcp::tools::structure::{describe_project, DescribeProjectInput};
 use rocketindex::{Location, SqliteIndex, Symbol, SymbolKind, Visibility};
 use std::sync::Arc;
 use tempfile::TempDir;
+
+/// Mutex to serialize tests that modify the global CWD.
+/// This prevents race conditions when tests run in parallel.
+static CWD_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 async fn setup_project() -> (TempDir, Arc<ProjectManager>) {
     let dir = TempDir::new().unwrap();
@@ -48,6 +56,9 @@ async fn setup_project() -> (TempDir, Arc<ProjectManager>) {
 
 #[tokio::test]
 async fn test_fuzzy_fallback_success() {
+    // Acquire CWD lock to prevent interference from CWD-modifying tests
+    let _guard = CWD_MUTEX.lock().unwrap();
+
     let (_dir, manager) = setup_project().await;
 
     // Search for typo "Usr"
@@ -170,10 +181,11 @@ async fn test_find_definition_hint() {
     assert!(json.contains("Use `describe_project`"));
 }
 
-// Note: This test modifies global CWD which can cause race conditions with parallel tests.
-// Run with `cargo test -- --test-threads=1` if this test fails intermittently.
 #[tokio::test]
 async fn test_cwd_based_project_resolution() {
+    // Acquire the CWD mutex to prevent other tests from running while we modify CWD
+    let _guard = CWD_MUTEX.lock().unwrap();
+
     // Setup a project with an index
     let dir = TempDir::new().unwrap();
     let root = dir.path();
@@ -224,7 +236,7 @@ async fn test_cwd_based_project_resolution() {
     let result = find_definition(manager, input).await;
     let json = serde_json::to_string(&result).unwrap();
 
-    // Restore original CWD
+    // Restore original CWD before assertions (ensures cleanup even if assertions fail)
     std::env::set_current_dir(original_cwd).unwrap();
 
     // Verify we found the symbol from CWD project

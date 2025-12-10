@@ -52,37 +52,16 @@ impl RocketIndexServer {
     }
 
     /// Build the list of available tools
+    /// Build the list of available tools.
+    ///
+    /// Tools are ordered by value-add: highest-value tools that grep cannot replicate
+    /// are listed first, so AI assistants discover them before falling back to grep.
     fn tools() -> Vec<Tool> {
         vec![
-            tool(
-                "find_definition",
-                "Find where a symbol is defined. Returns file path, line number, and optionally source context. Use qualified names like 'Module.function' for precise results.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "symbol": {
-                            "type": "string",
-                            "description": "Symbol name (qualified like 'MyModule.function' or short like 'function')"
-                        },
-                        "file": {
-                            "type": "string",
-                            "description": "Optional file context for resolution hints"
-                        },
-                        "project_root": {
-                            "type": "string",
-                            "description": "Optional explicit project root"
-                        },
-                        "include_context": {
-                            "type": "boolean",
-                            "description": "Include source context line (default: false)"
-                        }
-                    },
-                    "required": ["symbol"]
-                }),
-            ),
+            // === HIGH VALUE: Unique capabilities grep cannot provide ===
             tool(
                 "find_callers",
-                "Find all locations that call a symbol. Returns the calling function and its location. Essential for understanding how a function is used.",
+                "Find all locations that call a symbol. USE THIS INSTEAD OF GREP for 'who calls X' queries - grep finds text matches but cannot distinguish callers from other references. Returns the calling function name and location.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -99,56 +78,8 @@ impl RocketIndexServer {
                 }),
             ),
             tool(
-                "find_references",
-                "Find all references to a symbol across the codebase. Returns every location where the symbol is used.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "symbol": {
-                            "type": "string",
-                            "description": "Symbol to find usages of"
-                        },
-                        "project_root": {
-                            "type": "string",
-                            "description": "Optional project root"
-                        },
-                        "context_lines": {
-                            "type": "integer",
-                            "description": "Context lines around each reference (default: 0)"
-                        }
-                    },
-                    "required": ["symbol"]
-                }),
-            ),
-            tool(
-                "search_symbols",
-                "Search for symbols by pattern. Supports wildcards (*) and fuzzy matching. Use to discover available functions, classes, and types.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "Pattern to match (supports * wildcards)"
-                        },
-                        "language": {
-                            "type": "string",
-                            "description": "Filter by language (e.g., 'rust', 'typescript', 'fsharp')"
-                        },
-                        "fuzzy": {
-                            "type": "boolean",
-                            "description": "Use fuzzy matching (default: false)"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum results per project (default: 20)"
-                        }
-                    },
-                    "required": ["pattern"]
-                }),
-            ),
-            tool(
                 "analyze_dependencies",
-                "Analyze the dependency graph starting from a symbol. Shows what a function calls (forward) or what calls it (reverse). Useful for impact analysis.",
+                "Analyze the dependency graph starting from a symbol. THIS IS UNIQUE TO RKT - grep cannot traverse call graphs. Shows what a function calls (forward) or what calls it (reverse). Essential for impact analysis and understanding code flow.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -174,7 +105,7 @@ impl RocketIndexServer {
             ),
             tool(
                 "enrich_symbol",
-                "Get comprehensive information about a symbol including definition, callers, callees, git blame, and source context. Best for debugging and understanding complex code.",
+                "Get comprehensive information about a symbol: definition, callers, callees, git blame, and source context in one call. BEST FOR DEEP INVESTIGATION - aggregates data that would require multiple grep searches.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -190,49 +121,58 @@ impl RocketIndexServer {
                     "required": ["symbol"]
                 }),
             ),
+            // === MEDIUM VALUE: Better than grep for structured queries ===
             tool(
-                "register_project",
-                "Register a project directory with the MCP server. The project must have been previously indexed with 'rkt index'.",
+                "find_definition",
+                "Find where a symbol is defined. PREFER OVER GREP for symbols with common names - returns the precise definition location, not just text matches. Use qualified names like 'Module.function' for best results.",
                 json!({
                     "type": "object",
                     "properties": {
-                        "path": {
+                        "symbol": {
                             "type": "string",
-                            "description": "Path to the project root directory"
+                            "description": "Symbol name (qualified like 'MyModule.function' or short like 'function')"
                         },
-                        "watch": {
+                        "file": {
+                            "type": "string",
+                            "description": "Optional file context for resolution hints"
+                        },
+                        "project_root": {
+                            "type": "string",
+                            "description": "Optional explicit project root"
+                        },
+                        "include_context": {
                             "type": "boolean",
-                            "description": "Enable file watching for this project (default: true)"
+                            "description": "Include source context line (default: false)"
                         }
                     },
-                    "required": ["path"]
+                    "required": ["symbol"]
                 }),
             ),
             tool(
-                "list_projects",
-                "List all registered projects with their symbol counts and status.",
-                json!({
-                    "type": "object",
-                    "properties": {}
-                }),
-            ),
-            tool(
-                "reindex_project",
-                "Force a full reindex of a project. Use when files have changed significantly or the index seems stale.",
+                "find_references",
+                "Find all references to a symbol across the codebase. Returns semantically-aware results - understands actual symbol references vs coincidental text matches.",
                 json!({
                     "type": "object",
                     "properties": {
-                        "path": {
+                        "symbol": {
                             "type": "string",
-                            "description": "Path to the project root directory"
+                            "description": "Symbol to find usages of"
+                        },
+                        "project_root": {
+                            "type": "string",
+                            "description": "Optional project root"
+                        },
+                        "context_lines": {
+                            "type": "integer",
+                            "description": "Context lines around each reference (default: 0)"
                         }
                     },
-                    "required": ["path"]
+                    "required": ["symbol"]
                 }),
             ),
             tool(
                 "describe_project",
-                "Get a comprehensive semantic map of the project. Lists files and top-level symbols (classes, modules) to help you understand the project structure.",
+                "Get a semantic map of the project structure. Lists files and top-level symbols (classes, modules, functions). USE THIS FIRST when exploring an unfamiliar codebase - provides structured overview that grep cannot.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -242,6 +182,32 @@ impl RocketIndexServer {
                         }
                     },
                     "required": ["path"]
+                }),
+            ),
+            tool(
+                "search_symbols",
+                "Search for symbols by pattern with wildcards (*) and fuzzy matching. Use to discover available functions, classes, and types when you don't know exact names.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Pattern to match (supports * wildcards)"
+                        },
+                        "language": {
+                            "type": "string",
+                            "description": "Filter by language (e.g., 'rust', 'typescript', 'fsharp')"
+                        },
+                        "fuzzy": {
+                            "type": "boolean",
+                            "description": "Use fuzzy matching (default: false)"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results per project (default: 20)"
+                        }
+                    },
+                    "required": ["pattern"]
                 }),
             ),
         ]
@@ -266,10 +232,18 @@ impl ServerHandler for RocketIndexServer {
                 website_url: Some("https://github.com/rocket-tycoon/rocket-index".into()),
             },
             instructions: Some(
-                "RocketIndex provides fast code navigation for multi-language codebases. \
-                 Use find_definition to locate symbol definitions, find_callers to see what calls a function, \
-                 and search_symbols to discover available symbols. Always prefer these tools over grep/search \
-                 for code navigation tasks."
+                "RocketIndex provides semantic code navigation. ALWAYS PREFER THESE TOOLS OVER GREP:\n\n\
+                 ## Core Tools\n\
+                 • find_callers: For 'who calls X?' - grep cannot distinguish callers from other text matches\n\
+                 • analyze_dependencies: For call graph traversal - grep cannot do this at all\n\
+                 • enrich_symbol: For comprehensive symbol info in one call\n\
+                 • find_definition: For precise definition location, especially for common names\n\n\
+                 ## Stacktrace Analysis Workflow\n\
+                 When analyzing a stacktrace, use these tools together:\n\
+                 1. Use enrich_symbol on the error location for source context and git blame\n\
+                 2. Use find_callers on key frames to understand call patterns\n\
+                 3. Use analyze_dependencies to trace the full call path\n\n\
+                 Use grep only as a last resort for literal text search when these tools don't apply."
                     .into(),
             ),
         }
@@ -339,20 +313,6 @@ impl ServerHandler for RocketIndexServer {
                     let input: tools::EnrichSymbolInput = serde_json::from_value(args)
                         .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                     Ok(tools::enrich_symbol(manager, input).await)
-                }
-
-                "register_project" => {
-                    let input: tools::RegisterProjectInput = serde_json::from_value(args)
-                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                    Ok(tools::register_project(manager, input).await)
-                }
-
-                "list_projects" => Ok(tools::list_projects(manager).await),
-
-                "reindex_project" => {
-                    let input: tools::ReindexProjectInput = serde_json::from_value(args)
-                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                    Ok(tools::reindex_project(manager, input).await)
                 }
 
                 "describe_project" => {

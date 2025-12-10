@@ -22,7 +22,8 @@ pub struct ProjectState {
     pub sqlite: SqliteIndex,
     /// In-memory CodeIndex for resolution
     pub code_index: CodeIndex,
-    /// Whether the project has active watchers
+    /// Whether the project has active watchers (managed by WatcherPool)
+    #[allow(dead_code)]
     pub watching: bool,
 }
 
@@ -434,43 +435,6 @@ impl ProjectManager {
         let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let projects = self.projects.read().await;
         projects.contains_key(&canonical)
-    }
-
-    /// Register a project with optional file watching
-    pub async fn register_project(&self, root: PathBuf, _watch: bool) -> Result<()> {
-        // For now, just delegate to register
-        // TODO: Start file watcher if watch=true
-        self.register(root).await
-    }
-
-    /// Reindex a project and return the symbol count
-    pub async fn reindex_project(&self, root: &Path) -> Result<usize> {
-        let canonical = root.canonicalize()?;
-
-        // Run rkt index in the project directory (async to not block server)
-        let output = tokio::process::Command::new("rkt")
-            .arg("index")
-            .current_dir(&canonical)
-            .output()
-            .await
-            .with_context(|| "Failed to run 'rkt index'")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("rkt index failed: {}", stderr);
-        }
-
-        // Reload the project state
-        {
-            let projects = self.projects.read().await;
-            if let Some(mutex) = projects.get(&canonical) {
-                let mut state = mutex.lock().expect("ProjectState mutex poisoned");
-                state.reload()?;
-                return Ok(state.code_index.symbol_count());
-            }
-        }
-
-        anyhow::bail!("Project not found after reindex")
     }
 
     /// Ensure a project is registered, creating the index if necessary (JIT)
