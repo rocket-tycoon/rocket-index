@@ -39,7 +39,7 @@ sudo mv rkt rocketindex-lsp /usr/local/bin/
 **For AI Assistants (MCP) - Recommended**
 ```bash
 cd /path/to/your/repo
-claude mcp add --transport stdio rocketindex -- rkt serve
+claude mcp add --transport stdio rocket-index -- rkt serve
 ```
 That's it. The MCP server auto-indexes on first use. See [MCP Setup](#mcp-server-for-ai-assistants) for Claude Desktop config.
 
@@ -79,7 +79,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 ```json
 {
   "mcpServers": {
-    "rocketindex": {
+    "rocket-index": {
       "command": "rkt",
       "args": ["serve"]
     }
@@ -87,7 +87,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 }
 ```
 
-Restart Claude Desktop. RocketIndex tools will appear in Claude's tool list.
+Restart Claude Desktop. RocketIndex tools will appear in the toolbox.
 
 ### Setup: Claude Code
 
@@ -95,7 +95,7 @@ Run from your project root (RocketIndex MCP is project-local):
 
 ```bash
 cd /path/to/your/repo
-claude mcp add --transport stdio rocketindex -- rkt serve
+claude mcp add --transport stdio rocket-index -- rkt serve
 ```
 
 This registers the MCP server for this project. Claude Code will auto-start it when you open the project.
@@ -106,7 +106,7 @@ Run from your project root:
 
 ```bash
 cd /path/to/your/repo
-gemini mcp add rocketindex rkt serve
+gemini mcp add rocket-index rkt serve
 ```
 
 See [Gemini CLI MCP docs](https://geminicli.com/docs/tools/mcp-server/) for more options.
@@ -118,7 +118,7 @@ Add to your Zed settings (`~/.config/zed/settings.json`):
 ```json
 {
   "context_servers": {
-    "rocketindex": {
+    "rocket-index": {
       "command": "rkt",
       "args": ["serve"]
     }
