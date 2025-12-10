@@ -1,0 +1,17 @@
+#!/bin/sh
+#
+# Pre-push hook for RocketIndex
+#
+# Runs full test suite before pushing to catch CI failures early
+#
+
+echo "Running cargo test before push..."
+if ! cargo test --all; then
+    echo ""
+    echo "❌ Tests failed. Push aborted."
+    echo "Fix the failing tests and try again."
+    exit 1
+fi
+
+echo "✅ All tests passed"
+exit 0

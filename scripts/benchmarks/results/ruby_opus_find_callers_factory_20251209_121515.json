@@ -1,0 +1,16 @@
+{
+  "task_id": "find_callers_factory",
+  "category": "find_callers",
+  "difficulty": "medium",
+  "model": "opus",
+  "runs": 1,
+  "without_rkt": {
+    "avg_turns": 3.0,
+    "success_rate": 1.00
+  },
+  "with_rkt": {
+    "avg_turns": 15.0,
+    "success_rate": 0
+  },
+  "turn_reduction_percent": -400
+}

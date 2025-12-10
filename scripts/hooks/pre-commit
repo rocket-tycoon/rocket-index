@@ -1,0 +1,23 @@
+#!/bin/sh
+#
+# Pre-commit hook for RocketIndex
+#
+# Runs fast checks: format and lint
+#
+
+echo "Running cargo fmt check..."
+if ! cargo fmt --all -- --check; then
+    echo ""
+    echo "❌ Format check failed. Run 'cargo fmt' to fix."
+    exit 1
+fi
+
+echo "Running cargo clippy..."
+if ! cargo clippy --all -- -D warnings; then
+    echo ""
+    echo "❌ Clippy found issues. Fix the warnings above."
+    exit 1
+fi
+
+echo "✅ Pre-commit checks passed"
+exit 0
