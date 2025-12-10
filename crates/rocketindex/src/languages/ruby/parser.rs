@@ -119,6 +119,32 @@ fn extract_mixins(node: &tree_sitter::Node, source: &[u8]) -> Vec<String> {
     mixins
 }
 
+/// Extract method signature from a method node's parameters
+fn extract_method_signature(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    // Look for method_parameters or parameters child
+    let params_node = node.child_by_field_name("parameters").or_else(|| {
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "method_parameters" {
+                    return Some(child);
+                }
+            }
+        }
+        None
+    })?;
+
+    // Get the full text of the parameters including parentheses
+    if let Ok(params_text) = params_node.utf8_text(source) {
+        let trimmed = params_text.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        return Some(trimmed.to_string());
+    }
+
+    None
+}
+
 /// Current visibility state within a class/module body
 #[derive(Clone, Copy, Default)]
 enum VisibilityState {
@@ -292,6 +318,9 @@ fn extract_recursive_inner(
                     // Extract doc comments preceding the method
                     let doc = extract_doc_comments(node, source);
 
+                    // Extract method signature (parameters)
+                    let signature = extract_method_signature(node, source);
+
                     result.symbols.push(Symbol {
                         name: name.to_string(),
                         qualified,
@@ -304,7 +333,7 @@ fn extract_recursive_inner(
                         attributes: None,
                         implements: None,
                         doc,
-                        signature: None,
+                        signature,
                     });
                 }
             }
@@ -779,6 +808,106 @@ fn extract_recursive_inner(
                                                 signature: None,
                                             });
                                             // Only take the first symbol argument
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Handle Rails associations - creates instance methods
+                    // has_many :posts, has_one :profile, belongs_to :user
+                    else if name == "has_many"
+                        || name == "has_one"
+                        || name == "belongs_to"
+                        || name == "has_and_belongs_to_many"
+                    {
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            // First argument is the association name
+                            for i in 0..args.child_count() {
+                                if let Some(arg) = args.child(i) {
+                                    let kind = arg.kind();
+                                    if kind == "simple_symbol" || kind == "symbol" {
+                                        if let Ok(sym_text) = arg.utf8_text(source) {
+                                            let assoc_name =
+                                                sym_text.trim_start_matches(':').to_string();
+                                            // Associations are instance methods
+                                            let qualified = match current_module {
+                                                Some(m) => format!("{}#{}", m, assoc_name),
+                                                None => assoc_name.clone(),
+                                            };
+
+                                            result.symbols.push(Symbol {
+                                                name: assoc_name,
+                                                qualified,
+                                                kind: SymbolKind::Member,
+                                                location: node_to_location(file, &arg),
+                                                visibility: Visibility::Public,
+                                                language: "ruby".to_string(),
+                                                parent: None,
+                                                mixins: None,
+                                                attributes: None,
+                                                implements: None,
+                                                doc: None,
+                                                signature: None,
+                                            });
+                                            // Only take the first symbol argument
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Handle Rails callbacks - creates references to methods
+                    // before_action :authenticate_user!, after_action :log_access
+                    else if name == "before_action"
+                        || name == "after_action"
+                        || name == "around_action"
+                        || name == "before_filter"
+                        || name == "after_filter"
+                        || name == "around_filter"
+                    {
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            for i in 0..args.child_count() {
+                                if let Some(arg) = args.child(i) {
+                                    let kind = arg.kind();
+                                    if kind == "simple_symbol" || kind == "symbol" {
+                                        if let Ok(sym_text) = arg.utf8_text(source) {
+                                            let method_name = sym_text
+                                                .trim_start_matches(':')
+                                                .trim_end_matches('!')
+                                                .to_string();
+                                            // Callbacks reference existing methods
+                                            result.references.push(Reference {
+                                                name: method_name,
+                                                location: node_to_location(file, &arg),
+                                            });
+                                            // Only take the first symbol (method name)
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Handle validate (custom validation method reference)
+                    // validate :custom_validation
+                    else if name == "validate" {
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            for i in 0..args.child_count() {
+                                if let Some(arg) = args.child(i) {
+                                    let kind = arg.kind();
+                                    if kind == "simple_symbol" || kind == "symbol" {
+                                        if let Ok(sym_text) = arg.utf8_text(source) {
+                                            let method_name =
+                                                sym_text.trim_start_matches(':').to_string();
+                                            // validate references an existing method
+                                            result.references.push(Reference {
+                                                name: method_name,
+                                                location: node_to_location(file, &arg),
+                                            });
+                                            // Only take the first symbol
                                             break;
                                         }
                                     }
@@ -1612,6 +1741,174 @@ end
         assert!(
             ref_names.contains(&"Helper"),
             "Should have reference to Helper: {:?}",
+            ref_names
+        );
+    }
+
+    // ============================================================
+    // METHOD SIGNATURE TESTS (RocketIndex-0s6)
+    // ============================================================
+
+    #[test]
+    fn extracts_method_signatures_basic() {
+        let source = r#"
+class User
+  def greet(name, age)
+    "Hello #{name}, age #{age}"
+  end
+end
+"#;
+        let result = extract_symbols(Path::new("test.rb"), source, 500);
+
+        let greet = result.symbols.iter().find(|s| s.name == "greet").unwrap();
+        assert!(
+            greet.signature.is_some(),
+            "Method should have signature extracted"
+        );
+        let sig = greet.signature.as_ref().unwrap();
+        assert!(
+            sig.contains("name") && sig.contains("age"),
+            "Signature should contain parameter names: {}",
+            sig
+        );
+    }
+
+    #[test]
+    fn extracts_method_signatures_with_defaults_and_splat() {
+        let source = r#"
+class Api
+  def call(url, method = :get, *args, **kwargs, &block)
+    # implementation
+  end
+end
+"#;
+        let result = extract_symbols(Path::new("test.rb"), source, 500);
+
+        let call = result.symbols.iter().find(|s| s.name == "call").unwrap();
+        assert!(
+            call.signature.is_some(),
+            "Method with complex params should have signature"
+        );
+        let sig = call.signature.as_ref().unwrap();
+        // Should capture various parameter types
+        assert!(sig.contains("url"), "Should have url param: {}", sig);
+        assert!(
+            sig.contains("method") || sig.contains(":get"),
+            "Should have method param with default: {}",
+            sig
+        );
+    }
+
+    // ============================================================
+    // RAILS DSL TESTS (RocketIndex-w3s)
+    // ============================================================
+
+    #[test]
+    fn extracts_rails_has_many_association() {
+        let source = r#"
+class User < ApplicationRecord
+  has_many :posts
+  has_many :comments, dependent: :destroy
+  has_one :profile
+end
+"#;
+        let result = extract_symbols(Path::new("user.rb"), source, 500);
+
+        // has_many :posts creates User#posts, User#posts=, User#post_ids, etc.
+        // At minimum we should index the association name as a method
+        let posts = result.symbols.iter().find(|s| s.name == "posts");
+        assert!(
+            posts.is_some(),
+            "has_many :posts should create a 'posts' symbol. Found: {:?}",
+            result.symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        let comments = result.symbols.iter().find(|s| s.name == "comments");
+        assert!(
+            comments.is_some(),
+            "has_many :comments should create a 'comments' symbol"
+        );
+
+        let profile = result.symbols.iter().find(|s| s.name == "profile");
+        assert!(
+            profile.is_some(),
+            "has_one :profile should create a 'profile' symbol"
+        );
+    }
+
+    #[test]
+    fn extracts_rails_belongs_to_association() {
+        let source = r#"
+class Post < ApplicationRecord
+  belongs_to :user
+  belongs_to :category, optional: true
+end
+"#;
+        let result = extract_symbols(Path::new("post.rb"), source, 500);
+
+        let user = result.symbols.iter().find(|s| s.name == "user");
+        assert!(
+            user.is_some(),
+            "belongs_to :user should create a 'user' symbol. Found: {:?}",
+            result.symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        let category = result.symbols.iter().find(|s| s.name == "category");
+        assert!(
+            category.is_some(),
+            "belongs_to :category should create a 'category' symbol"
+        );
+    }
+
+    #[test]
+    fn extracts_rails_callbacks() {
+        let source = r#"
+class PostsController < ApplicationController
+  before_action :authenticate_user!
+  before_action :set_post, only: [:show, :edit, :update, :destroy]
+  after_action :log_access
+end
+"#;
+        let result = extract_symbols(Path::new("posts_controller.rb"), source, 500);
+
+        // Callbacks should create references to the methods, not new symbols
+        // But we could also index them as function references
+        let ref_names: Vec<_> = result.references.iter().map(|r| &r.name).collect();
+
+        // At minimum, we should have references to the callback methods
+        assert!(
+            ref_names.iter().any(|n| n.contains("authenticate_user"))
+                || result
+                    .symbols
+                    .iter()
+                    .any(|s| s.name.contains("authenticate_user")),
+            "before_action :authenticate_user! should create a reference. Refs: {:?}, Symbols: {:?}",
+            ref_names,
+            result.symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn extracts_rails_validates() {
+        let source = r#"
+class User < ApplicationRecord
+  validates :email, presence: true, uniqueness: true
+  validates :name, length: { minimum: 2 }
+  validate :custom_validation
+end
+"#;
+        let result = extract_symbols(Path::new("user.rb"), source, 500);
+
+        // validate :custom_validation should create a reference to the method
+        let ref_names: Vec<_> = result.references.iter().map(|r| &r.name).collect();
+
+        assert!(
+            ref_names.iter().any(|n| n.contains("custom_validation"))
+                || result
+                    .symbols
+                    .iter()
+                    .any(|s| s.name.contains("custom_validation")),
+            "validate :custom_validation should create a reference. Refs: {:?}",
             ref_names
         );
     }
