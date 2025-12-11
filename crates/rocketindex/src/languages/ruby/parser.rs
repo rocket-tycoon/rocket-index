@@ -915,6 +915,24 @@ fn extract_recursive_inner(
                             }
                         }
                     }
+                    // Generic method call reference
+                    else {
+                        let mut method_name = name.to_string();
+                        // Try to qualify with receiver if it's a constant/module (e.g. User.find)
+                        if let Some(receiver) = node.child_by_field_name("receiver") {
+                            let kind = receiver.kind();
+                            if kind == "constant" || kind == "scope_resolution" {
+                                if let Ok(receiver_name) = receiver.utf8_text(source) {
+                                    method_name = format!("{}.{}", receiver_name, name);
+                                }
+                            }
+                        }
+
+                        result.references.push(Reference {
+                            name: method_name,
+                            location: node_to_location(file, &method),
+                        });
+                    }
                 }
             }
         }
@@ -1910,6 +1928,32 @@ end
                     .any(|s| s.name.contains("custom_validation")),
             "validate :custom_validation should create a reference. Refs: {:?}",
             ref_names
+        );
+    }
+
+    #[test]
+    fn extracts_method_call_references() {
+        let source = r#"
+class Service
+  def perform
+    UserVerification.find_by_type(service_name, user_verification_identifier)
+  end
+end
+"#;
+        let result = extract_symbols(Path::new("service.rb"), source, 500);
+
+        let types: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+        // This is expected to fail currently reference extraction isn't implemented for general calls
+        assert!(
+            types.contains(&"UserVerification.find_by_type") || types.contains(&"find_by_type"),
+            "Should contain reference to 'find_by_type' or qualified 'UserVerification.find_by_type', found: {:?}",
+            types
+        );
+        // UserVerification should be found as a constant reference
+        assert!(
+            types.contains(&"UserVerification"),
+            "Should contain reference to 'UserVerification', found: {:?}",
+            types
         );
     }
 }
