@@ -68,6 +68,32 @@ RocketIndex uses **Tree-sitter** and **SQLite** to build a precise, relational g
 | **Latency** | **< 10ms** | ~200ms+ | Variable |
 | **Best For** | **Navigation & Refactoring** | Exploration | Simple edits |
 
+## RocketIndex vs Language Servers (LSP)
+
+Some AI tools (like Claude Code) now include LSP support. When should you use RocketIndex instead?
+
+| Capability | **RocketIndex** | **LSP** |
+| :--- | :--- | :--- |
+| **Query model** | Symbol name: `find_definition("Foo.bar")` | Coordinates: `goToDefinition(file, line, col)` |
+| **Find callers** | ✅ Native `find_callers` tool | ❌ Only "find references" |
+| **Dependency graph** | ✅ `analyze_dependencies` | ❌ Not available |
+| **Setup** | Single binary, all languages | One server per language |
+| **Runtime** | None (tree-sitter) | Language runtimes required |
+| **Memory** | ~50MB | Varies (can be GBs) |
+
+**Use RocketIndex when:**
+- You want to query by symbol name, not file coordinates
+- You need caller/callee analysis or dependency graphs
+- You work across multiple languages
+- You want lightweight, zero-runtime navigation
+
+**Use LSP when:**
+- You need type-aware resolution
+- You want hover documentation with type signatures
+- You need compiler diagnostics (errors, warnings)
+
+They're complementary—RocketIndex for semantic queries and navigation, LSP for type-aware features.
+
 ## MCP Server for AI Assistants
 
 RocketIndex includes an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that exposes code navigation tools directly to AI assistants. This is the **recommended integration method** for AI agents.
