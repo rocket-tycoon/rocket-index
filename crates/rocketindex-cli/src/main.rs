@@ -730,6 +730,21 @@ fn cmd_index(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
         pb.finish_with_message("Indexing complete");
     }
 
+    // Record file modification times for incremental refresh
+    for file in &files {
+        if let Ok(metadata) = std::fs::metadata(file) {
+            if let Ok(modified) = metadata.modified() {
+                let mtime = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if let Err(e) = index.set_file_mtime(file, mtime) {
+                    tracing::warn!("Failed to record mtime for {:?}: {}", file, e);
+                }
+            }
+        }
+    }
+
     if format == OutputFormat::Json {
         let output = serde_json::json!({
             "files": files.len(),
@@ -1896,6 +1911,10 @@ fn print_batch_stats(stats: &BatchStats, format: OutputFormat) {
 
 /// Load the SQLite index from disk
 fn load_sqlite_index() -> Result<SqliteIndex> {
+    load_sqlite_index_with_refresh(true)
+}
+
+fn load_sqlite_index_with_refresh(auto_refresh: bool) -> Result<SqliteIndex> {
     let cwd = std::env::current_dir()?;
     let db_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
 
@@ -1903,7 +1922,76 @@ fn load_sqlite_index() -> Result<SqliteIndex> {
         anyhow::bail!("Index not found. Run 'rkt index' first.");
     }
 
-    SqliteIndex::open(&db_path).context("Failed to open SQLite index")
+    let index = SqliteIndex::open(&db_path).context("Failed to open SQLite index")?;
+
+    if auto_refresh {
+        ensure_index_fresh(&index, &cwd)?;
+    }
+
+    Ok(index)
+}
+
+/// Check for stale files and reindex them if needed.
+/// Targets <100ms for typical projects.
+fn ensure_index_fresh(index: &SqliteIndex, workspace_root: &Path) -> Result<()> {
+    // Load config to get source files
+    let config = Config::load(workspace_root);
+    let exclude_dirs = config.excluded_dirs();
+
+    let files =
+        find_source_files_with_config(workspace_root, &exclude_dirs, config.respect_gitignore)
+            .context("Failed to find source files")?;
+
+    // Check for stale files
+    let stale = index.find_stale_files(&files)?;
+
+    if stale.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!("Auto-refreshing {} stale file(s)", stale.len());
+
+    // Use batch processor for efficient update
+    let mut batch = rocketindex::batch::BatchProcessor::with_defaults(config.max_recursion_depth);
+
+    for (path, reason) in &stale {
+        match *reason {
+            "deleted" => {
+                batch.add_event(rocketindex::watch::WatchEvent::Deleted(path.clone()));
+            }
+            "modified" | "new" => {
+                batch.add_event(rocketindex::watch::WatchEvent::Modified(path.clone()));
+            }
+            _ => {}
+        }
+    }
+
+    // Flush the batch
+    if let Ok(stats) = batch.flush(index) {
+        tracing::debug!(
+            "Refreshed {} files, {} symbols in {:?}",
+            stats.files_updated,
+            stats.symbols_inserted,
+            stats.duration
+        );
+    }
+
+    // Update mtimes for refreshed files
+    for (path, reason) in &stale {
+        if *reason == "deleted" {
+            let _ = index.delete_file_mtime(path);
+        } else if let Ok(metadata) = std::fs::metadata(path) {
+            if let Ok(modified) = metadata.modified() {
+                let mtime = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let _ = index.set_file_mtime(path, mtime);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Load the CodeIndex from SQLite (for spider compatibility)

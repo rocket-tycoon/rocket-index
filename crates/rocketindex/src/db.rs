@@ -57,7 +57,7 @@ use crate::type_cache::{MemberKind, TypeMember};
 use crate::{IndexError, Location, Result, Symbol, SymbolKind, Visibility};
 
 /// Current schema version. Increment when making breaking changes.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Standard columns selected when querying symbols.
 /// Must match the order expected by `row_to_symbol`.
@@ -139,19 +139,38 @@ impl SqliteIndex {
 
         let index = Self { conn };
 
-        // Verify schema version
+        // Check and migrate schema if needed
         let version = index.get_schema_version()?;
-        if version != SCHEMA_VERSION {
+        if version < SCHEMA_VERSION {
+            index.migrate_schema(version)?;
+        } else if version > SCHEMA_VERSION {
             return Err(IndexError::IoError(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "Schema version mismatch: expected {}, found {}",
-                    SCHEMA_VERSION, version
+                    "Schema version {} is newer than supported version {}",
+                    version, SCHEMA_VERSION
                 ),
             )));
         }
 
         Ok(index)
+    }
+
+    /// Migrate database schema from an older version.
+    fn migrate_schema(&self, from_version: u32) -> Result<()> {
+        // Migration v3 -> v4: Add file_mtimes table
+        if from_version < 4 {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS file_mtimes (
+                    path TEXT PRIMARY KEY,
+                    mtime INTEGER NOT NULL
+                );",
+            )?;
+            self.set_metadata("schema_version", "4")?;
+            tracing::info!("Migrated database schema from v{} to v4", from_version);
+        }
+
+        Ok(())
     }
 
     /// Open an existing database or create a new one.
@@ -986,6 +1005,118 @@ impl SqliteIndex {
     pub fn begin_transaction(&self) -> Result<rusqlite::Transaction<'_>> {
         Ok(self.conn.unchecked_transaction()?)
     }
+
+    // =========================================================================
+    // File Mtime Tracking (for incremental refresh)
+    // =========================================================================
+
+    /// Record the modification time of a file.
+    pub fn set_file_mtime(&self, file: &Path, mtime: u64) -> Result<()> {
+        let file_str = file.to_string_lossy();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO file_mtimes (path, mtime) VALUES (?1, ?2)",
+            params![file_str.as_ref(), mtime as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Get the recorded modification time of a file.
+    pub fn get_file_mtime(&self, file: &Path) -> Result<Option<u64>> {
+        let file_str = file.to_string_lossy();
+        let mtime: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT mtime FROM file_mtimes WHERE path = ?1",
+                params![file_str.as_ref()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(mtime.map(|m| m as u64))
+    }
+
+    /// Delete the mtime record for a file.
+    pub fn delete_file_mtime(&self, file: &Path) -> Result<()> {
+        let file_str = file.to_string_lossy();
+        self.conn.execute(
+            "DELETE FROM file_mtimes WHERE path = ?1",
+            params![file_str.as_ref()],
+        )?;
+        Ok(())
+    }
+
+    /// Clear all mtime records.
+    pub fn clear_all_mtimes(&self) -> Result<usize> {
+        let count = self.conn.execute("DELETE FROM file_mtimes", [])?;
+        Ok(count)
+    }
+
+    /// Get all tracked file paths.
+    pub fn get_tracked_files(&self) -> Result<Vec<PathBuf>> {
+        let mut stmt = self.conn.prepare("SELECT path FROM file_mtimes")?;
+        let files = stmt
+            .query_map([], |row| {
+                let path: String = row.get(0)?;
+                Ok(PathBuf::from(path))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(files)
+    }
+
+    /// Find files that are stale (mtime on disk differs from recorded mtime).
+    ///
+    /// Returns a list of (path, reason) tuples where reason is:
+    /// - "modified" - file exists but mtime changed
+    /// - "deleted" - file was tracked but no longer exists
+    /// - "new" - file exists on disk but wasn't tracked
+    ///
+    /// This is designed to be fast (<100ms for typical projects).
+    pub fn find_stale_files(
+        &self,
+        source_files: &[PathBuf],
+    ) -> Result<Vec<(PathBuf, &'static str)>> {
+        let mut stale = Vec::new();
+
+        // Check tracked files for modifications/deletions
+        let mut stmt = self.conn.prepare("SELECT path, mtime FROM file_mtimes")?;
+        let tracked: Vec<(String, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // Build set of tracked paths for new file detection
+        let tracked_set: std::collections::HashSet<_> =
+            tracked.iter().map(|(p, _)| PathBuf::from(p)).collect();
+
+        for (path_str, recorded_mtime) in &tracked {
+            let path = PathBuf::from(path_str);
+
+            if !path.exists() {
+                stale.push((path, "deleted"));
+                continue;
+            }
+
+            // Check if mtime changed
+            if let Ok(metadata) = std::fs::metadata(&path) {
+                if let Ok(modified) = metadata.modified() {
+                    let disk_mtime = modified
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    if disk_mtime != *recorded_mtime as u64 {
+                        stale.push((path, "modified"));
+                    }
+                }
+            }
+        }
+
+        // Check for new files (on disk but not tracked)
+        for file in source_files {
+            if !tracked_set.contains(file) {
+                stale.push((file.clone(), "new"));
+            }
+        }
+
+        Ok(stale)
+    }
 }
 
 // ============================================================================
@@ -1087,6 +1218,12 @@ CREATE TABLE IF NOT EXISTS opens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_opens_file ON opens(file);
+
+-- File modification times for incremental refresh
+CREATE TABLE IF NOT EXISTS file_mtimes (
+    path TEXT PRIMARY KEY,
+    mtime INTEGER NOT NULL
+);
 "#;
 
 // ============================================================================
@@ -1149,7 +1286,7 @@ fn row_to_type_member(row: &rusqlite::Row<'_>) -> rusqlite::Result<TypeMember> {
     })
 }
 
-fn symbol_kind_to_str(kind: SymbolKind) -> &'static str {
+pub(crate) fn symbol_kind_to_str(kind: SymbolKind) -> &'static str {
     match kind {
         SymbolKind::Module => "module",
         SymbolKind::Function => "function",
@@ -1178,7 +1315,7 @@ fn str_to_symbol_kind(s: &str) -> SymbolKind {
     }
 }
 
-fn visibility_to_str(vis: Visibility) -> &'static str {
+pub(crate) fn visibility_to_str(vis: Visibility) -> &'static str {
     match vis {
         Visibility::Public => "public",
         Visibility::Internal => "internal",
