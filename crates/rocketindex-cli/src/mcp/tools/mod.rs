@@ -4,7 +4,6 @@
 
 pub mod callers;
 pub mod definition;
-pub mod enrich;
 pub mod references;
 pub mod spider;
 pub mod structure;
@@ -12,7 +11,6 @@ pub mod symbols;
 
 pub use callers::*;
 pub use definition::*;
-pub use enrich::*;
 pub use references::*;
 pub use spider::*;
 pub use structure::*;

@@ -103,24 +103,6 @@ impl RocketIndexServer {
                     "required": ["symbol"]
                 }),
             ),
-            tool(
-                "enrich_symbol",
-                "Get comprehensive information about a symbol: definition, callers, callees, git blame, and source context in one call. BEST FOR DEEP INVESTIGATION - aggregates data that would require multiple grep searches.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "symbol": {
-                            "type": "string",
-                            "description": "Symbol to enrich (qualified name preferred)"
-                        },
-                        "project_root": {
-                            "type": "string",
-                            "description": "Optional project root"
-                        }
-                    },
-                    "required": ["symbol"]
-                }),
-            ),
             // === MEDIUM VALUE: Better than grep for structured queries ===
             tool(
                 "find_definition",
@@ -236,13 +218,8 @@ impl ServerHandler for RocketIndexServer {
                  ## Core Tools\n\
                  • find_callers: For 'who calls X?' - grep cannot distinguish callers from other text matches\n\
                  • analyze_dependencies: For call graph traversal - grep cannot do this at all\n\
-                 • enrich_symbol: For comprehensive symbol info in one call\n\
-                 • find_definition: For precise definition location, especially for common names\n\n\
-                 ## Stacktrace Analysis Workflow\n\
-                 When analyzing a stacktrace, use these tools together:\n\
-                 1. Use enrich_symbol on the error location for source context and git blame\n\
-                 2. Use find_callers on key frames to understand call patterns\n\
-                 3. Use analyze_dependencies to trace the full call path\n\n\
+                 • find_definition: For precise definition location, especially for common names\n\
+                 • search_symbols: For finding symbols by pattern\n\n\
                  Use grep only as a last resort for literal text search when these tools don't apply."
                     .into(),
             ),
@@ -307,12 +284,6 @@ impl ServerHandler for RocketIndexServer {
                     let input: tools::AnalyzeDepsInput = serde_json::from_value(args)
                         .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                     Ok(tools::analyze_dependencies(manager, input).await)
-                }
-
-                "enrich_symbol" => {
-                    let input: tools::EnrichSymbolInput = serde_json::from_value(args)
-                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                    Ok(tools::enrich_symbol(manager, input).await)
                 }
 
                 "describe_project" => {
