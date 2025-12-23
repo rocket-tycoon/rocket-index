@@ -3,6 +3,10 @@
 **Note**: This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for code navigation.
    Use `rkt` commands instead of grep/ripgrep for finding symbol definitions and callers.
    See `.rocketindex/AGENTS.md` for commands.
+   
+   **MCP Alternative**: RocketIndex also provides an MCP server (`rkt serve`) that exposes
+   tools like `find_callers` and `analyze_dependencies` directly to AI assistants.
+   See the "MCP Server" section in README.md for setup instructions.
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -64,6 +68,26 @@ Without watch mode, the index becomes stale as the AI agent modifies files, caus
 
 # Terminal 2: AI agent session
 ```
+
+## MCP Server
+
+For AI assistants that support MCP (Model Context Protocol), RocketIndex provides a server
+that exposes navigation tools directly:
+
+```bash
+# Start MCP server (used by Claude Desktop, etc.)
+./target/release/rkt serve
+
+# Manage registered projects
+./target/release/rkt serve add /path/to/project
+./target/release/rkt serve list
+```
+
+The MCP server provides: `find_definition`, `find_callers`, `find_references`, 
+`search_symbols`, `analyze_dependencies`, `enrich_symbol`, `describe_project`,
+`register_project`, `list_projects`, `reindex_project`.
+
+Config stored at `~/.config/rocketindex/mcp.json`.
 
 ## Architecture
 
