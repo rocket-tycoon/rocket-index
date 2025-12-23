@@ -196,10 +196,11 @@ impl SqliteIndex {
 
     /// Initialize the database schema.
     fn init_schema(&self) -> Result<()> {
-        // Aggressive performance tuning for write-heavy indexing
+        // Performance tuning for write-heavy indexing
+        // Note: synchronous=NORMAL is safe with WAL mode and has minimal overhead
         self.conn.execute_batch(
             "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = OFF;
+             PRAGMA synchronous = NORMAL;
              PRAGMA cache_size = -64000;
              PRAGMA mmap_size = 268435456;
              PRAGMA temp_store = MEMORY;
