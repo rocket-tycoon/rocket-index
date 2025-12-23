@@ -160,7 +160,6 @@ See [Zed MCP docs](https://zed.dev/docs/ai/mcp) for more options.
 | :--- | :--- | :--- |
 | `find_callers` | Find all call sites of a function | Grep finds text matches; this finds actual callers |
 | `analyze_dependencies` | Traverse call graph (forward/reverse) | Grep cannot do graph traversal at all |
-| `enrich_symbol` | Get comprehensive symbol context | Aggregates definition, callers, blame in one call |
 | `find_definition` | Locate where a symbol is defined | Precise location, not 17 candidates to sift |
 | `find_references` | Find all usages of a symbol | Semantic matches, not text matches |
 | `search_symbols` | Search symbols by pattern | Structured results with qualified names |
@@ -218,9 +217,6 @@ rkt spider "main" --depth 5
 ```bash
 # Search for symbols by pattern (supports wildcards)
 rkt symbols "*Service" --concise
-
-# Get comprehensive info about a symbol
-rkt enrich "PaymentService.process"
 ```
 
 ### Watch Mode (Essential for AI Coding Sessions)
