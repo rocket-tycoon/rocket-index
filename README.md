@@ -36,12 +36,18 @@ sudo mv rkt rocketindex-lsp /usr/local/bin/
 
 ### 2. Choose Your Setup Path
 
-**For AI Assistants (MCP) - Recommended**
+**For Claude Code (Plugin) - Easiest**
+```bash
+claude plugin install /path/to/RocketIndex/plugins/claude-code
+```
+Install once, works in all projects. No per-project setup needed. See [Claude Code Plugin](#setup-claude-code-plugin-recommended).
+
+**For Other AI Assistants (MCP)**
 ```bash
 cd /path/to/your/repo
 claude mcp add --transport stdio rocket-index -- rkt serve
 ```
-That's it. The MCP server auto-indexes on first use. See [MCP Setup](#mcp-server-for-ai-assistants) for Claude Desktop config.
+The MCP server auto-indexes on first use. See [MCP Setup](#mcp-server-for-ai-assistants) for Claude Desktop, Gemini CLI, and Zed config.
 
 **For Human Use / CLI**
 ```bash
@@ -115,13 +121,33 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 
 Restart Claude Desktop. RocketIndex tools will appear in the toolbox.
 
-### Setup: Claude Code
+### Setup: Claude Code Plugin (Recommended)
 
-Run from your project root (RocketIndex MCP is project-local):
+The easiest way to use RocketIndex with Claude Code is via the plugin. Install once, works everywhere:
+
+```bash
+# Install the plugin
+claude plugin install /path/to/RocketIndex/plugins/claude-code
+
+# Or from GitHub (when published)
+claude plugin install github:rocket-tycoon/rocket-index/plugins/claude-code
+```
+
+That's it! The plugin:
+- Auto-starts the MCP server
+- Auto-injects your working directory as project context
+- No manual `rkt serve add` needed
+
+Just `cd` into any project and start using RocketIndex tools.
+
+### Setup: Claude Code (Manual MCP)
+
+If you prefer manual MCP configuration instead of the plugin:
 
 ```bash
 cd /path/to/your/repo
 claude mcp add --transport stdio rocket-index -- rkt serve
+rkt serve add .  # Register current project
 ```
 
 This registers the MCP server for this project. Claude Code will auto-start it when you open the project.
