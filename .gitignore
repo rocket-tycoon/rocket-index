@@ -51,4 +51,7 @@ coverage/
 # Integration test repos (cloned external projects)
 test-repos/
 
+# But allow our small Claude plugin test samples
+!tests/claude-plugin-integration/test-repos/
+
 .fake
