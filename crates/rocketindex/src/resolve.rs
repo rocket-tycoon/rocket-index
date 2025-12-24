@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use crate::languages::{csharp, fsharp, java, javascript, php, ruby, typescript};
+use crate::languages::{cpp, csharp, fsharp, java, javascript, php, ruby, typescript};
 use crate::type_cache::TypeMember;
 use crate::{CodeIndex, Symbol};
 
@@ -85,6 +85,9 @@ impl CodeIndex {
             .to_lowercase();
 
         match extension.as_str() {
+            "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => {
+                cpp::CppResolver.resolve(self, name, from_file)
+            }
             "cs" => csharp::CSharpResolver.resolve(self, name, from_file),
             "fs" | "fsi" | "fsx" => fsharp::FSharpResolver.resolve(self, name, from_file),
             "java" => java::JavaResolver.resolve(self, name, from_file),
@@ -109,6 +112,9 @@ impl CodeIndex {
             .to_lowercase();
 
         match extension.as_str() {
+            "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => {
+                cpp::CppResolver.resolve_dotted(self, name, from_file)
+            }
             "cs" => csharp::CSharpResolver.resolve_dotted(self, name, from_file),
             "fs" | "fsi" | "fsx" => fsharp::FSharpResolver.resolve_dotted(self, name, from_file),
             "java" => java::JavaResolver.resolve_dotted(self, name, from_file),
