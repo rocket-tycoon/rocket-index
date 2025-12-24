@@ -236,48 +236,52 @@ impl Backend {
     }
 
     /// Update a single file in both the in-memory index and SQLite database.
+    /// Parses the file once and shares results between both indexes.
     async fn update_file(&self, file: &PathBuf) -> Result<()> {
         let max_depth = *self.max_recursion_depth.read().await;
+
+        // Read and parse once
+        let content = std::fs::read_to_string(file)?;
+        let result = extract_symbols(file, &content, max_depth);
 
         // Update in-memory index
         {
             let mut index = self.index.write().await;
-            self.index_file(&mut index, file, max_depth)?;
+            index.clear_file(file);
+
+            for symbol in &result.symbols {
+                index.add_symbol(symbol.clone());
+            }
+            for reference in &result.references {
+                index.add_reference(file.clone(), reference.clone());
+            }
+            for open in &result.opens {
+                index.add_open(file.clone(), open.clone());
+            }
         }
 
-        // Also update SQLite if it exists
+        // Update SQLite if it exists - single transaction for all operations
         let root = self.workspace_root.read().await;
         if let Some(root_path) = root.as_ref() {
             let db_path = Self::get_db_path(root_path);
             if db_path.exists() {
                 match SqliteIndex::open(&db_path) {
                     Ok(sqlite_index) => {
-                        // Clear existing data for this file
-                        if let Err(e) = sqlite_index.clear_file(file) {
-                            warn!("Failed to clear file from SQLite index: {}", e);
-                        }
+                        // Convert opens to the format expected by update_file_data
+                        let opens: Vec<(String, u32)> = result
+                            .opens
+                            .iter()
+                            .enumerate()
+                            .map(|(i, open)| (open.clone(), i as u32 + 1))
+                            .collect();
 
-                        // Re-extract and insert
-                        if let Ok(content) = std::fs::read_to_string(file) {
-                            let result = extract_symbols(file, &content, max_depth);
-
-                            for symbol in &result.symbols {
-                                if let Err(e) = sqlite_index.insert_symbol(symbol) {
-                                    warn!("Failed to persist symbol {}: {}", symbol.name, e);
-                                }
-                            }
-                            for reference in &result.references {
-                                if let Err(e) = sqlite_index.insert_reference(file, reference) {
-                                    warn!("Failed to persist reference: {}", e);
-                                }
-                            }
-                            for (line, open) in result.opens.iter().enumerate() {
-                                if let Err(e) =
-                                    sqlite_index.insert_open(file, open, line as u32 + 1)
-                                {
-                                    warn!("Failed to persist open statement: {}", e);
-                                }
-                            }
+                        if let Err(e) = sqlite_index.update_file_data(
+                            file,
+                            &result.symbols,
+                            &result.references,
+                            &opens,
+                        ) {
+                            warn!("Failed to update SQLite index for {:?}: {}", file, e);
                         }
                     }
                     Err(e) => {

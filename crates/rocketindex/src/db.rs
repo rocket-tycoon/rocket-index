@@ -994,6 +994,97 @@ impl SqliteIndex {
     // File-level Operations
     // =========================================================================
 
+    /// Update all data for a file in a single transaction (clear + insert).
+    /// More efficient than separate clear + insert calls as it avoids
+    /// multiple transaction commits and reduces I/O.
+    pub fn update_file_data(
+        &self,
+        file: &Path,
+        symbols: &[Symbol],
+        references: &[Reference],
+        opens: &[(String, u32)], // (module_path, line)
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let file_str = file.to_string_lossy();
+
+        // Clear existing data
+        tx.execute(
+            "DELETE FROM symbols WHERE file = ?1",
+            params![file_str.as_ref()],
+        )?;
+        tx.execute(
+            "DELETE FROM refs WHERE file = ?1",
+            params![file_str.as_ref()],
+        )?;
+        tx.execute(
+            "DELETE FROM opens WHERE file = ?1",
+            params![file_str.as_ref()],
+        )?;
+
+        // Insert symbols
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO symbols (name, qualified, kind, file, line, column, end_line, end_column, visibility, language, source, parent, mixins, attributes, implements, doc, signature)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'syntactic', ?11, ?12, ?13, ?14, ?15, ?16)",
+            )?;
+            for symbol in symbols {
+                stmt.execute(params![
+                    symbol.name,
+                    symbol.qualified,
+                    symbol_kind_to_str(symbol.kind),
+                    symbol.location.file.to_string_lossy(),
+                    symbol.location.line,
+                    symbol.location.column,
+                    symbol.location.end_line,
+                    symbol.location.end_column,
+                    visibility_to_str(symbol.visibility),
+                    symbol.language,
+                    symbol.parent,
+                    symbol
+                        .mixins
+                        .as_ref()
+                        .map(|v| serde_json::to_string(v).unwrap_or_default()),
+                    symbol
+                        .attributes
+                        .as_ref()
+                        .map(|v| serde_json::to_string(v).unwrap_or_default()),
+                    symbol
+                        .implements
+                        .as_ref()
+                        .map(|v| serde_json::to_string(v).unwrap_or_default()),
+                    symbol.doc,
+                    symbol.signature,
+                ])?;
+            }
+        }
+
+        // Insert references
+        {
+            let mut stmt =
+                tx.prepare("INSERT INTO refs (name, file, line, column) VALUES (?1, ?2, ?3, ?4)")?;
+            for reference in references {
+                stmt.execute(params![
+                    reference.name,
+                    file_str.as_ref(),
+                    reference.location.line,
+                    reference.location.column,
+                ])?;
+            }
+        }
+
+        // Insert opens
+        {
+            let mut stmt =
+                tx.prepare("INSERT INTO opens (file, module_path, line) VALUES (?1, ?2, ?3)")?;
+            for (module_path, line) in opens {
+                stmt.execute(params![file_str.as_ref(), module_path, *line])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Clear all data for a file (symbols, references, opens).
     pub fn clear_file(&self, file: &Path) -> Result<()> {
         self.delete_symbols_in_file(file)?;
