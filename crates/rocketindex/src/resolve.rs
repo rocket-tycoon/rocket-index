@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use crate::languages::{csharp, fsharp, java, javascript, ruby, typescript};
+use crate::languages::{csharp, fsharp, java, javascript, php, ruby, typescript};
 use crate::type_cache::TypeMember;
 use crate::{CodeIndex, Symbol};
 
@@ -88,6 +88,7 @@ impl CodeIndex {
             "cs" => csharp::CSharpResolver.resolve(self, name, from_file),
             "fs" | "fsi" | "fsx" => fsharp::FSharpResolver.resolve(self, name, from_file),
             "java" => java::JavaResolver.resolve(self, name, from_file),
+            "php" => php::PhpResolver.resolve(self, name, from_file),
             "rb" => ruby::RubyResolver.resolve(self, name, from_file),
             "ts" | "tsx" => typescript::TypeScriptResolver.resolve(self, name, from_file),
             "js" | "jsx" | "mjs" | "cjs" => {
@@ -111,6 +112,7 @@ impl CodeIndex {
             "cs" => csharp::CSharpResolver.resolve_dotted(self, name, from_file),
             "fs" | "fsi" | "fsx" => fsharp::FSharpResolver.resolve_dotted(self, name, from_file),
             "java" => java::JavaResolver.resolve_dotted(self, name, from_file),
+            "php" => php::PhpResolver.resolve_dotted(self, name, from_file),
             "rb" => ruby::RubyResolver.resolve_dotted(self, name, from_file),
             "ts" | "tsx" => typescript::TypeScriptResolver.resolve_dotted(self, name, from_file),
             "js" | "jsx" | "mjs" | "cjs" => {
