@@ -1,0 +1,16 @@
+{
+  "name": "rocketindex",
+  "version": "1.0.0",
+  "description": "Semantic code navigation - find callers, definitions, and dependencies without grep",
+  "author": {
+    "name": "Rocket Tycoon"
+  },
+  "repository": "https://github.com/rocket-tycoon/rocket-index",
+  "mcpServers": {
+    "rocket-index": {
+      "command": "rkt",
+      "args": ["serve"]
+    }
+  },
+  "hooks": "./hooks/hooks.json"
+}
