@@ -30,8 +30,20 @@ case "$(uname -s)" in
         ;;
 esac
 
-# Download if binary doesn't exist
+# Check if we need to download (missing or wrong version)
+NEED_DOWNLOAD=false
 if [ ! -x "$RKT_BIN" ]; then
+    NEED_DOWNLOAD=true
+else
+    # Check installed version matches expected version
+    INSTALLED_VERSION=$("$RKT_BIN" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?' || echo "unknown")
+    if [ "$INSTALLED_VERSION" != "$VERSION" ]; then
+        echo "Updating RocketIndex from $INSTALLED_VERSION to $VERSION..." >&2
+        NEED_DOWNLOAD=true
+    fi
+fi
+
+if [ "$NEED_DOWNLOAD" = true ]; then
     echo "Downloading RocketIndex $VERSION for $PLATFORM..." >&2
 
     DOWNLOAD_URL="https://github.com/rocket-tycoon/rocket-index/releases/download/v${VERSION}/rocketindex-v${VERSION}-${PLATFORM}.tar.gz"
