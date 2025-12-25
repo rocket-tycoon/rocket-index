@@ -15,54 +15,63 @@ RocketIndex is a standalone, polyglot code indexer that makes AI coding assistan
 
 ## Quick Start
 
-### 1. Install
+### For Claude Code Users
 
-**macOS (Homebrew)**
 ```bash
-brew install rocket-tycoon/tap/rocket-index
+# 1. Install RocketIndex
+brew install rocket-tycoon/tap/rocket-index   # macOS
+
+# 2. Install the plugin
+claude plugin install github:rocket-tycoon/rocket-index/plugins/claude-code
 ```
 
-**Windows (Scoop)**
+Done! The plugin auto-starts the MCP server and detects your project. Just `cd` into any repo and ask Claude to find definitions, callers, or dependencies.
+
+### For Other AI Assistants (Claude Desktop, Gemini, Zed)
+
+```bash
+# 1. Install RocketIndex
+brew install rocket-tycoon/tap/rocket-index   # macOS
+```
+
+Then configure MCP for your tool - see [MCP Server Setup](#mcp-server-for-ai-assistants).
+
+### For CLI / Human Use
+
+```bash
+# 1. Install RocketIndex
+brew install rocket-tycoon/tap/rocket-index   # macOS
+
+# 2. Index your project
+cd /path/to/your/repo
+rkt index
+
+# 3. Keep index fresh (run in background)
+rkt watch
+```
+
+See [CLI Commands](#cli-commands-for-humans--scripts) for usage.
+
+### Other Platforms
+
+<details>
+<summary>Windows (Scoop)</summary>
+
 ```powershell
 scoop bucket add rocket-tycoon https://github.com/rocket-tycoon/scoop-bucket
 scoop install rocketindex
 ```
+</details>
 
-**Linux**
+<details>
+<summary>Linux</summary>
+
 ```bash
 curl -LO https://github.com/rocket-tycoon/rocket-index/releases/latest/download/rocketindex-x86_64-unknown-linux-gnu.tar.gz
 tar -xzf rocketindex-x86_64-unknown-linux-gnu.tar.gz
 sudo mv rkt rocketindex-lsp /usr/local/bin/
 ```
-
-### 2. Setup for Claude Code (Plugin)
-
-The easiest integration - install once, works everywhere:
-
-```bash
-claude plugin install github:rocket-tycoon/rocket-index/plugins/claude-code
-```
-
-The plugin automatically:
-- Starts the MCP server when Claude Code launches
-- Detects your current project directory
-- Indexes on first use (no manual `rkt index` needed)
-
-Just `cd` into any project and ask Claude to find definitions, callers, or dependencies.
-
-### 3. Setup for Other AI Assistants (MCP)
-
-For Claude Desktop, Gemini CLI, Zed, or other MCP-compatible tools, see [MCP Server Setup](#mcp-server-for-ai-assistants).
-
-### 4. Setup for Humans / CLI
-
-```bash
-cd /path/to/your/repo
-rkt index                    # Build index
-rkt watch                    # Keep index fresh (run in background terminal)
-```
-
-See [CLI Commands](#cli-commands-for-humans--scripts) for usage.
+</details>
 
 ## The Problem: Approximate Navigation
 
