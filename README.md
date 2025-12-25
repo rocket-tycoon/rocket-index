@@ -18,14 +18,10 @@ RocketIndex is a standalone, polyglot code indexer that makes AI coding assistan
 ### For Claude Code Users
 
 ```bash
-# 1. Install RocketIndex
-brew install rocket-tycoon/tap/rocket-index   # macOS
-
-# 2. Install the plugin
 claude plugin install github:rocket-tycoon/rocket-index/plugins/claude-code
 ```
 
-Done! The plugin auto-starts the MCP server and detects your project. Just `cd` into any repo and ask Claude to find definitions, callers, or dependencies.
+Done! The plugin downloads RocketIndex automatically. Just `cd` into any repo and ask Claude to find definitions, callers, or dependencies.
 
 ### For Other AI Assistants (Claude Desktop, Gemini, Zed)
 

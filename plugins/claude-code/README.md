@@ -16,27 +16,11 @@ Supports 12 languages: C, C++, C#, F#, Go, Java, JavaScript, PHP, Python, Ruby, 
 
 ## Installation
 
-### Prerequisites
-
-RocketIndex CLI must be installed and available as `rkt` in your PATH:
-
 ```bash
-# macOS (Homebrew)
-brew install rocket-tycoon/tap/rocketindex
-
-# From source
-cargo install --path crates/rocketindex-cli
+claude plugin install github:rocket-tycoon/rocket-index/plugins/claude-code
 ```
 
-### Install Plugin
-
-```bash
-# From local path
-claude plugins add /path/to/RocketIndex/plugins/claude-code
-
-# From GitHub (when published)
-claude plugins add github:rocket-tycoon/rocket-index/plugins/claude-code
-```
+That's it! The plugin downloads the RocketIndex binary automatically on first use.
 
 ## How It Works
 
@@ -72,14 +56,13 @@ The hook respects explicitly-specified project roots and won't override them.
 
 ## Troubleshooting
 
-### "rkt: command not found"
+### Binary download fails
 
-Ensure RocketIndex is installed and in your PATH:
+The plugin downloads RocketIndex on first use. If this fails:
 
-```bash
-which rkt
-# Should output something like /opt/homebrew/bin/rkt
-```
+1. Check your internet connection
+2. Verify GitHub releases are accessible: https://github.com/rocket-tycoon/rocket-index/releases
+3. Manually download and place the `rkt` binary in the plugin's `bin/` directory
 
 ### Index not updating
 

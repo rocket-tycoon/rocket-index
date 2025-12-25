@@ -8,7 +8,7 @@
   "repository": "https://github.com/rocket-tycoon/rocket-index",
   "mcpServers": {
     "rocket-index": {
-      "command": "rkt",
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/rkt-wrapper.sh",
       "args": ["serve"]
     }
   },
