@@ -1,0 +1,13 @@
+{
+  "name": "rocket-tycoon-plugins",
+  "owner": {
+    "name": "Rocket Tycoon"
+  },
+  "plugins": [
+    {
+      "name": "rocketindex",
+      "source": "./plugins/claude-code",
+      "description": "Semantic code navigation - find callers, definitions, and dependencies without grep"
+    }
+  ]
+}

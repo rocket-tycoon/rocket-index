@@ -18,7 +18,9 @@ RocketIndex is a standalone, polyglot code indexer that makes AI coding assistan
 ### For Claude Code Users
 
 ```bash
-claude plugin install github:rocket-tycoon/rocket-index/plugins/claude-code
+# Add the marketplace and install the plugin
+/plugin marketplace add rocket-tycoon/rocket-index
+/plugin install rocketindex
 ```
 
 Done! The plugin downloads RocketIndex automatically. Just `cd` into any repo and ask Claude to find definitions, callers, or dependencies.

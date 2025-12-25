@@ -17,7 +17,9 @@ Supports 12 languages: C, C++, C#, F#, Go, Java, JavaScript, PHP, Python, Ruby, 
 ## Installation
 
 ```bash
-claude plugin install github:rocket-tycoon/rocket-index/plugins/claude-code
+# In Claude Code, run these slash commands:
+/plugin marketplace add rocket-tycoon/rocket-index
+/plugin install rocketindex
 ```
 
 That's it! The plugin downloads the RocketIndex binary automatically on first use.
