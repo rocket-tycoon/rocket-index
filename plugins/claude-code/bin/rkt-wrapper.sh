@@ -6,7 +6,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RKT_BIN="$SCRIPT_DIR/rkt"
-VERSION="0.1.0-beta.24"
+VERSION="0.1.0-beta.25"
 
 # Detect platform
 case "$(uname -s)" in
