@@ -538,7 +538,7 @@ impl ProjectManager {
     /// Get project roots for a tool invocation.
     ///
     /// Priority:
-    /// 1. Explicit project_root parameter (if provided)
+    /// 1. Explicit project_root parameter (resolves to containing registered project if subdirectory)
     /// 2. Project containing the file parameter (if provided)
     /// 3. CWD project (via default_project)
     /// 4. All registered projects (fallback for multi-project scenarios)
@@ -547,8 +547,14 @@ impl ProjectManager {
         explicit_root: Option<&str>,
         file_hint: Option<&str>,
     ) -> Vec<PathBuf> {
-        // 1. Explicit project root
+        // 1. Explicit project root - resolve to containing registered project if subdirectory
         if let Some(root) = explicit_root {
+            let path = std::path::Path::new(root);
+            // Check if this path is inside a registered project
+            if let Some(project_root) = self.project_for_file(path).await {
+                return vec![project_root];
+            }
+            // Fall back to the explicit path (may be a new/unregistered project)
             return vec![PathBuf::from(root)];
         }
 
@@ -566,5 +572,53 @@ impl ProjectManager {
 
         // 4. All projects (fallback)
         self.all_projects().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_resolve_projects_subdirectory_maps_to_parent() {
+        // Create a temp directory structure: /parent/child/grandchild
+        let temp = TempDir::new().unwrap();
+        let parent = temp.path().to_path_buf();
+        let child = parent.join("child");
+        let grandchild = child.join("grandchild");
+        std::fs::create_dir_all(&grandchild).unwrap();
+
+        // Create index in parent (makes it a valid project)
+        let index_dir = parent.join(".rocketindex");
+        std::fs::create_dir_all(&index_dir).unwrap();
+        let db_path = index_dir.join("index.db");
+        let _ = rocketindex::SqliteIndex::create(&db_path).unwrap();
+
+        // Register the parent project (in-memory, doesn't persist to config)
+        let manager = ProjectManager::new().await.unwrap();
+        manager.register_in_memory(parent.clone()).await.unwrap();
+
+        // Resolve with subdirectory path should return parent project
+        let grandchild_str = grandchild.to_string_lossy().to_string();
+        let resolved = manager.resolve_projects(Some(&grandchild_str), None).await;
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            resolved[0].canonicalize().unwrap(),
+            parent.canonicalize().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_projects_unregistered_path_returns_as_is() {
+        let manager = ProjectManager::new().await.unwrap();
+
+        // An unregistered path should be returned as-is
+        let unregistered = "/some/unregistered/path";
+        let resolved = manager.resolve_projects(Some(unregistered), None).await;
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0], PathBuf::from(unregistered));
     }
 }
