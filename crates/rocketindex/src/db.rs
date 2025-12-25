@@ -800,10 +800,14 @@ impl SqliteIndex {
     }
 
     /// Find all references to a name (short or qualified).
+    /// Matches exact name or qualified names ending with the name (e.g., "User" matches
+    /// "User", "Module.User", "Module::User", etc.)
     pub fn find_references(&self, name: &str) -> Result<Vec<Reference>> {
         let mut stmt = self.conn.prepare(
             "SELECT name, file, line, column FROM refs
-             WHERE name = ?1 OR name LIKE '%.' || ?1",
+             WHERE name = ?1
+                OR name LIKE '%.' || ?1
+                OR name LIKE '%::' || ?1",
         )?;
 
         let refs = stmt
