@@ -71,23 +71,27 @@ sudo mv rkt rocketindex-lsp /usr/local/bin/
 ```
 </details>
 
-## The Problem: Approximate Navigation
+## The Problem: Navigation Trade-offs
 
-Agents today rely on two flawed methods for finding code:
+AI agents have several options for finding code, each with limitations:
 
 1.  **Grep / Find**: Dumb text search. Noise-heavy. Confuses "User" (class) with "user" (variable). Wastes tokens reading unrelated files.
-2.  **RAG (Vector Search)**: Probabilistic guessing. Good for "concepts" ("How does auth work?"), but terrible for "execution" ("Find all callers of `process_payment`"). It frequently hallucinates or misses references.
+2.  **RAG (Vector Search)**: Probabilistic guessing. Good for "concepts" ("How does auth work?"), but terrible for "execution" ("Find all callers of `process_payment`"). Frequently hallucinates or misses references.
+3.  **LSP (Language Servers)**: Type-aware and precise, but coordinate-based (requires file:line:col), not symbol-based. No caller analysis or dependency graphs. Requires language runtimes and can be memory-heavy.
 
 ## The Solution: Structural Determinism
 
 RocketIndex uses **Tree-sitter** and **SQLite** to build a precise, relational graph of your code. It is **100% deterministic**.
 
-| Feature | **RocketIndex** | **Vector Search (RAG)** | **Grep** |
-| :--- | :--- | :--- | :--- |
-| **Method** | **AST Graph** | Embeddings | Text Match |
-| **Precision** | **100% (Exact)** | Probabilistic | Low (Noisy) |
-| **Latency** | **< 10ms** | ~200ms+ | Variable |
-| **Best For** | **Navigation & Refactoring** | Exploration | Simple edits |
+| Feature | **RocketIndex** | **LSP** | **RAG** | **Grep** |
+| :--- | :--- | :--- | :--- | :--- |
+| **Method** | AST Graph | Type Analysis | Embeddings | Text Match |
+| **Query model** | Symbol name | File coordinates | Natural language | Pattern |
+| **Precision** | 100% (Exact) | 100% (Exact) | Probabilistic | Low (Noisy) |
+| **Find callers** | ✅ Native | ❌ Refs only | ❌ | ❌ |
+| **Dependency graph** | ✅ Native | ❌ | ❌ | ❌ |
+| **Setup** | Single binary | Per-language | Embedding service | Built-in |
+| **Best For** | Navigation & Refactoring | Type-aware edits | Exploration | Simple edits |
 
 ## RocketIndex vs Language Servers (LSP)
 
