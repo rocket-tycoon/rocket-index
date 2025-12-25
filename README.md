@@ -3,14 +3,15 @@
 
 RocketIndex is a standalone, polyglot code indexer that makes AI coding assistants **faster, smarter, and more accurate** by replacing grep-based guesswork with precise, semantic code navigation.
 
-## Two Ways to Use RocketIndex
+## Three Ways to Use RocketIndex
 
 | Interface | Best For | How It Works |
 | :--- | :--- | :--- |
-| **MCP Server** (Recommended for AI) | AI assistants (Claude, etc.) | Tools appear in agent's native tool list |
+| **Claude Code Plugin** | Claude Code users | Install once, works everywhere automatically |
+| **MCP Server** | Other AI assistants (Claude Desktop, Gemini, Zed) | Tools appear in agent's native tool list |
 | **CLI Commands** | Humans, scripts, CI/CD | Shell commands with JSON output |
 
-**Why MCP is recommended for AI agents:** Our testing shows that when navigation tools are exposed via MCP, agents use them consistently. With CLI-only instructions (even in AGENTS.md), agents often fall back to grep patterns. [See benchmark results](#mcp-vs-cli-for-ai-agents).
+**Why MCP/Plugin over CLI for AI agents:** Our testing shows that when navigation tools are exposed via MCP, agents use them consistently. With CLI-only instructions (even in AGENTS.md), agents often fall back to grep patterns. [See benchmark results](#mcp-vs-cli-for-ai-agents).
 
 ## Quick Start
 
