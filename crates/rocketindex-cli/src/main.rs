@@ -207,6 +207,10 @@ enum Commands {
         #[arg(short, long, conflicts_with = "symbol")]
         file: Option<PathBuf>,
 
+        /// Filter results to files under this path (e.g., "modules/mobile")
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
         /// Number of context lines to show around each reference
         #[arg(short, long, default_value = "0")]
         context: usize,
@@ -408,10 +412,12 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
         Commands::Refs {
             file,
             symbol,
+            path,
             context,
         } => cmd_refs(
             file.as_deref(),
             symbol.as_deref(),
+            path.as_deref(),
             context,
             format,
             quiet,
@@ -1176,6 +1182,7 @@ fn output_location(
 fn cmd_refs(
     file: Option<&Path>,
     symbol: Option<&str>,
+    path_filter: Option<&Path>,
     context_lines: usize,
     format: OutputFormat,
     quiet: bool,
@@ -1186,9 +1193,17 @@ fn cmd_refs(
 
     match (file, symbol) {
         // Symbol mode: find all uses of a symbol across the codebase
-        (None, Some(sym)) => cmd_refs_symbol(&index, sym, context_lines, format, quiet, concise),
+        (None, Some(sym)) => cmd_refs_symbol(
+            &index,
+            sym,
+            path_filter,
+            context_lines,
+            format,
+            quiet,
+            concise,
+        ),
         // File mode: list all references in a file
-        (Some(f), None) => cmd_refs_file(&index, f, format, quiet, concise),
+        (Some(f), None) => cmd_refs_file(&index, f, path_filter, format, quiet, concise),
         // Neither specified
         (None, None) => {
             anyhow::bail!("Either --file or --symbol must be specified");
@@ -1204,20 +1219,47 @@ fn cmd_refs(
 fn cmd_refs_symbol(
     index: &rocketindex::db::SqliteIndex,
     symbol: &str,
+    path_filter: Option<&Path>,
     context_lines: usize,
     format: OutputFormat,
     quiet: bool,
     concise: bool,
 ) -> Result<u8> {
-    let references = index
+    let all_references = index
         .find_references(symbol)
         .context("Failed to find references")?;
+
+    // Filter by path if specified
+    let references: Vec<_> = if let Some(filter_path) = path_filter {
+        // Canonicalize the filter path to handle relative paths
+        let abs_filter = if filter_path.is_absolute() {
+            filter_path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(filter_path)
+        };
+        all_references
+            .into_iter()
+            .filter(|r| r.location.file.starts_with(&abs_filter))
+            .collect()
+    } else {
+        all_references
+    };
 
     if references.is_empty() {
         if format == OutputFormat::Json {
             println!("[]");
         } else if !quiet {
-            eprintln!("No references found for '{}'", symbol);
+            if path_filter.is_some() {
+                eprintln!(
+                    "No references found for '{}' in path '{}'",
+                    symbol,
+                    path_filter.unwrap().display()
+                );
+            } else {
+                eprintln!("No references found for '{}'", symbol);
+            }
         }
         return Ok(exit_codes::NOT_FOUND);
     }
@@ -1297,6 +1339,7 @@ fn cmd_refs_symbol(
 fn cmd_refs_file(
     index: &rocketindex::db::SqliteIndex,
     file: &Path,
+    _path_filter: Option<&Path>, // Not used for file mode
     format: OutputFormat,
     quiet: bool,
     concise: bool,
