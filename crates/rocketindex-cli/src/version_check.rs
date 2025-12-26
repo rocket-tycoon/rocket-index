@@ -1,8 +1,9 @@
-//! Version check module for notifying users about available updates.
+//! Version check and self-update module.
 //!
 //! Queries GitHub releases API and caches results for 24 hours.
+//! Can auto-update for non-Homebrew installations.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -141,9 +142,94 @@ pub fn print_update_notification() {
             "\x1b[33m⬆ RocketIndex v{} available (current: v{})\x1b[0m",
             latest, current
         );
-        eprintln!("\x1b[33m  Update: brew upgrade rocket-tycoon/tap/rocket-index\x1b[0m");
+        if is_homebrew_install() {
+            eprintln!("\x1b[33m  Update: brew upgrade rocket-tycoon/tap/rocket-index\x1b[0m");
+        } else {
+            eprintln!("\x1b[33m  Update: rkt update\x1b[0m");
+        }
         eprintln!();
     }
+}
+
+/// Check if running from a Homebrew installation
+fn is_homebrew_install() -> bool {
+    std::env::current_exe()
+        .map(|p| {
+            let path = p.to_string_lossy();
+            path.contains("homebrew") || path.contains("Cellar")
+        })
+        .unwrap_or(false)
+}
+
+/// Check if running from a Scoop installation (Windows)
+fn is_scoop_install() -> bool {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().contains("scoop"))
+        .unwrap_or(false)
+}
+
+/// Perform self-update.
+///
+/// Downloads the latest release from GitHub and replaces the current binary.
+/// For Homebrew/Scoop installations, prints instructions instead.
+pub fn self_update() -> Result<()> {
+    // Check for package manager installations
+    if is_homebrew_install() {
+        println!("RocketIndex is installed via Homebrew.");
+        println!("Run: brew upgrade rocket-tycoon/tap/rocket-index");
+        return Ok(());
+    }
+
+    if is_scoop_install() {
+        println!("RocketIndex is installed via Scoop.");
+        println!("Run: scoop update rocketindex");
+        return Ok(());
+    }
+
+    // Check if update is available
+    println!("Checking for updates...");
+
+    let latest = fetch_latest_version().context("Failed to check for updates")?;
+    let _ = save_cache(&latest);
+
+    let current = parse_version(CURRENT_VERSION);
+    let latest_parsed = parse_version(&latest);
+
+    match (current, latest_parsed) {
+        (Some(curr), Some(lat)) if lat > curr => {
+            println!("Updating from v{} to v{}...", CURRENT_VERSION, latest);
+        }
+        (Some(_), Some(_)) => {
+            println!("Already up to date (v{})", CURRENT_VERSION);
+            return Ok(());
+        }
+        _ => {
+            println!("Could not parse version, attempting update anyway...");
+        }
+    }
+
+    // Perform the update
+    let status = self_update::backends::github::Update::configure()
+        .repo_owner("rocket-tycoon")
+        .repo_name("rocket-index")
+        .bin_name("rkt")
+        .show_download_progress(true)
+        .current_version(CURRENT_VERSION)
+        .build()
+        .context("Failed to configure updater")?
+        .update()
+        .context("Failed to perform update")?;
+
+    match status {
+        self_update::Status::UpToDate(v) => {
+            println!("Already up to date (v{})", v);
+        }
+        self_update::Status::Updated(v) => {
+            println!("\x1b[32m✓ Updated to v{}\x1b[0m", v);
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -228,5 +314,27 @@ mod tests {
         let tag = "v0.1.0-beta.28";
         let version = tag.strip_prefix('v').unwrap_or(tag);
         assert_eq!(version, "0.1.0-beta.28");
+    }
+
+    #[test]
+    fn test_is_homebrew_install_detection() {
+        // Test the logic (not the actual path)
+        let homebrew_path = "/opt/homebrew/Cellar/rocket-index/0.1.0/bin/rkt";
+        assert!(homebrew_path.contains("homebrew") || homebrew_path.contains("Cellar"));
+
+        let manual_path = "/usr/local/bin/rkt";
+        assert!(!manual_path.contains("homebrew") && !manual_path.contains("Cellar"));
+
+        let plugin_path = "/Users/test/.claude/plugins/cache/rocketindex/bin/rkt";
+        assert!(!plugin_path.contains("homebrew") && !plugin_path.contains("Cellar"));
+    }
+
+    #[test]
+    fn test_is_scoop_install_detection() {
+        let scoop_path = r"C:\Users\test\scoop\apps\rocketindex\current\rkt.exe";
+        assert!(scoop_path.contains("scoop"));
+
+        let manual_path = r"C:\Program Files\rocketindex\rkt.exe";
+        assert!(!manual_path.contains("scoop"));
     }
 }

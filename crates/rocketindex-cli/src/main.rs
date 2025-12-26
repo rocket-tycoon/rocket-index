@@ -351,6 +351,9 @@ enum Commands {
         #[command(subcommand)]
         action: Option<ServeAction>,
     },
+
+    /// Update RocketIndex to the latest version
+    Update,
 }
 
 /// Actions for the serve subcommand
@@ -462,6 +465,11 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
         }
 
         Commands::Serve { action } => cmd_serve(action),
+
+        Commands::Update => {
+            version_check::self_update()?;
+            Ok(exit_codes::SUCCESS)
+        }
     }
 }
 

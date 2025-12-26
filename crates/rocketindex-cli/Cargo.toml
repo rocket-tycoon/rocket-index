@@ -25,6 +25,7 @@ rmcp.workspace = true
 dirs.workspace = true
 ureq.workspace = true
 semver.workspace = true
+self_update.workspace = true
 indicatif = "0.17"
 ctrlc = "3.4"
 clap_complete = "4.5"
