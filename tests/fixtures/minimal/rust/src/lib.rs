@@ -45,3 +45,25 @@ impl MyTrait for MyStruct {
         main_function();
     }
 }
+
+/// Second struct to test disambiguation of common names
+pub struct OtherStruct {
+    value: String,
+}
+
+impl OtherStruct {
+    /// Another 'new' - tests disambiguation
+    pub fn new(s: &str) -> Self {
+        Self { value: s.to_string() }
+    }
+
+    /// Common name 'init'
+    pub fn init(&mut self) {
+        self.value = "initialized".to_string();
+    }
+
+    /// Common name 'run'
+    pub fn run(&self) {
+        println!("{}", self.value);
+    }
+}

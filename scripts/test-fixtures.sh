@@ -90,6 +90,37 @@ assert_json_array_contains_file() {
     fi
 }
 
+assert_json_line() {
+    local json="$1"
+    local expected_line="$2"
+    local description="$3"
+
+    local actual
+    actual=$(echo "$json" | jq '.line')
+    if [ "$actual" -eq "$expected_line" ]; then
+        echo -e "  ${GREEN}✓${NC} $description"
+        ((PASSED++))
+    else
+        echo -e "  ${RED}✗${NC} $description"
+        echo "    Expected line: $expected_line, got: $actual"
+        ((FAILED++))
+    fi
+}
+
+assert_def_has_fields() {
+    local json="$1"
+    local description="$2"
+
+    if echo "$json" | jq -e 'has("name") and has("qualified") and has("file") and has("line") and has("column") and has("kind")' > /dev/null 2>&1; then
+        echo -e "  ${GREEN}✓${NC} $description"
+        ((PASSED++))
+    else
+        echo -e "  ${RED}✗${NC} $description"
+        echo "    Missing required fields in definition"
+        ((FAILED++))
+    fi
+}
+
 # Ensure binary exists
 if [ ! -x "$RKT" ]; then
     echo -e "${RED}Error: rkt binary not found at $RKT${NC}"
@@ -144,11 +175,33 @@ for lang in rust python typescript; do
     # Language-specific tests
     case $lang in
         rust)
-            # Test find_definition
+            # Test find_definition - basic
             echo "  Testing find_definition..."
             DEF_RESULT=$("$RKT" def "main_function" --quiet 2>&1)
             assert_json_contains "$DEF_RESULT" ".name" "main_function" "def finds main_function"
             assert_json_contains "$DEF_RESULT" ".kind" "Function" "main_function is a Function"
+            assert_json_line "$DEF_RESULT" 11 "main_function is on line 11"
+            assert_def_has_fields "$DEF_RESULT" "definition has required fields"
+
+            # Test qualified name disambiguation
+            echo "  Testing qualified name disambiguation..."
+            MYSTRUCT_NEW=$("$RKT" def "MyStruct::new" --quiet 2>&1)
+            assert_json_contains "$MYSTRUCT_NEW" ".qualified" "MyStruct::new" "qualified name is MyStruct::new"
+            assert_json_line "$MYSTRUCT_NEW" 30 "MyStruct::new is on line 30"
+
+            OTHERSTRUCT_NEW=$("$RKT" def "OtherStruct::new" --quiet 2>&1)
+            assert_json_contains "$OTHERSTRUCT_NEW" ".qualified" "OtherStruct::new" "qualified name is OtherStruct::new"
+            assert_json_line "$OTHERSTRUCT_NEW" 56 "OtherStruct::new is on line 56"
+
+            # Test common names with disambiguation
+            echo "  Testing common names..."
+            INIT_RESULT=$("$RKT" def "OtherStruct::init" --quiet 2>&1)
+            assert_json_contains "$INIT_RESULT" ".name" "init" "found init method"
+            assert_json_contains "$INIT_RESULT" ".qualified" "OtherStruct::init" "init is qualified"
+
+            RUN_RESULT=$("$RKT" def "OtherStruct::run" --quiet 2>&1)
+            assert_json_contains "$RUN_RESULT" ".name" "run" "found run method"
+            assert_json_contains "$RUN_RESULT" ".qualified" "OtherStruct::run" "run is qualified"
 
             # Test find_callers (same file)
             echo "  Testing find_callers (same file)..."
@@ -180,10 +233,27 @@ for lang in rust python typescript; do
             ;;
 
         python)
-            # Test find_definition
+            # Test find_definition - basic
             echo "  Testing find_definition..."
             DEF_RESULT=$("$RKT" def "main_function" --quiet 2>&1)
             assert_json_contains "$DEF_RESULT" ".name" "main_function" "def finds main_function"
+            assert_json_line "$DEF_RESULT" 7 "main_function is on line 7"
+            assert_def_has_fields "$DEF_RESULT" "definition has required fields"
+
+            # Test qualified name disambiguation
+            echo "  Testing qualified name disambiguation..."
+            MYCLASS_INIT=$("$RKT" def "MyClass.__init__" --quiet 2>&1)
+            assert_json_contains "$MYCLASS_INIT" ".qualified" "MyClass.__init__" "qualified name is MyClass.__init__"
+
+            OTHERCLASS_INIT=$("$RKT" def "OtherClass.init" --quiet 2>&1)
+            assert_json_contains "$OTHERCLASS_INIT" ".qualified" "OtherClass.init" "qualified name is OtherClass.init"
+            assert_json_line "$OTHERCLASS_INIT" 44 "OtherClass.init is on line 44"
+
+            # Test common names
+            echo "  Testing common names..."
+            RUN_RESULT=$("$RKT" def "OtherClass.run" --quiet 2>&1)
+            assert_json_contains "$RUN_RESULT" ".name" "run" "found run method"
+            assert_json_contains "$RUN_RESULT" ".qualified" "OtherClass.run" "run is qualified"
 
             # Test find_callers (same file)
             echo "  Testing find_callers (same file)..."
@@ -208,10 +278,27 @@ for lang in rust python typescript; do
             ;;
 
         typescript)
-            # Test find_definition (note: camelCase)
+            # Test find_definition - basic
             echo "  Testing find_definition..."
             DEF_RESULT=$("$RKT" def "mainFunction" --quiet 2>&1)
             assert_json_contains "$DEF_RESULT" ".name" "mainFunction" "def finds mainFunction"
+            assert_json_line "$DEF_RESULT" 7 "mainFunction is on line 7"
+            assert_def_has_fields "$DEF_RESULT" "definition has required fields"
+
+            # Test qualified name disambiguation
+            echo "  Testing qualified name disambiguation..."
+            MYCLASS_METHOD=$("$RKT" def "MyClass.method" --quiet 2>&1)
+            assert_json_contains "$MYCLASS_METHOD" ".qualified" "MyClass.method" "qualified name is MyClass.method"
+
+            OTHERCLASS_INIT=$("$RKT" def "OtherClass.init" --quiet 2>&1)
+            assert_json_contains "$OTHERCLASS_INIT" ".qualified" "OtherClass.init" "qualified name is OtherClass.init"
+            assert_json_line "$OTHERCLASS_INIT" 51 "OtherClass.init is on line 51"
+
+            # Test common names
+            echo "  Testing common names..."
+            RUN_RESULT=$("$RKT" def "OtherClass.run" --quiet 2>&1)
+            assert_json_contains "$RUN_RESULT" ".name" "run" "found run method"
+            assert_json_contains "$RUN_RESULT" ".qualified" "OtherClass.run" "run is qualified"
 
             # Test find_callers (same file)
             echo "  Testing find_callers (same file)..."

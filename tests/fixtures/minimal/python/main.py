@@ -33,3 +33,18 @@ class ChildClass(MyClass):
     def method(self):
         main_function()
         return super().method()
+
+
+class OtherClass:
+    """Second class to test disambiguation"""
+
+    def __init__(self, value):
+        self.value = value
+
+    def init(self):
+        """Common name 'init'"""
+        self.value = "initialized"
+
+    def run(self):
+        """Common name 'run'"""
+        print(self.value)

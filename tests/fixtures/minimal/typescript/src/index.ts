@@ -40,3 +40,19 @@ export class ChildClass extends MyClass {
         return super.method();
     }
 }
+
+export class OtherClass {
+    private value: string;
+
+    constructor(value: string) {
+        this.value = value;
+    }
+
+    init(): void {
+        this.value = "initialized";
+    }
+
+    run(): void {
+        console.log(this.value);
+    }
+}
