@@ -1,5 +1,7 @@
 //! Minimal Rust fixture for testing
 
+pub mod caller;
+
 pub mod utils {
     pub fn helper() -> i32 {
         42

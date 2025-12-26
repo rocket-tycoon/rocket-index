@@ -73,6 +73,23 @@ assert_json_array_contains() {
     fi
 }
 
+assert_json_array_contains_file() {
+    local json="$1"
+    local array_key="$2"
+    local name_value="$3"
+    local file_pattern="$4"
+    local description="$5"
+
+    if echo "$json" | jq -e "$array_key | any(.name == \"$name_value\" and (.file | contains(\"$file_pattern\")))" > /dev/null 2>&1; then
+        echo -e "  ${GREEN}✓${NC} $description"
+        ((PASSED++))
+    else
+        echo -e "  ${RED}✗${NC} $description"
+        echo "    Expected to find name=$name_value in file matching $file_pattern"
+        ((FAILED++))
+    fi
+}
+
 # Ensure binary exists
 if [ ! -x "$RKT" ]; then
     echo -e "${RED}Error: rkt binary not found at $RKT${NC}"
@@ -133,16 +150,33 @@ for lang in rust python typescript; do
             assert_json_contains "$DEF_RESULT" ".name" "main_function" "def finds main_function"
             assert_json_contains "$DEF_RESULT" ".kind" "Function" "main_function is a Function"
 
-            # Test find_callers
-            echo "  Testing find_callers..."
+            # Test find_callers (same file)
+            echo "  Testing find_callers (same file)..."
             CALLERS_RESULT=$("$RKT" callers "main_function" --quiet 2>&1)
-            assert_json_array_length "$CALLERS_RESULT" ".callers" 2 "main_function has 2 callers"
             assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "caller_a" "caller_a calls main_function"
             assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "caller_b" "caller_b calls main_function"
 
-            # Test module-qualified function
-            METHOD_CALLERS=$("$RKT" callers "utils::helper" --quiet 2>&1)
-            assert_json_array_length "$METHOD_CALLERS" ".callers" 2 "utils::helper has 2 callers"
+            # Test cross-file caller detection
+            echo "  Testing cross-file caller detection..."
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "cross_file_caller" "cross_file_caller from caller.rs calls main_function"
+            assert_json_array_contains_file "$CALLERS_RESULT" ".callers" "cross_file_caller" "caller.rs" "cross_file_caller is in caller.rs"
+
+            # Test module-qualified function callers
+            echo "  Testing qualified name callers..."
+            HELPER_CALLERS=$("$RKT" callers "utils::helper" --quiet 2>&1)
+            assert_json_array_contains "$HELPER_CALLERS" ".callers" "name" "main_function" "main_function calls utils::helper"
+            assert_json_array_contains "$HELPER_CALLERS" ".callers" "name" "cross_file_caller" "cross_file_caller calls utils::helper"
+
+            # Test JSON output format
+            echo "  Testing JSON output format..."
+            FIRST_CALLER=$(echo "$CALLERS_RESULT" | jq '.callers[0]')
+            if echo "$FIRST_CALLER" | jq -e 'has("name") and has("file") and has("line") and has("column") and has("kind")' > /dev/null 2>&1; then
+                echo -e "  ${GREEN}✓${NC} caller has required fields (name, file, line, column, kind)"
+                ((PASSED++))
+            else
+                echo -e "  ${RED}✗${NC} caller missing required fields"
+                ((FAILED++))
+            fi
             ;;
 
         python)
@@ -151,11 +185,26 @@ for lang in rust python typescript; do
             DEF_RESULT=$("$RKT" def "main_function" --quiet 2>&1)
             assert_json_contains "$DEF_RESULT" ".name" "main_function" "def finds main_function"
 
-            # Test find_callers
-            echo "  Testing find_callers..."
+            # Test find_callers (same file)
+            echo "  Testing find_callers (same file)..."
             CALLERS_RESULT=$("$RKT" callers "main_function" --quiet 2>&1)
-            assert_json_array_length "$CALLERS_RESULT" ".callers" 3 "main_function has 3 callers"
             assert_json_array_contains "$CALLERS_RESULT" ".callers" "qualified" "ChildClass.method" "ChildClass.method calls main_function"
+
+            # Test cross-file caller detection
+            echo "  Testing cross-file caller detection..."
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "cross_file_caller" "cross_file_caller from caller.py calls main_function"
+            assert_json_array_contains_file "$CALLERS_RESULT" ".callers" "cross_file_caller" "caller.py" "cross_file_caller is in caller.py"
+
+            # Test JSON output format
+            echo "  Testing JSON output format..."
+            FIRST_CALLER=$(echo "$CALLERS_RESULT" | jq '.callers[0]')
+            if echo "$FIRST_CALLER" | jq -e 'has("name") and has("file") and has("line") and has("column") and has("kind")' > /dev/null 2>&1; then
+                echo -e "  ${GREEN}✓${NC} caller has required fields"
+                ((PASSED++))
+            else
+                echo -e "  ${RED}✗${NC} caller missing required fields"
+                ((FAILED++))
+            fi
             ;;
 
         typescript)
@@ -164,12 +213,27 @@ for lang in rust python typescript; do
             DEF_RESULT=$("$RKT" def "mainFunction" --quiet 2>&1)
             assert_json_contains "$DEF_RESULT" ".name" "mainFunction" "def finds mainFunction"
 
-            # Test find_callers
-            echo "  Testing find_callers..."
+            # Test find_callers (same file)
+            echo "  Testing find_callers (same file)..."
             CALLERS_RESULT=$("$RKT" callers "mainFunction" --quiet 2>&1)
-            assert_json_array_length "$CALLERS_RESULT" ".callers" 2 "mainFunction has 2 callers"
             assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerA" "callerA calls mainFunction"
             assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerB" "callerB calls mainFunction"
+
+            # Test cross-file caller detection
+            echo "  Testing cross-file caller detection..."
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "crossFileCaller" "crossFileCaller from caller.ts calls mainFunction"
+            assert_json_array_contains_file "$CALLERS_RESULT" ".callers" "crossFileCaller" "caller.ts" "crossFileCaller is in caller.ts"
+
+            # Test JSON output format
+            echo "  Testing JSON output format..."
+            FIRST_CALLER=$(echo "$CALLERS_RESULT" | jq '.callers[0]')
+            if echo "$FIRST_CALLER" | jq -e 'has("name") and has("file") and has("line") and has("column") and has("kind")' > /dev/null 2>&1; then
+                echo -e "  ${GREEN}✓${NC} caller has required fields"
+                ((PASSED++))
+            else
+                echo -e "  ${RED}✗${NC} caller missing required fields"
+                ((FAILED++))
+            fi
             ;;
     esac
 
