@@ -145,8 +145,8 @@ impl DocumentStore {
             }
         }
 
-        // Fall back to reading from disk
-        std::fs::read_to_string(path).ok()
+        // Fall back to reading from disk (async I/O)
+        tokio::fs::read_to_string(path).await.ok()
     }
 }
 

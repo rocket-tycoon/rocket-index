@@ -1,0 +1,12 @@
+bin.name = "rkt"
+args = ["--help"]
+stdout = """
+Rocket-fast CLI for F# codebase indexing and navigation
+
+Usage: rkt [OPTIONS] <COMMAND>
+
+Commands:
+  index        Index the codebase (build or rebuild the symbol database)
+  def          Find the definition of a symbol
+...
+"""

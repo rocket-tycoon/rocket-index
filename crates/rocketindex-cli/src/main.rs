@@ -27,6 +27,7 @@ use rocketindex::{
     watch::find_source_files_with_config,
     CodeIndex, SqliteIndex,
 };
+use tracing_indicatif::IndicatifLayer;
 
 /// Exit codes for the CLI
 ///
@@ -42,7 +43,7 @@ mod exit_codes {
 
 mod guidelines;
 mod mcp;
-mod skills;
+
 mod version_check;
 
 // File change tracking utilities (used by setup wizards)
@@ -257,6 +258,12 @@ enum Commands {
         parent: String,
     },
 
+    /// Find types that implement an interface
+    Implements {
+        /// Interface name to find implementers of
+        interface: String,
+    },
+
     /// Watch for file changes and update the index
     Watch {
         /// Root directory to watch (defaults to current directory)
@@ -291,8 +298,11 @@ enum Commands {
     },
 
     /// Show git blame for a symbol or file location
+    ///
+    /// Unlike `git blame`, this accepts a symbol name (e.g. "UserService.save")
+    /// and resolves it to the correct file and line automatically.
     Blame {
-        /// Symbol name or file:line (e.g. "src/App.fs:10")
+        /// Symbol name (e.g. "UserService.save") or file:line (e.g. "src/App.fs:10")
         target: String,
     },
 
@@ -374,12 +384,20 @@ enum ServeAction {
 }
 
 fn main() -> ExitCode {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    // Initialize logging with indicatif integration
+    // This prevents terminal corruption when progress bars and log messages overlap
+    let indicatif_layer = IndicatifLayer::new();
+
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_writer(indicatif_layer.get_stderr_writer()))
+        .with(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive(tracing::Level::WARN.into()),
         )
+        .with(indicatif_layer)
         .init();
 
     let cli = Cli::parse();
@@ -439,6 +457,7 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
         } => cmd_symbols(&pattern, language.as_deref(), fuzzy, format, quiet, concise),
         Commands::Callers { symbol } => cmd_callers(&symbol, format, quiet, concise),
         Commands::Subclasses { parent } => cmd_subclasses(&parent, format, quiet, concise),
+        Commands::Implements { interface } => cmd_implements(&interface, format, quiet, concise),
         Commands::Watch { root } => cmd_watch(&root, format, quiet),
         Commands::ExtractTypes {
             project,
@@ -1703,6 +1722,93 @@ fn cmd_subclasses(parent: &str, format: OutputFormat, quiet: bool, concise: bool
     }
 
     if subclasses.is_empty() {
+        Ok(exit_codes::NOT_FOUND)
+    } else {
+        Ok(exit_codes::SUCCESS)
+    }
+}
+
+/// Find types that implement an interface
+fn cmd_implements(interface: &str, format: OutputFormat, quiet: bool, concise: bool) -> Result<u8> {
+    warn_if_no_session(quiet);
+    let cwd = std::env::current_dir()?;
+    let db_path = cwd.join(".rocketindex").join(DEFAULT_DB_NAME);
+    if !db_path.exists() {
+        if format == OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "error": "IndexNotFound",
+                    "message": "No index found. Run 'rkt index' first."
+                })
+            );
+        } else {
+            eprintln!("No index found. Run 'rkt index' first.");
+        }
+        return Ok(exit_codes::ERROR);
+    }
+
+    let db = SqliteIndex::open(&db_path)?;
+    let implementers = db.find_implementers(interface)?;
+
+    if format == OutputFormat::Json {
+        let implementer_list: Vec<_> = implementers
+            .iter()
+            .map(|s| {
+                if concise {
+                    serde_json::json!({
+                        "qualified": s.qualified,
+                        "file": s.location.file.display().to_string(),
+                        "line": s.location.line,
+                    })
+                } else {
+                    serde_json::json!({
+                        "name": s.name,
+                        "qualified": s.qualified,
+                        "kind": format!("{}", s.kind),
+                        "file": s.location.file.display().to_string(),
+                        "line": s.location.line,
+                        "column": s.location.column,
+                        "implements": s.implements,
+                    })
+                }
+            })
+            .collect();
+
+        let output = serde_json::json!({
+            "interface": interface,
+            "implementers": implementer_list,
+            "count": implementers.len(),
+        });
+        println!(
+            "{}",
+            if concise {
+                serde_json::to_string(&output)?
+            } else {
+                serde_json::to_string_pretty(&output)?
+            }
+        );
+    } else if !quiet {
+        if implementers.is_empty() {
+            println!("No implementers found for: {}", interface);
+        } else {
+            println!(
+                "Types implementing {} ({} found):",
+                interface,
+                implementers.len()
+            );
+            for s in &implementers {
+                println!(
+                    "  {} ({}:{})",
+                    s.qualified,
+                    s.location.file.display(),
+                    s.location.line
+                );
+            }
+        }
+    }
+
+    if implementers.is_empty() {
         Ok(exit_codes::NOT_FOUND)
     } else {
         Ok(exit_codes::SUCCESS)
@@ -3039,163 +3145,31 @@ Estimated time: ~1-3 seconds per 1,000 files
     }
 }
 
-/// Agent setup choice
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentSetupChoice {
-    InstallAgents,
-    IntegrationNotes,
-    Skip,
-}
+const AGENT_INSTRUCTIONS: &str = r#"## RocketIndex Code Navigation
 
-/// Screen 3: Agent Setup
-fn setup_screen_agents(cwd: &Path, quiet: bool) -> Result<Vec<String>> {
-    use dialoguer::{MultiSelect, Select};
+This project uses [RocketIndex](https://github.com/rocket-tycoon/rocket-index) for fast code navigation.
+ALWAYS prioritize these tools over generic text search (grep/ripgrep) for code inquiries.
 
-    let mut created_files = Vec::new();
-    let skills_dir = cwd.join(".claude").join("skills");
+## Tool Selection Strategy
+• **Tracing logic?** Use `rkt spider` to reverse-engineer how data flows through functions.
+• **Assessing impact?** Use `rkt callers` or `rkt refs` to see what breaks if you change a symbol.
+• **Looking for something specific?** Use `rkt def` to jump to code, or `rkt symbols` if you only know part of the name.
+• **Debugging history?** Use `rkt blame` to see who changed a line/symbol and when.
 
-    println!(
-        r#"
-Agent Setup
-───────────
+## Key commands
+- `rkt def "MyModule.myFunction"` - Jump to definition (precise)
+- `rkt refs "Symbol"` - Find all usages across the codebase
+- `rkt callers "Symbol"` - Find direct callers (function-aware)
+- `rkt spider "Entry.point" -d 3` - Analyze dependency graph (what calls this / what this calls)
+- `rkt symbols "pattern*"` - Search symbols (supports wildcards)
+- `rkt blame "UserService.save"` - Git blame for a symbol (resolves location automatically)
+- `rkt doctor` - Check index health
 
-RocketIndex includes role-based agents that help Claude Code work more
-effectively. Each agent has domain expertise and knows how to use `rkt`
-for code navigation.
-
-How would you like to configure agents?
-"#
-    );
-
-    let choices = &[
-        "Install RocketIndex agents (Lead Engineer, QA, Security, SRE, Product Manager)",
-        "Add RocketIndex to an existing/alternate agent library",
-        "Skip agent setup",
-    ];
-
-    let selection = Select::new().items(choices).default(0).interact_opt()?;
-
-    let choice = match selection {
-        Some(0) => AgentSetupChoice::InstallAgents,
-        Some(1) => AgentSetupChoice::IntegrationNotes,
-        _ => AgentSetupChoice::Skip,
-    };
-
-    match choice {
-        AgentSetupChoice::InstallAgents => {
-            // Always install rocketindex agent first
-            if let Some(rocketindex_agent) = skills::AGENTS.iter().find(|a| a.name == "rocketindex")
-            {
-                let agent_dir = skills_dir.join(rocketindex_agent.name);
-                std::fs::create_dir_all(&agent_dir)?;
-                let agent_path = agent_dir.join("SKILL.md");
-                std::fs::write(&agent_path, rocketindex_agent.content)?;
-                created_files.push(agent_path.display().to_string());
-            }
-
-            println!(
-                r#"
-Select Agents to Install
-────────────────────────
-
-Use Space to toggle, Enter to confirm.
-"#
-            );
-
-            let optional_agents: Vec<_> = skills::AGENTS
-                .iter()
-                .filter(|a| a.name != "rocketindex")
-                .collect();
-
-            let items: Vec<String> = optional_agents
-                .iter()
-                .map(|a| format!("{:<18} {}", a.display_name, a.description))
-                .collect();
-
-            let defaults: Vec<bool> = vec![true; items.len()];
-            let selections = MultiSelect::new()
-                .with_prompt("Select agents")
-                .items(&items)
-                .defaults(&defaults)
-                .interact_opt()?;
-
-            if let Some(selected) = selections {
-                println!("\nInstalling agents...");
-                for idx in selected {
-                    let agent = optional_agents[idx];
-                    let agent_dir = skills_dir.join(agent.name);
-                    std::fs::create_dir_all(&agent_dir)?;
-
-                    let agent_path = agent_dir.join("SKILL.md");
-                    std::fs::write(&agent_path, agent.content)?;
-                    created_files.push(agent_path.display().to_string());
-
-                    if !quiet {
-                        println!("  * .claude/skills/{}/SKILL.md", agent.name);
-                    }
-                }
-            }
-        }
-
-        AgentSetupChoice::IntegrationNotes => {
-            println!(
-                r#"
-Add RocketIndex to Your Agents
-──────────────────────────────
-
-Add the following to the TOP of each agent file, right after the title.
-Choose the snippet that matches each agent's role:
-
-+-- For Engineering/Coding Agents ------------------------------------+
-|                                                                     |
-| > **Code Navigation**: Use `rkt` for code lookups.                  |
-| > - Before writing: `rkt symbols "pattern*"` to find existing code  |
-| > - Before changing: `rkt callers "Symbol"` for impact analysis     |
-| > - Run `rkt watch` in a background terminal.                       |
-| > See `.rocketindex/AGENTS.md` for full command reference.          |
-|                                                                     |
-+---------------------------------------------------------------------+
-
-+-- For QA/Testing Agents --------------------------------------------+
-|                                                                     |
-| > **Code Navigation**: Use `rkt` for finding tests and usages.      |
-| > - Find tests: `rkt symbols "*Test*"`                              |
-| > - Find usages: `rkt refs "Symbol"`                                |
-| > - Run `rkt watch` in a background terminal.                       |
-| > See `.rocketindex/AGENTS.md` for full command reference.          |
-|                                                                     |
-+---------------------------------------------------------------------+
-
-+-- For Security/Review Agents ---------------------------------------+
-|                                                                     |
-| > **Code Navigation**: Use `rkt` for tracing data flow.             |
-| > - Trace paths: `rkt spider "handler" -d 3`                        |
-| > - Find sensitive code: `rkt symbols "*password*"`                 |
-| > - Run `rkt watch` in a background terminal.                       |
-| > See `.rocketindex/AGENTS.md` for full command reference.          |
-|                                                                     |
-+---------------------------------------------------------------------+
-
-+-- For SRE/Debugging Agents -----------------------------------------+
-|                                                                     |
-| > **Code Navigation**: Use `rkt` for stacktrace analysis.           |
-| > - Trace errors: `rkt spider "failingFn" --reverse -d 3`           |
-| > - Find error types: `rkt symbols "*Error*"`                       |
-| > - Run `rkt watch` in a background terminal.                       |
-| > See `.rocketindex/AGENTS.md` for full command reference.          |
-|                                                                     |
-+---------------------------------------------------------------------+
-"#
-            );
-        }
-
-        AgentSetupChoice::Skip => {
-            // Do nothing, proceed to configuration
-        }
-    }
-
-    Ok(created_files)
-}
+## Tips
+- The index is stored in `.rocketindex/` (ensure this is in .gitignore)
+- Run `rkt index` manually if you suspect the index is stale
+- `rkt spider` is unique to RocketIndex - grep cannot do graph traversal!
+"#;
 
 /// Screen 4: Configuration Files
 fn setup_screen_configuration(
@@ -3218,7 +3192,7 @@ Creating project configuration...
     if let Some(parent) = agents_md_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let agents_section = skills::get_agents_summary();
+    let agents_section = AGENT_INSTRUCTIONS;
     let agents_content = std::fs::read_to_string(&agents_md_path).unwrap_or_default();
 
     if !agents_content.contains("RocketIndex") {
@@ -3368,10 +3342,8 @@ fn setup_claude_code(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8
     // Screen 2: Code Indexing
     setup_screen_indexing(cwd, format, quiet)?;
 
-    // Screen 3: Agent Setup
-    let mut created_files = setup_screen_agents(cwd, quiet)?;
-
-    // Screen 4: Configuration Files
+    // Screen 3: Configuration Files
+    let mut created_files = Vec::new();
     setup_screen_configuration(cwd, format, quiet, &mut created_files)?;
 
     // Screen 5: Complete
@@ -3387,22 +3359,12 @@ fn setup_claude_code_non_interactive(cwd: &Path, format: OutputFormat, quiet: bo
     // Ensure index exists
     ensure_initial_index(cwd, format, quiet)?;
 
-    // Install rocketindex agent
-    let skills_dir = cwd.join(".claude").join("skills");
-    if let Some(rocketindex_agent) = skills::AGENTS.iter().find(|a| a.name == "rocketindex") {
-        let agent_dir = skills_dir.join(rocketindex_agent.name);
-        std::fs::create_dir_all(&agent_dir)?;
-        let agent_path = agent_dir.join("SKILL.md");
-        std::fs::write(&agent_path, rocketindex_agent.content)?;
-        created_files.push(agent_path.display().to_string());
-    }
-
     // Create AGENTS.md
     let agents_md_path = cwd.join(".rocketindex").join("AGENTS.md");
     if let Some(parent) = agents_md_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let agents_section = skills::get_agents_summary();
+    let agents_section = AGENT_INSTRUCTIONS;
     let agents_content = std::fs::read_to_string(&agents_md_path).unwrap_or_default();
 
     if !agents_content.contains("RocketIndex") {
@@ -3614,7 +3576,7 @@ fn setup_zed(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     if let Some(parent) = agents_md_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let agents_section = skills::get_agents_summary();
+    let agents_section = AGENT_INSTRUCTIONS;
     let agents_content = std::fs::read_to_string(&agents_md_path).unwrap_or_default();
 
     if !agents_content.contains("RocketIndex") {
@@ -3737,7 +3699,7 @@ fn setup_gemini(cwd: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     if let Some(parent) = agents_md_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let agents_section = skills::get_agents_summary();
+    let agents_section = AGENT_INSTRUCTIONS;
     let agents_content = std::fs::read_to_string(&agents_md_path).unwrap_or_default();
 
     if !agents_content.contains("RocketIndex") {

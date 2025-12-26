@@ -721,6 +721,25 @@ impl SqliteIndex {
 
         Ok(symbols)
     }
+
+    /// Find all types that implement the given interface.
+    /// Searches the JSON implements array for matches.
+    pub fn find_implementers(&self, interface: &str) -> Result<Vec<Symbol>> {
+        // Search for interface name in the JSON array
+        // Pattern: "InterfaceName" should match ["InterfaceName"] or ["...", "InterfaceName", "..."]
+        let pattern = format!("%\"{}%", interface);
+        let query = format!(
+            "SELECT {} FROM symbols WHERE implements LIKE ?1",
+            SYMBOL_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&query)?;
+        let symbols: Vec<Symbol> = stmt
+            .query_map(params![pattern], row_to_symbol)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(symbols)
+    }
+
     /// List all indexed files.
     pub fn list_files(&self) -> Result<Vec<PathBuf>> {
         let mut stmt = self

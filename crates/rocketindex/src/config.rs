@@ -1,8 +1,13 @@
 //! Configuration for RocketIndex.
 //!
 //! Loads settings from `.rocketindex.toml` in the project root.
+//! Uses figment for layered configuration with provenance tracking.
 
-use serde::Deserialize;
+use figment::{
+    providers::{Format, Serialized, Toml},
+    Figment,
+};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Default directories to exclude from indexing.
@@ -12,7 +17,7 @@ use std::path::Path;
 pub const DEFAULT_EXCLUDE_DIRS: &[&str] = &["node_modules", "bin", "obj", ".git", ".vs", ".idea"];
 
 /// RocketIndex configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     /// Additional directories to exclude from indexing (merged with defaults).
     #[serde(default)]
@@ -48,26 +53,35 @@ fn default_respect_gitignore() -> bool {
 impl Config {
     /// Load configuration from `.rocketindex.toml` in the given root directory.
     ///
+    /// Uses figment for layered configuration with better error messages.
     /// Returns default config if the file doesn't exist.
+    /// Reports parse errors with file, line, and key information.
     pub fn load(root: &Path) -> Self {
         let config_path = root.join(".rocketindex.toml");
-        if config_path.exists() {
-            match std::fs::read_to_string(&config_path) {
-                Ok(content) => match toml::from_str(&content) {
-                    Ok(config) => {
-                        tracing::info!("Loaded config from {:?}", config_path);
-                        return config;
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to parse {:?}: {}", config_path, e);
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!("Failed to read {:?}: {}", config_path, e);
+
+        // Build layered config: defaults <- toml file
+        let figment = Figment::from(Serialized::defaults(Config::default()));
+
+        // Only add TOML provider if file exists
+        let figment = if config_path.exists() {
+            figment.merge(Toml::file(&config_path))
+        } else {
+            figment
+        };
+
+        match figment.extract() {
+            Ok(config) => {
+                if config_path.exists() {
+                    tracing::info!("Loaded config from {:?}", config_path);
                 }
+                config
+            }
+            Err(e) => {
+                // Figment provides detailed error messages with provenance
+                tracing::warn!("Config error: {}", e);
+                Self::default()
             }
         }
-        Self::default()
     }
 
     /// Get all directories to exclude (defaults + user-configured).
@@ -133,5 +147,34 @@ max_recursion_depth = 1000
         let config = Config::load(temp.path());
         assert_eq!(config.max_recursion_depth, 1000);
         assert!(config.exclude_dirs.is_empty()); // default for exclude_dirs
+    }
+
+    #[test]
+    fn test_invalid_config_returns_defaults() {
+        let temp = TempDir::new().unwrap();
+        // Invalid: max_recursion_depth should be a number, not a string
+        let config_content = r#"
+max_recursion_depth = "not a number"
+"#;
+        std::fs::write(temp.path().join(".rocketindex.toml"), config_content).unwrap();
+
+        // Should return defaults when config is invalid
+        let config = Config::load(temp.path());
+        assert_eq!(config.max_recursion_depth, 500); // default value
+    }
+
+    #[test]
+    fn test_partial_config_merges_with_defaults() {
+        let temp = TempDir::new().unwrap();
+        // Only specify one field, others should come from defaults
+        let config_content = r#"
+respect_gitignore = false
+"#;
+        std::fs::write(temp.path().join(".rocketindex.toml"), config_content).unwrap();
+
+        let config = Config::load(temp.path());
+        assert!(!config.respect_gitignore); // from config
+        assert_eq!(config.max_recursion_depth, 500); // from defaults
+        assert!(config.exclude_dirs.is_empty()); // from defaults
     }
 }

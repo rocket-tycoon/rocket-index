@@ -64,6 +64,7 @@ impl Backend {
     }
 
     /// Load the index from SQLite database if it exists.
+    /// Uses spawn_blocking to avoid blocking the async runtime during SQLite operations.
     async fn load_index_from_sqlite(&self) -> Result<bool> {
         let root = self.workspace_root.read().await;
         let root_path = match root.as_ref() {
@@ -84,40 +85,74 @@ impl Backend {
 
         info!("Loading index from SQLite: {:?}", db_path);
 
-        let sqlite_index = SqliteIndex::open(&db_path)?;
+        // Load all data from SQLite in a blocking task
+        let root_path_clone = root_path.clone();
+        let load_result = tokio::task::spawn_blocking(move || {
+            let sqlite_index = SqliteIndex::open(&db_path)?;
 
-        // Get workspace root from metadata or use current
-        let workspace_root = sqlite_index
-            .get_metadata("workspace_root")?
-            .map(PathBuf::from)
-            .unwrap_or_else(|| root_path.clone());
+            // Get workspace root from metadata or use current
+            let workspace_root = sqlite_index
+                .get_metadata("workspace_root")?
+                .map(PathBuf::from)
+                .unwrap_or_else(|| root_path_clone.clone());
 
-        let mut code_index = CodeIndex::with_root(workspace_root.clone());
+            // Load file order if available
+            let file_order = sqlite_index
+                .get_metadata("file_order")?
+                .and_then(|json| serde_json::from_str::<Vec<PathBuf>>(&json).ok());
 
-        // Load file order if available
-        if let Ok(Some(file_order_json)) = sqlite_index.get_metadata("file_order") {
-            if let Ok(file_order) = serde_json::from_str::<Vec<PathBuf>>(&file_order_json) {
-                code_index.set_file_order(file_order);
+            // Load all data from SQLite
+            let files = sqlite_index.list_files()?;
+            let mut all_symbols = Vec::new();
+            let mut all_references = Vec::new();
+            let mut all_opens = Vec::new();
+
+            for file in &files {
+                let symbols = sqlite_index.symbols_in_file(file)?;
+                all_symbols.extend(symbols);
+
+                let references = sqlite_index.references_in_file(file)?;
+                for reference in references {
+                    all_references.push((file.clone(), reference));
+                }
+
+                let opens = sqlite_index.opens_for_file(file)?;
+                for open in opens {
+                    all_opens.push((file.clone(), open));
+                }
             }
+
+            Ok::<_, anyhow::Error>((
+                workspace_root,
+                file_order,
+                all_symbols,
+                all_references,
+                all_opens,
+                files.len(),
+            ))
+        })
+        .await??;
+
+        let (workspace_root, file_order, all_symbols, all_references, all_opens, file_count) =
+            load_result;
+
+        // Build CodeIndex from loaded data (non-blocking)
+        let mut code_index = CodeIndex::with_root(workspace_root);
+
+        if let Some(order) = file_order {
+            code_index.set_file_order(order);
         }
 
-        // Load symbols, references, and opens from SQLite
-        let files = sqlite_index.list_files()?;
-        for file in &files {
-            let symbols = sqlite_index.symbols_in_file(file)?;
-            for symbol in symbols {
-                code_index.add_symbol(symbol);
-            }
+        for symbol in all_symbols {
+            code_index.add_symbol(symbol);
+        }
 
-            let references = sqlite_index.references_in_file(file)?;
-            for reference in references {
-                code_index.add_reference(file.clone(), reference);
-            }
+        for (file, reference) in all_references {
+            code_index.add_reference(file, reference);
+        }
 
-            let opens = sqlite_index.opens_for_file(file)?;
-            for open in opens {
-                code_index.add_open(file.clone(), open);
-            }
+        for (file, open) in all_opens {
+            code_index.add_open(file, open);
         }
 
         let mut index = self.index.write().await;
@@ -126,7 +161,7 @@ impl Backend {
         info!(
             "Loaded {} symbols from {} files",
             index.symbol_count(),
-            files.len()
+            file_count
         );
 
         Ok(true)
@@ -167,7 +202,7 @@ impl Backend {
         self.index_external_assemblies(&mut index, &root_path).await;
 
         for file in files {
-            if let Err(e) = self.index_file(&mut index, &file, max_depth) {
+            if let Err(e) = self.index_file(&mut index, &file, max_depth).await {
                 warn!("Failed to index {:?}: {}", file, e);
             }
         }
@@ -208,8 +243,13 @@ impl Backend {
     }
 
     /// Index a single file into the in-memory CodeIndex.
-    fn index_file(&self, index: &mut CodeIndex, file: &PathBuf, max_depth: usize) -> Result<()> {
-        let content = std::fs::read_to_string(file)?;
+    async fn index_file(
+        &self,
+        index: &mut CodeIndex,
+        file: &PathBuf,
+        max_depth: usize,
+    ) -> Result<()> {
+        let content = tokio::fs::read_to_string(file).await?;
 
         // Clear existing data for this file
         index.clear_file(file);
@@ -240,8 +280,8 @@ impl Backend {
     async fn update_file(&self, file: &PathBuf) -> Result<()> {
         let max_depth = *self.max_recursion_depth.read().await;
 
-        // Read and parse once
-        let content = std::fs::read_to_string(file)?;
+        // Read and parse once (async I/O)
+        let content = tokio::fs::read_to_string(file).await?;
         let result = extract_symbols(file, &content, max_depth);
 
         // Update in-memory index
@@ -260,33 +300,34 @@ impl Backend {
             }
         }
 
-        // Update SQLite if it exists - single transaction for all operations
+        // Update SQLite if it exists - runs in blocking task to avoid blocking async runtime
         let root = self.workspace_root.read().await;
         if let Some(root_path) = root.as_ref() {
             let db_path = Self::get_db_path(root_path);
             if db_path.exists() {
-                match SqliteIndex::open(&db_path) {
-                    Ok(sqlite_index) => {
-                        // Convert opens to the format expected by update_file_data
-                        let opens: Vec<(String, u32)> = result
-                            .opens
-                            .iter()
-                            .enumerate()
-                            .map(|(i, open)| (open.clone(), i as u32 + 1))
-                            .collect();
+                // Prepare data for the blocking task
+                let file_clone = file.clone();
+                let symbols = result.symbols.clone();
+                let references = result.references.clone();
+                let opens: Vec<(String, u32)> = result
+                    .opens
+                    .iter()
+                    .enumerate()
+                    .map(|(i, open)| (open.clone(), i as u32 + 1))
+                    .collect();
 
-                        if let Err(e) = sqlite_index.update_file_data(
-                            file,
-                            &result.symbols,
-                            &result.references,
-                            &opens,
-                        ) {
-                            warn!("Failed to update SQLite index for {:?}: {}", file, e);
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to open SQLite index for update: {}", e);
-                    }
+                // Run SQLite operations in a blocking task
+                let update_result = tokio::task::spawn_blocking(move || {
+                    let sqlite_index = SqliteIndex::open(&db_path)?;
+                    sqlite_index.update_file_data(&file_clone, &symbols, &references, &opens)?;
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await;
+
+                match update_result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => warn!("Failed to update SQLite index for {:?}: {}", file, e),
+                    Err(e) => warn!("SQLite update task panicked: {}", e),
                 }
             }
         }
@@ -1202,8 +1243,8 @@ impl LanguageServer for Backend {
                 {
                     c
                 } else {
-                    // Fallback to reading from disk
-                    match std::fs::read_to_string(&abs_location.file) {
+                    // Fallback to reading from disk (async I/O)
+                    match tokio::fs::read_to_string(&abs_location.file).await {
                         Ok(c) => c,
                         Err(_) => continue,
                     }
@@ -1310,8 +1351,8 @@ impl LanguageServer for Backend {
                 .await;
         }
 
-        // Re-check diagnostics from the saved file
-        if let Ok(content) = std::fs::read_to_string(&file) {
+        // Re-check diagnostics from the saved file (async I/O)
+        if let Ok(content) = tokio::fs::read_to_string(&file).await {
             self.check_and_publish_diagnostics(uri, &content).await;
         }
     }

@@ -27,8 +27,10 @@ quick-xml = { workspace = true }
 # SQLite for index storage (RFC-001)
 rusqlite = { workspace = true }
 
-# TOML parsing for config files
 toml = "0.8"
+
+# Configuration with layered sources and better error reporting
+figment = { version = "0.10", features = ["toml", "env"] }
 
 # Gitignore-aware file walking (same library ripgrep uses)
 ignore = "0.4"

@@ -27,6 +27,7 @@ ureq.workspace = true
 semver.workspace = true
 self_update.workspace = true
 indicatif = "0.17"
+tracing-indicatif = "0.3"
 ctrlc = "3.4"
 clap_complete = "4.5"
 
@@ -34,3 +35,4 @@ clap_complete = "4.5"
 assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.10"
+trycmd = "0.15"
