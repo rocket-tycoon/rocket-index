@@ -28,8 +28,8 @@ fn github_api_url() -> String {
         .unwrap_or_else(|_| GITHUB_API_URL.to_string())
 }
 
-/// Current version from Cargo.toml
-pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Current version from git tags (matches release versions)
+pub const CURRENT_VERSION: &str = env!("RKT_VERSION");
 
 /// Cached version check result
 #[derive(Debug, Serialize, Deserialize)]
