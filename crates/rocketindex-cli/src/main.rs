@@ -183,6 +183,10 @@ enum Commands {
         /// Also extract type information (requires dotnet fsi)
         #[arg(long)]
         extract_types: bool,
+
+        /// Number of files to process per batch (for memory control)
+        #[arg(long, default_value = "1000")]
+        batch_size: usize,
     },
 
     /// Find the definition of a symbol
@@ -424,7 +428,8 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
         Commands::Index {
             root,
             extract_types,
-        } => cmd_index(&root, extract_types, format, quiet),
+            batch_size,
+        } => cmd_index(&root, extract_types, batch_size, format, quiet),
 
         Commands::Def {
             symbol,
@@ -570,7 +575,13 @@ fn cmd_serve(action: Option<ServeAction>) -> Result<u8> {
 }
 
 /// Index the codebase using SQLite (build or rebuild)
-fn cmd_index(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool) -> Result<u8> {
+fn cmd_index(
+    root: &Path,
+    extract_types: bool,
+    batch_size: usize,
+    format: OutputFormat,
+    quiet: bool,
+) -> Result<u8> {
     let root = root
         .canonicalize()
         .context("Failed to resolve root directory")?;
@@ -604,46 +615,7 @@ fn cmd_index(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
         }
     }
 
-    // Parse files in parallel using rayon
-    let max_depth = config.max_recursion_depth;
-
-    // Create progress bar for parsing (only in non-quiet, non-JSON mode)
-    let parse_progress = if !quiet && format != OutputFormat::Json {
-        let pb = ProgressBar::new(files.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} files ({eta})")
-                .unwrap()
-                .progress_chars("#>-"),
-        );
-        pb.set_message("Parsing files...");
-        Some(pb)
-    } else {
-        None
-    };
-
-    let parse_results: Vec<_> = files
-        .par_iter()
-        .map(|file| {
-            let result = match std::fs::read_to_string(file) {
-                Ok(source) => {
-                    let result = rocketindex::extract_symbols(file, &source, max_depth);
-                    Ok((file.clone(), result))
-                }
-                Err(e) => Err(format!("{}: {}", file.display(), e)),
-            };
-            if let Some(ref pb) = parse_progress {
-                pb.inc(1);
-            }
-            result
-        })
-        .collect();
-
-    if let Some(pb) = parse_progress {
-        pb.finish_with_message("Parsing complete");
-    }
-
-    // Create SQLite index
+    // Create SQLite index before processing (for incremental writes)
     let index_dir = root.join(".rocketindex");
     std::fs::create_dir_all(&index_dir).context("Failed to create index directory")?;
 
@@ -669,57 +641,16 @@ fn cmd_index(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
             .context("Failed to set file order")?;
     }
 
-    let mut errors = Vec::new();
-    let mut warnings = Vec::new();
+    let max_depth = config.max_recursion_depth;
+    let total_files = files.len();
+    let batch_size = batch_size.max(1); // Ensure at least 1
 
-    // Collect all data for batch insertion
-    let mut all_symbols = Vec::new();
-    let mut all_references: Vec<(PathBuf, rocketindex::index::Reference)> = Vec::new();
-    let mut all_opens: Vec<(PathBuf, String, u32)> = Vec::new();
-
-    for result in parse_results {
-        match result {
-            Ok((file, parse_result)) => {
-                all_symbols.extend(parse_result.symbols);
-
-                for reference in parse_result.references {
-                    all_references.push((file.clone(), reference));
-                }
-
-                for (line, open) in parse_result.opens.into_iter().enumerate() {
-                    all_opens.push((file.clone(), open, line as u32 + 1));
-                }
-
-                // Collect warnings
-                for warning in parse_result.warnings {
-                    warnings.push(format!(
-                        "{}: {} ({})",
-                        file.display(),
-                        warning.message,
-                        warning
-                            .location
-                            .map(|l| format!("{}:{}", l.line, l.column))
-                            .unwrap_or_else(|| "unknown location".to_string())
-                    ));
-                }
-            }
-            Err(e) => {
-                errors.push(e);
-            }
-        }
-    }
-
-    let symbol_count = all_symbols.len();
-    let ref_count = all_references.len();
-    let open_count = all_opens.len();
-
-    // Create progress bar for insertion (only in non-quiet, non-JSON mode)
-    let insert_progress = if !quiet && format != OutputFormat::Json {
-        let total = 3; // symbols, references, opens
-        let pb = ProgressBar::new(total);
+    // Create progress bar (only in non-quiet, non-JSON mode)
+    let progress = if !quiet && format != OutputFormat::Json {
+        let pb = ProgressBar::new(total_files as u64);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({msg})")
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} files ({eta})")
                 .unwrap()
                 .progress_chars("#>-"),
         );
@@ -728,61 +659,125 @@ fn cmd_index(root: &Path, extract_types: bool, format: OutputFormat, quiet: bool
         None
     };
 
-    // Batch insert symbols
-    if let Some(ref pb) = insert_progress {
-        pb.set_message(format!("Inserting {} symbols...", symbol_count));
-    }
-    if let Err(e) = index.insert_symbols(&all_symbols) {
-        errors.push(format!("Failed to batch insert symbols: {}", e));
-    }
-    if let Some(ref pb) = insert_progress {
-        pb.inc(1);
-    }
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let mut total_symbols = 0usize;
+    let mut total_refs = 0usize;
+    let mut total_opens = 0usize;
 
-    // Batch insert references
-    if let Some(ref pb) = insert_progress {
-        pb.set_message(format!("Inserting {} references...", ref_count));
-    }
-    let ref_tuples: Vec<_> = all_references
-        .iter()
-        .map(|(f, r)| (f.as_path(), r))
-        .collect();
-    if let Err(e) = index.insert_references(&ref_tuples) {
-        errors.push(format!("Failed to batch insert references: {}", e));
-    }
-    if let Some(ref pb) = insert_progress {
-        pb.inc(1);
-    }
+    // Process files in chunks to bound memory usage
+    // Memory usage is O(batch_size) instead of O(total_files)
+    for chunk in files.chunks(batch_size) {
+        // Parse this chunk in parallel
+        let parse_results: Vec<_> = chunk
+            .par_iter()
+            .map(|file| {
+                let result = match std::fs::read_to_string(file) {
+                    Ok(source) => {
+                        let result = rocketindex::extract_symbols(file, &source, max_depth);
+                        Ok((file.clone(), result))
+                    }
+                    Err(e) => Err(format!("{}: {}", file.display(), e)),
+                };
+                if let Some(ref pb) = progress {
+                    pb.inc(1);
+                }
+                result
+            })
+            .collect();
 
-    // Batch insert opens
-    if let Some(ref pb) = insert_progress {
-        pb.set_message(format!("Inserting {} opens...", open_count));
-    }
-    let open_tuples: Vec<_> = all_opens
-        .iter()
-        .map(|(f, m, l)| (f.as_path(), m.as_str(), *l))
-        .collect();
-    if let Err(e) = index.insert_opens(&open_tuples) {
-        errors.push(format!("Failed to batch insert opens: {}", e));
-    }
-    if let Some(ref pb) = insert_progress {
-        pb.finish_with_message("Indexing complete");
-    }
+        // Collect results for this chunk only
+        let mut chunk_symbols = Vec::new();
+        let mut chunk_references: Vec<(PathBuf, rocketindex::index::Reference)> = Vec::new();
+        let mut chunk_opens: Vec<(PathBuf, String, u32)> = Vec::new();
 
-    // Record file modification times for incremental refresh
-    for file in &files {
-        if let Ok(metadata) = std::fs::metadata(file) {
-            if let Ok(modified) = metadata.modified() {
-                let mtime = modified
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                if let Err(e) = index.set_file_mtime(file, mtime) {
-                    tracing::warn!("Failed to record mtime for {:?}: {}", file, e);
+        for result in parse_results {
+            match result {
+                Ok((file, parse_result)) => {
+                    chunk_symbols.extend(parse_result.symbols);
+
+                    for reference in parse_result.references {
+                        chunk_references.push((file.clone(), reference));
+                    }
+
+                    for (line, open) in parse_result.opens.into_iter().enumerate() {
+                        chunk_opens.push((file.clone(), open, line as u32 + 1));
+                    }
+
+                    // Collect warnings (capped to avoid memory issues)
+                    if warnings.len() < 1000 {
+                        for warning in parse_result.warnings {
+                            warnings.push(format!(
+                                "{}: {} ({})",
+                                file.display(),
+                                warning.message,
+                                warning
+                                    .location
+                                    .map(|l| format!("{}:{}", l.line, l.column))
+                                    .unwrap_or_else(|| "unknown location".to_string())
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    if errors.len() < 1000 {
+                        errors.push(e);
+                    }
                 }
             }
         }
+
+        // Track counts before inserting
+        total_symbols += chunk_symbols.len();
+        total_refs += chunk_references.len();
+        total_opens += chunk_opens.len();
+
+        // Insert this chunk's data immediately
+        if let Err(e) = index.insert_symbols(&chunk_symbols) {
+            errors.push(format!("Failed to insert symbols: {}", e));
+        }
+
+        let ref_tuples: Vec<_> = chunk_references
+            .iter()
+            .map(|(f, r)| (f.as_path(), r))
+            .collect();
+        if let Err(e) = index.insert_references(&ref_tuples) {
+            errors.push(format!("Failed to insert references: {}", e));
+        }
+
+        let open_tuples: Vec<_> = chunk_opens
+            .iter()
+            .map(|(f, m, l)| (f.as_path(), m.as_str(), *l))
+            .collect();
+        if let Err(e) = index.insert_opens(&open_tuples) {
+            errors.push(format!("Failed to insert opens: {}", e));
+        }
+
+        // Record file modification times for this chunk
+        for file in chunk {
+            if let Ok(metadata) = std::fs::metadata(file) {
+                if let Ok(modified) = metadata.modified() {
+                    let mtime = modified
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    if let Err(e) = index.set_file_mtime(file, mtime) {
+                        tracing::warn!("Failed to record mtime for {:?}: {}", file, e);
+                    }
+                }
+            }
+        }
+
+        // Memory for chunk_symbols, chunk_references, chunk_opens is dropped here
     }
+
+    if let Some(pb) = progress {
+        pb.finish_with_message("Indexing complete");
+    }
+
+    let symbol_count = total_symbols;
+    let _ref_count = total_refs;
+    let _open_count = total_opens;
 
     if format == OutputFormat::Json {
         let output = serde_json::json!({
@@ -1969,7 +1964,7 @@ fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
     if !quiet {
         println!("Building initial index...");
     }
-    cmd_index(&root, false, format, quiet)?;
+    cmd_index(&root, false, 1000, format, quiet)?;
 
     // Load config for recursion depth
     let config = Config::load(&root);
@@ -3133,7 +3128,7 @@ Estimated time: ~1-3 seconds per 1,000 files
     let started = Instant::now();
     println!("\nIndexing codebase...");
 
-    match cmd_index(cwd, false, format, quiet) {
+    match cmd_index(cwd, false, 1000, format, quiet) {
         Ok(code) if code == exit_codes::SUCCESS => {
             if !quiet {
                 println!("Indexed in {:.1?}", started.elapsed());
@@ -3312,7 +3307,7 @@ fn ensure_initial_index(cwd: &Path, format: OutputFormat, quiet: bool) -> Result
         println!("Building initial RocketIndex index (rkt index)...");
     }
 
-    match cmd_index(cwd, false, format, quiet) {
+    match cmd_index(cwd, false, 1000, format, quiet) {
         Ok(code) if code == exit_codes::SUCCESS => {
             if show_feedback {
                 println!(
