@@ -13,3 +13,17 @@ pub fn cross_file_caller() {
 pub fn another_caller() {
     cross_file_caller();
 }
+
+/// Mutually recursive function A (for cycle detection testing)
+pub fn cycle_a(n: i32) {
+    if n > 0 {
+        cycle_b(n - 1);
+    }
+}
+
+/// Mutually recursive function B (for cycle detection testing)
+pub fn cycle_b(n: i32) {
+    if n > 0 {
+        cycle_a(n - 1);
+    }
+}

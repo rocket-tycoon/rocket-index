@@ -230,6 +230,47 @@ for lang in rust python typescript; do
                 echo -e "  ${RED}✗${NC} caller missing required fields"
                 ((FAILED++))
             fi
+
+            # Test analyze_dependencies (spider) - forward traversal
+            echo "  Testing forward dependency traversal..."
+            SPIDER_FWD=$("$RKT" spider "main_function" --depth 2 --quiet 2>&1)
+            assert_json_array_contains "$SPIDER_FWD" ".nodes" "qualified" "main_function" "spider includes entry point"
+            assert_json_array_contains "$SPIDER_FWD" ".nodes" "qualified" "utils::helper" "spider finds utils::helper dependency"
+
+            # Test reverse traversal (impact analysis)
+            echo "  Testing reverse dependency traversal..."
+            SPIDER_REV=$("$RKT" spider "main_function" --reverse --depth 2 --quiet 2>&1)
+            assert_json_array_contains "$SPIDER_REV" ".nodes" "name" "caller_a" "reverse spider finds caller_a"
+            assert_json_array_contains "$SPIDER_REV" ".nodes" "name" "cross_file_caller" "reverse spider finds cross_file_caller"
+            assert_json_array_contains "$SPIDER_REV" ".nodes" "name" "another_caller" "reverse spider finds another_caller at depth 2"
+
+            # Test depth limiting
+            echo "  Testing depth limiting..."
+            SPIDER_D1=$("$RKT" spider "main_function" --reverse --depth 1 --quiet 2>&1)
+            DEPTH1_COUNT=$(echo "$SPIDER_D1" | jq '[.nodes[] | select(.depth <= 1)] | length')
+            TOTAL_COUNT=$(echo "$SPIDER_D1" | jq '.nodes | length')
+            if [ "$DEPTH1_COUNT" -eq "$TOTAL_COUNT" ]; then
+                echo -e "  ${GREEN}✓${NC} depth=1 limits to depth 0 and 1 only"
+                ((PASSED++))
+            else
+                echo -e "  ${RED}✗${NC} depth limiting not working"
+                ((FAILED++))
+            fi
+
+            # Test cycle detection (mutual recursion)
+            echo "  Testing cycle detection..."
+            SPIDER_CYCLE=$("$RKT" spider "cycle_a" --depth 5 --quiet 2>&1)
+            # Should find cycle_b but not recurse infinitely
+            assert_json_array_contains "$SPIDER_CYCLE" ".nodes" "name" "cycle_a" "cycle starts at cycle_a"
+            assert_json_array_contains "$SPIDER_CYCLE" ".nodes" "name" "cycle_b" "cycle includes cycle_b"
+            CYCLE_COUNT=$(echo "$SPIDER_CYCLE" | jq '.nodes | length')
+            if [ "$CYCLE_COUNT" -lt 10 ]; then
+                echo -e "  ${GREEN}✓${NC} cycle detection prevents infinite recursion ($CYCLE_COUNT nodes)"
+                ((PASSED++))
+            else
+                echo -e "  ${RED}✗${NC} possible infinite recursion ($CYCLE_COUNT nodes)"
+                ((FAILED++))
+            fi
             ;;
 
         python)
