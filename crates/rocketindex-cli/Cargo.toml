@@ -6,6 +6,10 @@ license.workspace = true
 authors.workspace = true
 description = "Rocket-fast CLI for F# codebase indexing and navigation"
 
+[lib]
+name = "rocketindex_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rkt"
 path = "src/main.rs"
@@ -36,3 +40,5 @@ assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.10"
 trycmd = "0.15"
+wiremock = "0.6"
+serial_test = "3.1"

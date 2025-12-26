@@ -16,6 +16,18 @@ const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const GITHUB_API_URL: &str =
     "https://api.github.com/repos/rocket-tycoon/rocket-index/releases?per_page=1";
 
+/// Get the GitHub API URL, allowing override via environment variable for testing.
+fn github_api_url() -> String {
+    std::env::var("ROCKETINDEX_GITHUB_API")
+        .map(|base| {
+            format!(
+                "{}/repos/rocket-tycoon/rocket-index/releases?per_page=1",
+                base
+            )
+        })
+        .unwrap_or_else(|_| GITHUB_API_URL.to_string())
+}
+
 /// Current version from Cargo.toml
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -59,6 +71,12 @@ fn load_cache() -> Option<String> {
     }
 }
 
+/// Clear the version cache (useful for testing)
+#[doc(hidden)]
+pub fn clear_cache() {
+    let _ = std::fs::remove_file(cache_path());
+}
+
 /// Save version to cache
 fn save_cache(version: &str) -> Result<()> {
     let path = cache_path();
@@ -79,8 +97,12 @@ fn save_cache(version: &str) -> Result<()> {
 }
 
 /// Fetch latest version from GitHub API
-fn fetch_latest_version() -> Result<String> {
-    let releases: Vec<GitHubRelease> = ureq::get(GITHUB_API_URL)
+///
+/// This function can be tested by setting `ROCKETINDEX_GITHUB_API` env var
+/// to point to a mock server.
+#[doc(hidden)]
+pub fn fetch_latest_version() -> Result<String> {
+    let releases: Vec<GitHubRelease> = ureq::get(&github_api_url())
         .set("User-Agent", "rocketindex-cli")
         .set("Accept", "application/vnd.github.v3+json")
         .call()?

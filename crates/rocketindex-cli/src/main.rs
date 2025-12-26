@@ -44,7 +44,7 @@ mod exit_codes {
 mod guidelines;
 mod mcp;
 
-mod version_check;
+use rocketindex_cli::version_check;
 
 // File change tracking utilities (used by setup wizards)
 #[allow(dead_code)]
