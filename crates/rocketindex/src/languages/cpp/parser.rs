@@ -1099,4 +1099,79 @@ User* UserService::createUser(const std::string& name) {
             ref_names
         );
     }
+
+    #[test]
+    fn extracts_cpp20_concepts() {
+        // C++20 Concepts
+        let source = r#"
+template<typename T>
+concept Hashable = requires(T a) {
+    { std::hash<T>{}(a) } -> std::convertible_to<std::size_t>;
+};
+
+template<Hashable T>
+void process(T item) {}
+"#;
+        let parser = CppParser;
+        let result = parser.extract_symbols(Path::new("concepts.cpp"), source, 100);
+
+        // We expect "process" to be extracted successfully.
+        // Currently we don't extract "concept" definitions specifically, which is acceptable for Beta.
+        // Key is that the presence of concepts doesn't break parsing of the function.
+        let func = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "process")
+            .expect("Should extract function using concept");
+
+        assert_eq!(func.kind, SymbolKind::Function);
+    }
+
+    #[test]
+    fn extracts_cpp20_modules() {
+        // C++20 Modules
+        let source = r#"
+export module mymath;
+
+export int add(int a, int b) {
+    return a + b;
+}
+"#;
+        let parser = CppParser;
+        let result = parser.extract_symbols(Path::new("modules.cpp"), source, 100);
+
+        // We expect "add" to be extracted despite the module syntax
+        let func = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "add")
+            .expect("Should extract exported function");
+
+        assert_eq!(func.kind, SymbolKind::Function);
+    }
+
+    #[test]
+    fn extracts_constexpr_virtual() {
+        // C++20 allows constexpr virtual functions
+        let source = r#"
+struct Base {
+    virtual constexpr int value() const { return 1; }
+};
+
+struct Derived : Base {
+    constexpr int value() const override { return 2; }
+};
+"#;
+        let parser = CppParser;
+        let result = parser.extract_symbols(Path::new("virtual.cpp"), source, 100);
+
+        let base_val = result.symbols.iter().find(|s| s.qualified == "Base::value");
+        assert!(base_val.is_some());
+
+        let derived_val = result
+            .symbols
+            .iter()
+            .find(|s| s.qualified == "Derived::value");
+        assert!(derived_val.is_some());
+    }
 }

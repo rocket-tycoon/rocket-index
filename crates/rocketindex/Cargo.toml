@@ -45,6 +45,9 @@ tree-sitter-c-sharp = "0.23.1"
 tree-sitter-php = "0.23.11"
 tree-sitter-c = "0.23.4"
 tree-sitter-cpp = "0.23.4"
+tree-sitter-kotlin-ng = "1.1"
+tree-sitter-objc = "3.0"
+# tree-sitter-swift blocked: grammar uses tree-sitter v0.21, incompatible with our v0.24
 
 # Unix process checks for PID file coordination
 [target.'cfg(unix)'.dependencies]

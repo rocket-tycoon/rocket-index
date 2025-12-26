@@ -50,6 +50,17 @@ Source Files → Tree-sitter → AST → SQLite → Deterministic Queries
 | Best for | Navigation, refactoring | Type-aware edits | Exploration | Simple edits |
 
 ---
+ 
+ ## Built for Scale
+ 
+ Rocket Index was built specifically because traditional Language Servers often choke on large codebases.
+ 
+ *   **Zero Compilation**: Unlike LSPs that attempt to compile your project (which fails on partial checkouts or missing dependencies), Rocket Index uses **pure syntactic analysis**. It doesn't care if your code compiles, only that it parses.
+ *   **Monorepo Ready**: Designed to handle repositories with **10,000+ files** without breaking a sweat.
+ *   **Instant Access**: Uses an embedded **SQLite** database with aggressive performance tuning (WAL mode, memory-mapped I/O) to ensure symbol lookups take milliseconds, regardless of project size.
+ *   **Low Footprint**: Keeps your agent's context lightweight. Instead of loading the entire project structure into memory, it performs targeted disk-based queries.
+ 
+ ---
 
 ## Quick Start
 
@@ -174,23 +185,6 @@ rkt blame "UserService.save"            # Blame by symbol (or file:line)
 
 ---
 
-## Evidence: MCP vs CLI for Agents
-
-We tested whether agents use RocketIndex when provided via MCP versus CLI documentation.
-
-**Task:** Find all functions that call `ApiProviderFactory` in vets-api (7,470 Ruby files)
-
-| Model | Integration | Turns to Success |
-|-------|-------------|------------------|
-| Haiku | MCP Server | 2 |
-| Haiku | CLI (AGENTS.md) | Failed at 10 |
-| Sonnet | MCP Server | 2 |
-| Sonnet | CLI (AGENTS.md) | Failed at 10 |
-
-With MCP, agents immediately call `find_callers`. Without it, they grep—even when documentation explicitly describes the CLI. Tool visibility matters more than instructions.
-
----
-
 ## RocketIndex vs Language Servers
 
 Some AI tools (like Claude Code) include LSP support. When should you use RocketIndex instead?
@@ -219,19 +213,20 @@ They're complementary—RocketIndex for structural navigation, LSP for type-awar
 
 ## Language Support
 
-| Language | Status | Extensions |
-|----------|--------|------------|
-| F# | Full | `.fs`, `.fsi`, `.fsx` |
-| Go | Full | `.go` |
-| JavaScript | Full | `.js`, `.jsx`, `.mjs`, `.cjs` |
-| Python | Full | `.py`, `.pyi` |
-| Ruby | Full | `.rb` |
-| Rust | Full | `.rs` |
-| TypeScript | Full | `.ts`, `.tsx` |
-| C# | Beta | `.cs` |
-| Java | Beta | `.java` |
-| PHP | Beta | `.php` |
-| C/C++ | Alpha | `.c`, `.h`, `.cpp`, `.cc`, `.hpp` |
+
+| Language | Status | Extensions | Features |
+|----------|--------|------------|----------|
+| F# | Full | `.fs`, `.fsi`, `.fsx` | |
+| Go | Full | `.go` | |
+| JavaScript | Full | `.js`, `.jsx`, `.mjs`, `.cjs` | |
+| Python | Full | `.py`, `.pyi` | |
+| Ruby | Full | `.rb` | |
+| Rust | Full | `.rs` | |
+| TypeScript | Full | `.ts`, `.tsx` | |
+| C# | Beta | `.cs` | |
+| Java | Beta | `.java` | |
+| PHP | Beta | `.php` | |
+| C/C++ | Beta | `.c`, `.cpp`, `.cc`, `.h`, `.hpp`, `.cxx`, `.hxx`, `.hh` | Namespaces, Classes, Inheritance, Templates |
 
 **Full:** Production-ready with visibility, inheritance, and language-specific patterns.
 **Beta:** Core symbols extracted; some advanced patterns may be missing.

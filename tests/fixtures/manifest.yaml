@@ -1,0 +1,119 @@
+# Test Fixture Manifest
+# Defines repositories used for integration testing
+#
+# Categories:
+#   - full: Large repos for comprehensive testing (local dev only)
+#   - ci: Small repos for CI (shallow clone, pinned commits)
+#   - minimal: Tiny fixtures for unit-style integration tests
+
+# Minimal fixtures - synthetic code for precise testing
+minimal:
+  - name: minimal-rust
+    path: tests/fixtures/minimal/rust
+    type: synthetic  # Created by us, not cloned
+
+  - name: minimal-python
+    path: tests/fixtures/minimal/python
+    type: synthetic
+
+  - name: minimal-typescript
+    path: tests/fixtures/minimal/typescript
+    type: synthetic
+
+# CI fixtures - real repos, small, pinned commits
+ci:
+  rust:
+    - name: serde
+      repo: https://github.com/serde-rs/serde
+      commit: v1.0.215  # Pin to tag for reproducibility
+      depth: 1
+
+  python:
+    - name: click
+      repo: https://github.com/pallets/click
+      commit: 8.1.7
+      depth: 1
+
+  typescript:
+    - name: zod
+      repo: https://github.com/colinhacks/zod
+      commit: v3.23.8
+      depth: 1
+
+  go:
+    - name: cobra
+      repo: https://github.com/spf13/cobra
+      commit: v1.8.1
+      depth: 1
+
+  ruby:
+    - name: devise
+      repo: https://github.com/heartcombo/devise
+      commit: v4.9.4
+      depth: 1
+
+  javascript:
+    - name: lodash
+      repo: https://github.com/lodash/lodash
+      commit: "4.17.21"
+      depth: 1
+
+  java:
+    - name: guava
+      repo: https://github.com/google/guava
+      commit: v33.3.1
+      depth: 1
+
+  csharp:
+    - name: Polly
+      repo: https://github.com/App-vNext/Polly
+      commit: 8.5.0
+      depth: 1
+
+  fsharp:
+    - name: FsUnit
+      repo: https://github.com/fsprojects/FsUnit
+      commit: v6.0.1
+      depth: 1
+
+  php:
+    - name: symfony
+      repo: https://github.com/symfony/symfony
+      commit: v7.2.1
+      depth: 1
+      sparse: src/Symfony/Component/Console  # Only clone this subdir
+
+  c:
+    - name: redis
+      repo: https://github.com/redis/redis
+      commit: "7.4.1"
+      depth: 1
+      sparse: src  # Only src directory
+
+  cpp:
+    - name: json
+      repo: https://github.com/nlohmann/json
+      commit: v3.11.3
+      depth: 1
+
+# Full fixtures - for comprehensive local testing
+full:
+  rust:
+    - name: tokio
+      repo: https://github.com/tokio-rs/tokio
+    - name: ripgrep
+      repo: https://github.com/BurntSushi/ripgrep
+
+  python:
+    - name: django
+      repo: https://github.com/django/django
+    - name: fastapi
+      repo: https://github.com/tiangolo/fastapi
+
+  go:
+    - name: docker
+      repo: https://github.com/moby/moby
+
+  ruby:
+    - name: rails
+      repo: https://github.com/rails/rails

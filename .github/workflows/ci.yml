@@ -60,3 +60,32 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Create minimal fixtures
+        run: ./scripts/setup-test-fixtures.sh minimal
+
+      - name: Run fixture tests
+        run: ./scripts/test-fixtures.sh

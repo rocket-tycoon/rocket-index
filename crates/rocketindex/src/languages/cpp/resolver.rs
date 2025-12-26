@@ -10,9 +10,34 @@ use std::path::Path;
 
 use crate::parse::ParseResult;
 use crate::resolve::{ResolutionPath, ResolveResult, SymbolResolver};
-use crate::{CodeIndex, Reference, SymbolKind};
+use crate::{CodeIndex, Reference, Symbol, SymbolKind};
 
 pub struct CppResolver;
+
+/// Select the best matching symbol from a list of candidates.
+/// Priorities:
+/// 1. Source files (.c, .cpp, .cc, .cxx)
+/// 2. Header files (.h, .hpp, .hh, .hxx)
+/// 3. Others/Last added
+fn select_best_match(symbols: &[Symbol]) -> Option<&Symbol> {
+    if symbols.is_empty() {
+        return None;
+    }
+    symbols.iter().max_by_key(|s| {
+        let ext = s
+            .location
+            .file
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        match ext.as_str() {
+            "cpp" | "cc" | "c" | "cxx" => 2,
+            "hpp" | "h" | "hh" | "hxx" => 1,
+            _ => 0,
+        }
+    })
+}
 
 impl SymbolResolver for CppResolver {
     fn resolve<'a>(
@@ -22,7 +47,7 @@ impl SymbolResolver for CppResolver {
         from_file: &Path,
     ) -> Option<ResolveResult<'a>> {
         // 1. Try exact qualified name match (e.g., "std::vector")
-        if let Some(symbol) = index.get(name) {
+        if let Some(symbol) = select_best_match(index.get_all(name)) {
             return Some(ResolveResult {
                 symbol,
                 resolution_path: ResolutionPath::Qualified,
@@ -50,7 +75,7 @@ impl SymbolResolver for CppResolver {
 
         if let Some(namespace) = &current_namespace {
             let qualified = format!("{}::{}", namespace, name);
-            if let Some(symbol) = index.get(&qualified) {
+            if let Some(symbol) = select_best_match(index.get_all(&qualified)) {
                 return Some(ResolveResult {
                     symbol,
                     resolution_path: ResolutionPath::SameModule,
@@ -63,7 +88,7 @@ impl SymbolResolver for CppResolver {
         for open in file_opens {
             // Handle specific using like "std::vector"
             if open.ends_with(&format!("::{}", name)) {
-                if let Some(symbol) = index.get(open) {
+                if let Some(symbol) = select_best_match(index.get_all(open)) {
                     return Some(ResolveResult {
                         symbol,
                         resolution_path: ResolutionPath::ViaOpen(open.to_string()),
@@ -73,7 +98,7 @@ impl SymbolResolver for CppResolver {
 
             // Try namespace::name pattern
             let qualified = format!("{}::{}", open, name);
-            if let Some(symbol) = index.get(&qualified) {
+            if let Some(symbol) = select_best_match(index.get_all(&qualified)) {
                 return Some(ResolveResult {
                     symbol,
                     resolution_path: ResolutionPath::ViaOpen(open.to_string()),
@@ -93,7 +118,7 @@ impl SymbolResolver for CppResolver {
             // Try Class::Method pattern
             if symbol.kind == SymbolKind::Class || symbol.kind == SymbolKind::Record {
                 let qualified = format!("{}::{}", symbol.qualified, name);
-                if let Some(resolved) = index.get(&qualified) {
+                if let Some(resolved) = select_best_match(index.get_all(&qualified)) {
                     return Some(ResolveResult {
                         symbol: resolved,
                         resolution_path: ResolutionPath::SameModule,
@@ -113,7 +138,7 @@ impl SymbolResolver for CppResolver {
     ) -> Option<ResolveResult<'a>> {
         // C++ uses :: for namespaces, not dots
         // First try direct qualified lookup
-        if let Some(symbol) = index.get(name) {
+        if let Some(symbol) = select_best_match(index.get_all(name)) {
             return Some(ResolveResult {
                 symbol,
                 resolution_path: ResolutionPath::Qualified,
@@ -129,7 +154,7 @@ impl SymbolResolver for CppResolver {
             if let Some(result) = self.resolve(index, first, from_file) {
                 // Now try to find the full path
                 let full_name = format!("{}::{}", result.symbol.qualified, rest);
-                if let Some(symbol) = index.get(&full_name) {
+                if let Some(symbol) = select_best_match(index.get_all(&full_name)) {
                     return Some(ResolveResult {
                         symbol,
                         resolution_path: result.resolution_path,
@@ -362,5 +387,60 @@ int main() {
 
         let result = resolver.resolve(&index, "NonExistent", Path::new("test.cpp"));
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn prioritizes_definition_over_declaration() {
+        let mut index = CodeIndex::new();
+        // Add declaration in header (priority 1)
+        index.add_symbol(Symbol::new(
+            "MyFunc".to_string(),
+            "MyFunc".to_string(),
+            SymbolKind::Function,
+            Location::new(PathBuf::from("src/test.h"), 1, 1),
+            Visibility::Public,
+            "cpp".to_string(),
+        ));
+        // Add definition in source (priority 2)
+        index.add_symbol(Symbol::new(
+            "MyFunc".to_string(),
+            "MyFunc".to_string(),
+            SymbolKind::Function,
+            Location::new(PathBuf::from("src/test.cpp"), 1, 1),
+            Visibility::Public,
+            "cpp".to_string(),
+        ));
+
+        let resolver = CppResolver;
+        let result = resolver.resolve(&index, "MyFunc", Path::new("main.cpp"));
+        assert!(result.is_some());
+        let symbol = result.unwrap().symbol;
+        assert_eq!(symbol.location.file.to_string_lossy(), "src/test.cpp");
+
+        // Try adding in reverse order to ensure it's not just "last added"
+        let mut index2 = CodeIndex::new();
+        index2.add_symbol(Symbol::new(
+            "MyFunc".to_string(),
+            "MyFunc".to_string(),
+            SymbolKind::Function,
+            Location::new(PathBuf::from("src/test.cpp"), 1, 1),
+            Visibility::Public,
+            "cpp".to_string(),
+        ));
+        index2.add_symbol(Symbol::new(
+            "MyFunc".to_string(),
+            "MyFunc".to_string(),
+            SymbolKind::Function,
+            Location::new(PathBuf::from("src/test.h"), 1, 1),
+            Visibility::Public,
+            "cpp".to_string(),
+        ));
+
+        let result2 = resolver.resolve(&index2, "MyFunc", Path::new("main.cpp"));
+        assert!(result2.is_some());
+        assert_eq!(
+            result2.unwrap().symbol.location.file.to_string_lossy(),
+            "src/test.cpp"
+        );
     }
 }
