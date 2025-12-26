@@ -146,7 +146,7 @@ Default exclusions: `node_modules`, `bin`, `obj`, `.git`, `.vs`, `.idea`
 
 ## Language Support
 
-Currently supports C, C++, C#, F#, Go, Java, JavaScript, PHP, Python, Ruby, Rust, and TypeScript via Tree-sitter grammars. Language detected by file extension.
+Currently supports C, C++, C#, F#, Go, Java, JavaScript, Kotlin, Objective-C, PHP, Python, Ruby, Rust, and TypeScript via Tree-sitter grammars. Language detected by file extension.
 
 | Language | Extensions |
 |----------|------------|
@@ -157,6 +157,8 @@ Currently supports C, C++, C#, F#, Go, Java, JavaScript, PHP, Python, Ruby, Rust
 | Go | `.go` |
 | Java | `.java` |
 | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |
+| Kotlin | `.kt`, `.kts` |
+| Objective-C | `.m`, `.mm` |
 | PHP | `.php` |
 | Python | `.py`, `.pyi` |
 | Ruby | `.rb` |
