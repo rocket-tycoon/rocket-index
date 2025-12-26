@@ -43,6 +43,7 @@ mod exit_codes {
 mod guidelines;
 mod mcp;
 mod skills;
+mod version_check;
 
 // File change tracking utilities (used by setup wizards)
 #[allow(dead_code)]
@@ -468,6 +469,11 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
 fn cmd_serve(action: Option<ServeAction>) -> Result<u8> {
     use mcp::McpConfig;
     use std::sync::Arc;
+
+    // Check for updates on server start (non-blocking, cached)
+    if action.is_none() {
+        version_check::print_update_notification();
+    }
 
     // Build async runtime
     let rt = tokio::runtime::Runtime::new()?;
