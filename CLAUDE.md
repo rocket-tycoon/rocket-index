@@ -84,8 +84,7 @@ that exposes navigation tools directly:
 ```
 
 The MCP server provides: `find_definition`, `find_callers`, `find_references`, 
-`search_symbols`, `analyze_dependencies`, `enrich_symbol`, `describe_project`,
-`register_project`, `list_projects`, `reindex_project`.
+`search_symbols`, `analyze_dependencies`, `describe_project`.
 
 Config stored at `~/.config/rocketindex/mcp.json`.
 

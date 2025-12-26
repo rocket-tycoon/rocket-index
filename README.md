@@ -159,7 +159,6 @@ rkt watch                    # Keep index fresh (run in background terminal)
 | `find_references` | Find all usages of a symbol |
 | `analyze_dependencies` | Traverse call graph forward or reverse |
 | `search_symbols` | Search symbols by pattern |
-| `enrich_symbol` | Get definition, callers, and git blame in one call |
 | `describe_project` | Get semantic project structure |
 
 ### CLI Commands (for humans)
@@ -170,6 +169,7 @@ rkt callers "User.save"                 # Find all callers
 rkt refs "Config"                       # Find all references
 rkt spider "validate_email" --reverse   # Reverse dependency graph
 rkt symbols "*Service" --concise        # Search by pattern
+rkt blame "UserService.save"            # Blame by symbol (or file:line)
 ```
 
 ---
