@@ -6,6 +6,7 @@
 mod tests;
 
 pub mod config;
+pub mod format;
 pub mod project_manager;
 pub mod server;
 pub mod tools;

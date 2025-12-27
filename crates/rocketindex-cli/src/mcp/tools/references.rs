@@ -4,6 +4,7 @@ use rmcp::model::{CallToolResult, Content};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::mcp::format::to_relative_path;
 use crate::mcp::ProjectManager;
 
 /// Input for find_references tool
@@ -72,7 +73,7 @@ pub async fn find_references(
                                 None
                             };
                             ReferenceInfo {
-                                file: r.location.file.display().to_string(),
+                                file: to_relative_path(&r.location.file, &root),
                                 line: r.location.line,
                                 column: r.location.column,
                                 context,

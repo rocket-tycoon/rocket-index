@@ -4,6 +4,7 @@ use rmcp::model::{CallToolResult, Content};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::mcp::format::to_relative_path;
 use crate::mcp::ProjectManager;
 
 /// Input for analyze_dependencies tool
@@ -81,7 +82,7 @@ pub async fn analyze_dependencies(
                     .map(|n| DependencyNode {
                         symbol: n.symbol.qualified,
                         kind: format!("{:?}", n.symbol.kind),
-                        file: n.symbol.location.file.display().to_string(),
+                        file: to_relative_path(&n.symbol.location.file, &root),
                         line: n.symbol.location.line,
                         depth: n.depth,
                     })

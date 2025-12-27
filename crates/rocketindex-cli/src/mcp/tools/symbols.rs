@@ -4,6 +4,7 @@ use rmcp::model::{CallToolResult, Content};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::mcp::format::to_relative_path;
 use crate::mcp::ProjectManager;
 
 /// Input for search_symbols tool
@@ -67,7 +68,7 @@ pub async fn search_symbols(
                             qualified: s.qualified,
                             name: s.name,
                             kind: format!("{:?}", s.kind),
-                            file: s.location.file.display().to_string(),
+                            file: to_relative_path(&s.location.file, &root),
                             line: s.location.line,
                             language: s.language,
                             project_root: root.display().to_string(),
@@ -84,7 +85,7 @@ pub async fn search_symbols(
                             qualified: s.qualified,
                             name: s.name,
                             kind: format!("{:?}", s.kind),
-                            file: s.location.file.display().to_string(),
+                            file: to_relative_path(&s.location.file, &root),
                             line: s.location.line,
                             language: s.language,
                             project_root: root.display().to_string(),

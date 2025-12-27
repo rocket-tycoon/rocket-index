@@ -256,3 +256,38 @@ async fn test_cwd_based_project_resolution() {
         json
     );
 }
+
+#[tokio::test]
+async fn test_mcp_tools_use_relative_paths() {
+    // Acquire CWD lock to prevent interference
+    let _guard = CWD_MUTEX.lock().unwrap();
+
+    let (dir, manager) = setup_project().await;
+    let root_str = dir.path().to_str().unwrap();
+
+    // Test find_definition returns relative path
+    let input = FindDefinitionInput {
+        symbol: "User".to_string(),
+        file: None,
+        project_root: Some(root_str.to_string()),
+        include_context: false,
+    };
+
+    let result = find_definition(manager.clone(), input).await;
+    let json = serde_json::to_string(&result).unwrap();
+
+    // File path should be relative (src/Models.py), not absolute
+    // Note: The JSON is double-escaped since it's in a text content field
+    assert!(
+        json.contains("src/Models.py"),
+        "find_definition should return relative path, got: {}",
+        json
+    );
+    // Should NOT contain the temp dir absolute path in the file field
+    // Check that the file field doesn't start with /var or /private/var (temp dir)
+    assert!(
+        !json.contains("\"file\":\"/var") && !json.contains("\"file\":\\\"/var"),
+        "find_definition should not return absolute path in file field: {}",
+        json
+    );
+}

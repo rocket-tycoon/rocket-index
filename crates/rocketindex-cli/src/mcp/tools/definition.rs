@@ -4,6 +4,7 @@ use rmcp::model::{CallToolResult, Content};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::mcp::format::to_relative_path;
 use crate::mcp::ProjectManager;
 
 /// Input for find_definition tool
@@ -138,7 +139,7 @@ pub async fn find_definition(
             qualified: sym.qualified,
             name: sym.name,
             kind: format!("{:?}", sym.kind),
-            file: sym.location.file.display().to_string(),
+            file: to_relative_path(&sym.location.file, &root),
             line: sym.location.line,
             column: sym.location.column,
             language: sym.language,

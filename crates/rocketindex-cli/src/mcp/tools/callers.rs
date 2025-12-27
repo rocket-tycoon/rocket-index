@@ -4,6 +4,7 @@ use rmcp::model::{CallToolResult, Content};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::mcp::format::to_relative_path;
 use crate::mcp::ProjectManager;
 
 /// Input for find_callers tool
@@ -60,7 +61,7 @@ pub async fn find_callers(manager: Arc<ProjectManager>, input: FindCallersInput)
                     if node.depth == 1 {
                         callers.push(CallerInfo {
                             caller_symbol: node.symbol.qualified.clone(),
-                            file: node.symbol.location.file.display().to_string(),
+                            file: to_relative_path(&node.symbol.location.file, &root),
                             line: node.symbol.location.line,
                             column: node.symbol.location.column,
                         });
