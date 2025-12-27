@@ -230,6 +230,79 @@ fn determine_declaration_kind(node: &tree_sitter::Node) -> DeclarationKind {
     DeclarationKind::Class
 }
 
+/// Check if an identifier is in a reference context (vs definition context)
+fn is_reference_context(node: &tree_sitter::Node) -> bool {
+    if let Some(parent) = node.parent() {
+        match parent.kind() {
+            // Definitions - not references
+            "function_declaration"
+            | "class_declaration"
+            | "protocol_declaration"
+            | "property_declaration"
+            | "typealias_declaration"
+            | "parameter"
+            | "enum_entry"
+            | "pattern" => {
+                // Check if this is the name being defined
+                // For pattern nodes, the simple_identifier inside is a definition
+                if parent.kind() == "pattern" {
+                    return false;
+                }
+                // For declarations, check if this identifier is the name field
+                if let Some(name_node) = parent.child_by_field_name("name") {
+                    if name_node.id() == node.id() {
+                        return false;
+                    }
+                }
+                // Also check for type_identifier child which is the name
+                if let Some(first_id) = find_child_by_kind(&parent, "type_identifier") {
+                    if first_id.id() == node.id() {
+                        return false;
+                    }
+                }
+                if let Some(first_id) = find_child_by_kind(&parent, "simple_identifier") {
+                    if first_id.id() == node.id() {
+                        return false;
+                    }
+                }
+            }
+
+            // Value argument labels are not references
+            "value_argument_label" => return false,
+
+            // Import statements - not references in the symbol sense
+            "import_declaration" => return false,
+
+            // These contexts are references
+            "call_expression"
+            | "navigation_expression"
+            | "value_argument"
+            | "assignment"
+            | "binary_expression"
+            | "unary_expression"
+            | "control_transfer_statement"
+            | "if_statement"
+            | "guard_statement"
+            | "switch_entry"
+            | "for_statement"
+            | "while_statement"
+            | "interpolated_expression"
+            | "tuple_expression"
+            | "array_literal"
+            | "dictionary_literal"
+            | "subscript_expression"
+            | "statements" => return true,
+
+            // For navigation_suffix, we're accessing a member - it's a reference
+            "navigation_suffix" => return true,
+
+            // Recurse up for nested contexts
+            _ => return is_reference_context(&parent),
+        }
+    }
+    false
+}
+
 /// Extract the name from a declaration node
 fn extract_name<'a>(node: &tree_sitter::Node<'a>, source: &'a [u8]) -> Option<&'a str> {
     // Try common field names
@@ -512,6 +585,67 @@ fn extract_recursive(
             }
         }
 
+        // Extract function/method call references
+        // e.g., greet(name: user) -> reference to "greet"
+        // e.g., obj.method() -> reference to "obj.method"
+        "call_expression" => {
+            // Get the callee (first child before call_suffix)
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                let callee = cursor.node();
+                match callee.kind() {
+                    "simple_identifier" => {
+                        // Direct function call: greet(...)
+                        if let Ok(name) = callee.utf8_text(source) {
+                            result.references.push(Reference {
+                                name: name.to_string(),
+                                location: node_to_location(file, &callee),
+                            });
+                        }
+                    }
+                    "navigation_expression" => {
+                        // Method call: obj.method(...)
+                        // Extract the full dotted name
+                        if let Ok(name) = callee.utf8_text(source) {
+                            result.references.push(Reference {
+                                name: name.to_string(),
+                                location: node_to_location(file, &callee),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Extract navigation expressions (member access) that aren't call targets
+        // e.g., user.name (property access)
+        "navigation_expression" => {
+            // Only add as reference if not already handled by call_expression parent
+            if let Some(parent_node) = node.parent() {
+                if parent_node.kind() != "call_expression" {
+                    if let Ok(name) = node.utf8_text(source) {
+                        result.references.push(Reference {
+                            name: name.to_string(),
+                            location: node_to_location(file, node),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Extract simple identifiers in reference contexts
+        "simple_identifier" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
         _ => {}
     }
 
@@ -574,17 +708,9 @@ mod tests {
     #[ignore]
     fn debug_swift_ast() {
         let source = r#"
-struct Point {
-    var x: Int
-}
-
-enum Status {
-    case pending
-    case active
-}
-
-class User {
-    var name: String = ""
+func process() {
+    let result = getData()
+    return result
 }
 "#;
         let mut parser = tree_sitter::Parser::new();
@@ -735,5 +861,81 @@ typealias StringList = [String]
             .find(|s| s.name == "StringList")
             .expect("Should find StringList typealias");
         assert_eq!(alias.kind, SymbolKind::Type);
+    }
+
+    #[test]
+    fn extracts_function_call_references() {
+        let source = r#"
+func greet(name: String) {
+    print("Hello")
+}
+
+func main() {
+    greet(name: "World")
+}
+"#;
+        let parser = SwiftParser;
+        let result = parser.extract_symbols(std::path::Path::new("App.swift"), source, 100);
+
+        // Should find reference to greet
+        let greet_ref = result
+            .references
+            .iter()
+            .find(|r| r.name == "greet")
+            .expect("Should find reference to greet function");
+        assert!(greet_ref.location.line > 0);
+
+        // Should find reference to print
+        let print_ref = result
+            .references
+            .iter()
+            .find(|r| r.name == "print")
+            .expect("Should find reference to print function");
+        assert!(print_ref.location.line > 0);
+    }
+
+    #[test]
+    fn extracts_method_call_references() {
+        let source = r#"
+func main() {
+    let service = UserService()
+    service.fetchUser()
+}
+"#;
+        let parser = SwiftParser;
+        let result = parser.extract_symbols(std::path::Path::new("App.swift"), source, 100);
+
+        // Should find reference to the method call
+        let method_ref = result
+            .references
+            .iter()
+            .find(|r| r.name.contains("fetchUser"))
+            .expect("Should find reference to service.fetchUser");
+        assert!(method_ref.location.line > 0);
+    }
+
+    #[test]
+    fn extracts_variable_references() {
+        let source = r#"
+func process() {
+    let data = getData()
+    let result = transform(data)
+    return result
+}
+"#;
+        let parser = SwiftParser;
+        let result = parser.extract_symbols(std::path::Path::new("App.swift"), source, 100);
+
+        // Should find reference to data as argument
+        assert!(
+            result.references.iter().any(|r| r.name == "data"),
+            "Should find reference to data variable"
+        );
+
+        // Should find reference to result in return statement
+        assert!(
+            result.references.iter().any(|r| r.name == "result"),
+            "Should find reference to result variable"
+        );
     }
 }
