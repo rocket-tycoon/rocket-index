@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::parse::{find_child_by_kind, node_to_location, LanguageParser, ParseResult};
-use crate::{Symbol, SymbolKind, Visibility};
+use crate::{Reference, Symbol, SymbolKind, Visibility};
 
 thread_local! {
     static OBJC_PARSER: RefCell<tree_sitter::Parser> = RefCell::new({
@@ -295,6 +295,49 @@ fn extract_recursive(
             }
         }
 
+        // Message expression: [receiver method:arg]
+        // Extract reference to the method being called
+        "message_expression" => {
+            extract_message_reference(node, source, file, result);
+        }
+
+        // Function call: functionName(args)
+        "call_expression" => {
+            if let Some(func_node) = node.child(0) {
+                if func_node.kind() == "identifier" {
+                    if let Ok(name) = func_node.utf8_text(source) {
+                        result.references.push(Reference {
+                            name: name.to_string(),
+                            location: node_to_location(file, &func_node),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Identifier in reference context
+        "identifier" => {
+            if is_reference_context(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
+        // Type references
+        "type_identifier" => {
+            // Type identifiers in type contexts are references
+            if let Ok(name) = node.utf8_text(source) {
+                result.references.push(Reference {
+                    name: name.to_string(),
+                    location: node_to_location(file, node),
+                });
+            }
+        }
+
         _ => {}
     }
 
@@ -337,11 +380,29 @@ fn extract_class_body(
                 | "class_method_declaration"
                 | "instance_method_declaration" => {
                     extract_method(&child, source, file, result, class_qualified);
+                    // Also recurse to extract type references from method signatures
+                    extract_recursive(
+                        &child,
+                        source,
+                        file,
+                        result,
+                        Some(class_qualified),
+                        max_depth - 1,
+                    );
                 }
 
                 // @property (attributes) Type propertyName;
                 "property_declaration" => {
                     extract_property(&child, source, file, result, class_qualified);
+                    // Also recurse to extract type references from property declarations
+                    extract_recursive(
+                        &child,
+                        source,
+                        file,
+                        result,
+                        Some(class_qualified),
+                        max_depth - 1,
+                    );
                 }
 
                 // Implementation definitions contain method_definitions
@@ -354,6 +415,31 @@ fn extract_class_body(
                         class_qualified,
                         max_depth - 1,
                     );
+                }
+
+                // Type identifier - captures type references in inheritance clause, etc.
+                "type_identifier" => {
+                    if let Ok(name) = child.utf8_text(source) {
+                        result.references.push(Reference {
+                            name: name.to_string(),
+                            location: node_to_location(file, &child),
+                        });
+                    }
+                }
+
+                // Identifier that's not a class/method name (e.g., superclass name)
+                "identifier" => {
+                    // Check if this is a superclass reference (after ":")
+                    if let Some(prev) = child.prev_sibling() {
+                        if prev.kind() == ":" {
+                            if let Ok(name) = child.utf8_text(source) {
+                                result.references.push(Reference {
+                                    name: name.to_string(),
+                                    location: node_to_location(file, &child),
+                                });
+                            }
+                        }
+                    }
                 }
 
                 _ => {
@@ -468,6 +554,122 @@ fn find_identifier_recursive<'a>(node: &tree_sitter::Node<'a>) -> Option<tree_si
         }
     }
     None
+}
+
+/// Check if a node is in a reference context (not a definition)
+fn is_reference_context(node: &tree_sitter::Node) -> bool {
+    if let Some(parent) = node.parent() {
+        match parent.kind() {
+            // Definition contexts - not references
+            "class_interface"
+            | "class_implementation"
+            | "protocol_declaration"
+            | "category_interface" => {
+                // Check if this is the name being defined
+                if let Some(name_field) = find_child_by_kind(&parent, "identifier") {
+                    if name_field.id() == node.id() {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            "method_declaration" | "method_definition" | "function_definition" => {
+                return false; // Method/function names are definitions
+            }
+            "property_declaration" | "type_definition" => {
+                return false; // Property and type names are definitions
+            }
+            "declaration" => {
+                // Variable declarations - the declared name is not a reference
+                // but type references within are
+                if parent
+                    .child_by_field_name("declarator")
+                    .and_then(|d| find_identifier_recursive(&d))
+                    .is_some_and(|id| id.id() == node.id())
+                {
+                    return false;
+                }
+                return true;
+            }
+            // Reference contexts
+            "call_expression" | "message_expression" | "subscript_expression" => return true,
+            "assignment_expression" | "binary_expression" | "unary_expression" => return true,
+            "return_statement" | "expression_statement" | "if_statement" | "while_statement" => {
+                return true
+            }
+            "argument_list" | "initializer_list" => return true,
+            "field_expression" => return true, // obj.field or obj->field
+            "compound_statement" | "translation_unit" => return false,
+            _ => return is_reference_context(&parent),
+        }
+    }
+    false
+}
+
+/// Extract method reference from message expression: [receiver method:arg1 key:arg2]
+fn extract_message_reference(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    file: &Path,
+    result: &mut ParseResult,
+) {
+    // Message expressions have structure: [receiver selector]
+    // Simple: [obj method] → [, identifier(receiver), identifier(method), ]
+    // Keyword: [obj method:arg] → [, identifier(receiver), identifier(method), :, ...]
+    let mut cursor = node.walk();
+    let mut found_receiver = false;
+
+    if cursor.goto_first_child() {
+        loop {
+            let child = cursor.node();
+            match child.kind() {
+                "[" | "]" | ":" => {} // Skip brackets and colons
+                "identifier" => {
+                    if let Ok(text) = child.utf8_text(source) {
+                        if !found_receiver {
+                            // First identifier is the receiver (self, super, or variable)
+                            found_receiver = true;
+                            // If receiver is a variable (not self/super), it's a reference
+                            if text != "self" && text != "super" {
+                                result.references.push(Reference {
+                                    name: text.to_string(),
+                                    location: node_to_location(file, &child),
+                                });
+                            }
+                        } else {
+                            // Subsequent identifier is the method name
+                            result.references.push(Reference {
+                                name: text.to_string(),
+                                location: node_to_location(file, &child),
+                            });
+                        }
+                    }
+                }
+                // Nested message expression - receiver is another message
+                "message_expression" => {
+                    found_receiver = true;
+                    // The nested expression will be handled by recursion in extract_recursive
+                }
+                // Method parameter in keyword syntax
+                "method_parameter" => {
+                    // This can contain the method name if it's the keyword selector part
+                    if let Some(name_node) = find_child_by_kind(&child, "identifier") {
+                        if let Ok(text) = name_node.utf8_text(source) {
+                            // Only the first keyword is the primary method name
+                            result.references.push(Reference {
+                                name: text.to_string(),
+                                location: node_to_location(file, &name_node),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
 }
 
 /// Extract property from declaration
@@ -711,5 +913,100 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("simple user class"));
+    }
+
+    #[test]
+    fn extracts_message_expression_references() {
+        let source = r#"
+@implementation App
+
+- (void)doWork {
+    [self performAction];
+    [helper doSomething];
+}
+
+@end
+"#;
+        let parser = ObjCParser;
+        let result = parser.extract_symbols(std::path::Path::new("App.m"), source, 100);
+
+        // Should find method call references
+        assert!(
+            result.references.iter().any(|r| r.name == "performAction"),
+            "Should find performAction method reference"
+        );
+        assert!(
+            result.references.iter().any(|r| r.name == "doSomething"),
+            "Should find doSomething method reference"
+        );
+    }
+
+    #[test]
+    fn extracts_keyword_selector_references() {
+        let source = r#"
+@implementation App
+
+- (void)setup {
+    [user initWithName:@"Test" age:25];
+}
+
+@end
+"#;
+        let parser = ObjCParser;
+        let result = parser.extract_symbols(std::path::Path::new("App.m"), source, 100);
+
+        // Should find the method reference from keyword selector
+        assert!(
+            result.references.iter().any(|r| r.name == "initWithName"),
+            "Should find initWithName method reference from keyword selector"
+        );
+    }
+
+    #[test]
+    fn extracts_function_call_references() {
+        let source = r#"
+void process() {
+    NSLog(@"Hello");
+    calculateValue(42);
+}
+"#;
+        let parser = ObjCParser;
+        let result = parser.extract_symbols(std::path::Path::new("utils.m"), source, 100);
+
+        // Should find C-style function calls
+        assert!(
+            result.references.iter().any(|r| r.name == "NSLog"),
+            "Should find NSLog function reference"
+        );
+        assert!(
+            result.references.iter().any(|r| r.name == "calculateValue"),
+            "Should find calculateValue function reference"
+        );
+    }
+
+    #[test]
+    fn extracts_type_references() {
+        let source = r#"
+@interface App : NSObject
+@property (nonatomic, strong) NSString *name;
+@property (nonatomic, strong) User *user;
+@end
+"#;
+        let parser = ObjCParser;
+        let result = parser.extract_symbols(std::path::Path::new("App.h"), source, 100);
+
+        // Should find type references
+        assert!(
+            result.references.iter().any(|r| r.name == "NSObject"),
+            "Should find NSObject type reference"
+        );
+        assert!(
+            result.references.iter().any(|r| r.name == "NSString"),
+            "Should find NSString type reference"
+        );
+        assert!(
+            result.references.iter().any(|r| r.name == "User"),
+            "Should find User type reference"
+        );
     }
 }
