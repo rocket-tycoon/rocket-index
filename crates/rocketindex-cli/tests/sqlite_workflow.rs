@@ -691,3 +691,177 @@ fn refs_requires_file_or_symbol() -> TestResult {
 
     Ok(())
 }
+
+// ============================================================================
+// Language Smoke Tests
+// ============================================================================
+
+/// Smoke test to verify all supported languages work through the full CLI pipeline.
+/// For each language: create file → index → rkt def → verify symbol found.
+#[test]
+fn smoke_test_all_languages() -> TestResult {
+    // (extension, filename, source code, symbol to look up, expected in output)
+    let languages: &[(&str, &str, &str, &str, &str)] = &[
+        // C
+        (
+            "c",
+            "main.c",
+            "void smokeTestFunc() { }",
+            "smokeTestFunc",
+            "main.c",
+        ),
+        // C++
+        (
+            "cpp",
+            "main.cpp",
+            "namespace SmokeTest { void smokeFunc() { } }",
+            "SmokeTest::smokeFunc",
+            "main.cpp",
+        ),
+        // C#
+        (
+            "cs",
+            "Program.cs",
+            "namespace SmokeTest { class SmokeClass { void SmokeMethod() { } } }",
+            "SmokeTest.SmokeClass.SmokeMethod",
+            "Program.cs",
+        ),
+        // F#
+        (
+            "fs",
+            "App.fs",
+            "module SmokeTest\n\nlet smokeFunc() = 42",
+            "SmokeTest.smokeFunc",
+            "App.fs",
+        ),
+        // Go
+        (
+            "go",
+            "main.go",
+            "package main\n\nfunc SmokeFunc() { }",
+            "main.SmokeFunc",
+            "main.go",
+        ),
+        // Java
+        (
+            "java",
+            "SmokeClass.java",
+            "package smoke; public class SmokeClass { public void smokeMethod() { } }",
+            "smoke.SmokeClass.smokeMethod",
+            "SmokeClass.java",
+        ),
+        // JavaScript
+        (
+            "js",
+            "app.js",
+            "function smokeFunction() { return 42; }",
+            "smokeFunction",
+            "app.js",
+        ),
+        // Kotlin
+        (
+            "kt",
+            "Main.kt",
+            "package smoke\n\nfun smokeFunc(): Int = 42",
+            "smoke.smokeFunc",
+            "Main.kt",
+        ),
+        // Objective-C
+        (
+            "m",
+            "SmokeClass.m",
+            "@interface SmokeClass : NSObject\n- (void)smokeMethod;\n@end",
+            "SmokeClass.smokeMethod",
+            "SmokeClass.m",
+        ),
+        // PHP
+        (
+            "php",
+            "smoke.php",
+            "<?php\nnamespace Smoke;\nfunction smokeFunc() { return 42; }",
+            "Smoke\\smokeFunc",
+            "smoke.php",
+        ),
+        // Python
+        (
+            "py",
+            "smoke.py",
+            "def smoke_function():\n    return 42",
+            "smoke_function",
+            "smoke.py",
+        ),
+        // Ruby (uses # for instance methods)
+        (
+            "rb",
+            "smoke.rb",
+            "class SmokeClass\n  def smoke_method\n    42\n  end\nend",
+            "SmokeClass#smoke_method",
+            "smoke.rb",
+        ),
+        // Rust
+        (
+            "rs",
+            "lib.rs",
+            "pub fn smoke_function() -> i32 { 42 }",
+            "smoke_function",
+            "lib.rs",
+        ),
+        // TypeScript
+        (
+            "ts",
+            "app.ts",
+            "export function smokeFunction(): number { return 42; }",
+            "smokeFunction",
+            "app.ts",
+        ),
+    ];
+
+    for (ext, filename, source, symbol, expected_file) in languages {
+        let dir = TempDir::new()?;
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir)?;
+        fs::write(src_dir.join(filename), source)?;
+
+        // Index the workspace
+        let index_result = Command::cargo_bin("rkt")?
+            .current_dir(dir.path())
+            .args(["index", "--root", ".", "--format", "json"])
+            .output()?;
+
+        assert!(
+            index_result.status.success(),
+            "Failed to index {} file: {}",
+            ext,
+            String::from_utf8_lossy(&index_result.stderr)
+        );
+
+        // Look up the symbol
+        let def_result = Command::cargo_bin("rkt")?
+            .current_dir(dir.path())
+            .args(["def", symbol, "--format", "text"])
+            .output()?;
+
+        let stdout = String::from_utf8_lossy(&def_result.stdout);
+        let stderr = String::from_utf8_lossy(&def_result.stderr);
+
+        assert!(
+            def_result.status.success(),
+            "rkt def failed for {} symbol '{}': stdout={}, stderr={}",
+            ext,
+            symbol,
+            stdout,
+            stderr
+        );
+
+        assert!(
+            stdout.contains(expected_file),
+            "Expected '{}' in output for {} symbol '{}', got: {}",
+            expected_file,
+            ext,
+            symbol,
+            stdout
+        );
+    }
+
+    Ok(())
+}
