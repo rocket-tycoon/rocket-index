@@ -619,6 +619,31 @@ fn extract_recursive(
             }
         }
 
+        // Extract method call references from method_invocation nodes
+        // This captures the method name being called (e.g., "get" from list.get())
+        "method_invocation" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(method_name) = name_node.utf8_text(source) {
+                    // Try to qualify with receiver if available
+                    let reference_name =
+                        if let Some(object_node) = node.child_by_field_name("object") {
+                            if let Ok(object_text) = object_node.utf8_text(source) {
+                                format!("{}.{}", object_text, method_name)
+                            } else {
+                                method_name.to_string()
+                            }
+                        } else {
+                            method_name.to_string()
+                        };
+
+                    result.references.push(Reference {
+                        name: reference_name,
+                        location: node_to_location(file, &name_node),
+                    });
+                }
+            }
+        }
+
         _ => {}
     }
 
@@ -1282,6 +1307,81 @@ class Helper {
         assert!(
             ref_names.contains(&"Helper"),
             "Should have reference to Helper: {:?}",
+            ref_names
+        );
+    }
+
+    #[test]
+    fn extracts_java_method_call_references() {
+        let source = r#"
+package com.example;
+
+import java.util.List;
+import java.util.ArrayList;
+
+public class Main {
+    public static void main(String[] args) {
+        List<String> list = new ArrayList<>();
+        list.add("hello");
+        String item = list.get(0);
+        int size = list.size();
+
+        // Static method call
+        String result = Helper.process(item);
+
+        // Chained calls
+        String upper = item.toUpperCase().trim();
+    }
+}
+
+class Helper {
+    public static String process(String s) {
+        return s.toLowerCase();
+    }
+}
+"#;
+        let result = extract_symbols(Path::new("Main.java"), source, 500);
+
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should have method call references
+        assert!(
+            ref_names.iter().any(|n| n.contains("add")),
+            "Should have reference to 'add' method: {:?}",
+            ref_names
+        );
+
+        assert!(
+            ref_names.iter().any(|n| n.contains("get")),
+            "Should have reference to 'get' method: {:?}",
+            ref_names
+        );
+
+        assert!(
+            ref_names.iter().any(|n| n.contains("size")),
+            "Should have reference to 'size' method: {:?}",
+            ref_names
+        );
+
+        // Static method call should be qualified
+        assert!(
+            ref_names
+                .iter()
+                .any(|n| n.contains("Helper.process") || n.contains("process")),
+            "Should have reference to 'Helper.process' or 'process': {:?}",
+            ref_names
+        );
+
+        // Chained calls
+        assert!(
+            ref_names.iter().any(|n| n.contains("toUpperCase")),
+            "Should have reference to 'toUpperCase' method: {:?}",
+            ref_names
+        );
+
+        assert!(
+            ref_names.iter().any(|n| n.contains("trim")),
+            "Should have reference to 'trim' method: {:?}",
             ref_names
         );
     }

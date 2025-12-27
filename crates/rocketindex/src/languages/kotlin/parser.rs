@@ -552,6 +552,92 @@ fn extract_recursive(
             }
         }
 
+        // Extract function/method call references
+        // e.g., greet() -> reference to "greet"
+        // e.g., fuel.get() -> reference to "fuel.get" and "get"
+        "call_expression" => {
+            // A call_expression in Kotlin contains the callee and arguments
+            // Look for the callee which could be:
+            // - simple_identifier for direct calls: getFuel()
+            // - navigation_expression for method calls: fuel.get()
+            // - identifier for some function calls
+            // The structure can be: call_expression -> callee + call_suffix
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    match child.kind() {
+                        "simple_identifier" | "identifier" => {
+                            // Direct function call: greet(...)
+                            if let Ok(name) = child.utf8_text(source) {
+                                result.references.push(Reference {
+                                    name: name.to_string(),
+                                    location: node_to_location(file, &child),
+                                });
+                            }
+                            break; // Found the callee
+                        }
+                        "navigation_expression" => {
+                            // Method call: obj.method(...)
+                            // Extract the full dotted name and also just the method name
+                            if let Ok(full_name) = child.utf8_text(source) {
+                                result.references.push(Reference {
+                                    name: full_name.to_string(),
+                                    location: node_to_location(file, &child),
+                                });
+                            }
+                            // Also extract just the method name (last part after the dot)
+                            if let Some(method_name) = extract_navigation_suffix(&child, source) {
+                                result.references.push(Reference {
+                                    name: method_name,
+                                    location: node_to_location(file, &child),
+                                });
+                            }
+                            break; // Found the callee
+                        }
+                        "call_suffix" | "value_arguments" => {
+                            // These are arguments, not the callee - stop looking
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Extract navigation expressions (member access) that aren't call targets
+        // e.g., user.name (property access)
+        "navigation_expression" => {
+            // Only add as reference if not already handled by call_expression parent
+            if let Some(parent_node) = node.parent() {
+                if parent_node.kind() != "call_expression" {
+                    if let Ok(name) = node.utf8_text(source) {
+                        result.references.push(Reference {
+                            name: name.to_string(),
+                            location: node_to_location(file, node),
+                        });
+                    }
+                    // Also extract just the suffix (property name)
+                    if let Some(prop_name) = extract_navigation_suffix(node, source) {
+                        result.references.push(Reference {
+                            name: prop_name,
+                            location: node_to_location(file, node),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Extract simple identifiers in reference contexts
+        "simple_identifier" => {
+            if is_simple_identifier_reference(node) {
+                if let Ok(name) = node.utf8_text(source) {
+                    result.references.push(Reference {
+                        name: name.to_string(),
+                        location: node_to_location(file, node),
+                    });
+                }
+            }
+        }
+
         _ => {}
     }
 
@@ -662,6 +748,82 @@ fn is_reference_context(node: &tree_sitter::Node) -> bool {
         parent.kind(),
         "nullable_type" | "parameter" | "class_parameter" | "variable_declaration"
     )
+}
+
+/// Extract the suffix (method/property name) from a navigation expression
+/// For "obj.method", returns "method"
+fn extract_navigation_suffix(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    // navigation_expression has structure: operand, navigation_suffix
+    // navigation_suffix contains the method/property name
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "navigation_suffix" {
+                // Get the simple_identifier inside the navigation_suffix
+                for j in 0..child.child_count() {
+                    if let Some(inner) = child.child(j) {
+                        if inner.kind() == "simple_identifier" {
+                            return inner.utf8_text(source).ok().map(|s| s.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Check if a simple_identifier is in a reference context (not a definition)
+fn is_simple_identifier_reference(node: &tree_sitter::Node) -> bool {
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    // Definition contexts (NOT references)
+    let parent_kind = parent.kind();
+
+    // Function/property/class declarations
+    if matches!(
+        parent_kind,
+        "function_declaration"
+            | "property_declaration"
+            | "class_declaration"
+            | "object_declaration"
+            | "type_alias"
+    ) {
+        // Check if this is the name being defined
+        if let Some(name_node) = parent.child_by_field_name("name") {
+            if name_node.id() == node.id() {
+                return false;
+            }
+        }
+    }
+
+    // Parameter names
+    if parent_kind == "parameter" || parent_kind == "class_parameter" {
+        if let Some(name_node) = parent.child_by_field_name("name") {
+            if name_node.id() == node.id() {
+                return false;
+            }
+        }
+    }
+
+    // Package name
+    if parent_kind == "package_header" || parent_kind == "identifier" {
+        return false;
+    }
+
+    // Import references (not really useful as references)
+    if parent_kind == "import_header" {
+        return false;
+    }
+
+    // Navigation suffix (handled separately)
+    if parent_kind == "navigation_suffix" {
+        return false;
+    }
+
+    true
 }
 
 #[cfg(test)]
@@ -941,5 +1103,83 @@ typealias StringList = List<String>
             .find(|s| s.name == "StringList")
             .expect("Should find StringList typealias");
         assert_eq!(alias.kind, SymbolKind::Type);
+    }
+
+    #[test]
+    fn extracts_method_call_references() {
+        let source = r#"
+package com.example
+
+class Service {
+    fun perform() {
+        val fuel = getFuel()
+        fuel.get()
+        fuel.post("data")
+        helper.process(data)
+    }
+}
+"#;
+        let parser = KotlinParser;
+        let result = parser.extract_symbols(std::path::Path::new("Service.kt"), source, 100);
+
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should have reference to direct function call
+        assert!(
+            ref_names.contains(&"getFuel"),
+            "Should contain reference to 'getFuel', found: {:?}",
+            ref_names
+        );
+
+        // Should have reference to method calls
+        assert!(
+            ref_names.contains(&"get") || ref_names.iter().any(|n| n.contains("get")),
+            "Should contain reference to 'get', found: {:?}",
+            ref_names
+        );
+
+        assert!(
+            ref_names.contains(&"post") || ref_names.iter().any(|n| n.contains("post")),
+            "Should contain reference to 'post', found: {:?}",
+            ref_names
+        );
+
+        assert!(
+            ref_names.contains(&"process") || ref_names.iter().any(|n| n.contains("process")),
+            "Should contain reference to 'process', found: {:?}",
+            ref_names
+        );
+    }
+
+    #[test]
+    fn extracts_qualified_method_references() {
+        let source = r#"
+package com.example
+
+class Client {
+    fun call() {
+        UserService.findById(123)
+        api.client.get("/endpoint")
+    }
+}
+"#;
+        let parser = KotlinParser;
+        let result = parser.extract_symbols(std::path::Path::new("Client.kt"), source, 100);
+
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should have reference to qualified method call
+        assert!(
+            ref_names.iter().any(|n| n.contains("findById")),
+            "Should contain reference to 'findById', found: {:?}",
+            ref_names
+        );
+
+        // Should have reference to chained method call
+        assert!(
+            ref_names.iter().any(|n| n.contains("get")),
+            "Should contain reference to 'get', found: {:?}",
+            ref_names
+        );
     }
 }

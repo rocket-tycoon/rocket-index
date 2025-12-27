@@ -914,6 +914,53 @@ fn extract_references_recursive(
             }
         }
 
+        // Method calls: policy.Execute(), Helper.Process(), Execute()
+        "invocation_expression" => {
+            // Extract the method being called
+            // Structure: invocation_expression -> member_access_expression | identifier
+            //                                  -> argument_list
+            if let Some(function) = node.child(0) {
+                match function.kind() {
+                    // obj.Method() or Class.Method()
+                    "member_access_expression" => {
+                        // Get the method name (the last identifier after the dot)
+                        if let Some(name_node) = function.child_by_field_name("name") {
+                            if let Ok(method_name) = name_node.utf8_text(source) {
+                                // Store just the method name for simpler matching
+                                result.references.push(Reference {
+                                    name: method_name.to_string(),
+                                    location: node_to_location(file, &name_node),
+                                });
+                            }
+                        }
+                    }
+                    // Direct method call: Execute() or MethodName()
+                    "identifier" => {
+                        if let Ok(name) = function.utf8_text(source) {
+                            result.references.push(Reference {
+                                name: name.to_string(),
+                                location: node_to_location(file, &function),
+                            });
+                        }
+                    }
+                    // Generic method call: Method<T>()
+                    "generic_name" => {
+                        if let Some(name_node) = function.child(0) {
+                            if name_node.kind() == "identifier" {
+                                if let Ok(name) = name_node.utf8_text(source) {
+                                    result.references.push(Reference {
+                                        name: name.to_string(),
+                                        location: node_to_location(file, &name_node),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         _ => {}
     }
 
@@ -1589,6 +1636,94 @@ class Helper {
         assert!(
             ref_names.contains(&"Helper"),
             "Should have reference to Helper: {:?}",
+            ref_names
+        );
+
+        // Should have references to method calls
+        assert!(
+            ref_names.contains(&"Greet"),
+            "Should have reference to Greet method: {:?}",
+            ref_names
+        );
+        assert!(
+            ref_names.contains(&"WriteLine"),
+            "Should have reference to WriteLine method: {:?}",
+            ref_names
+        );
+        assert!(
+            ref_names.contains(&"GetName"),
+            "Should have reference to GetName method: {:?}",
+            ref_names
+        );
+    }
+
+    #[test]
+    fn extracts_method_call_references() {
+        let source = r#"
+namespace MyApp;
+
+public class PolicyExample {
+    public void Run() {
+        var policy = new RetryPolicy();
+        policy.Execute();
+        policy.Execute("arg");
+        policy.ExecuteAndCapture(() => DoWork());
+        Helper.Process();
+        Console.WriteLine("test");
+        DoSomething();
+        GenericMethod<int>();
+    }
+
+    private void DoWork() { }
+    private void DoSomething() { }
+    private void GenericMethod<T>() { }
+}
+"#;
+        let parser = CSharpParser;
+        let result = parser.extract_symbols(Path::new("PolicyExample.cs"), source, 100);
+
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Method calls on objects should be extracted
+        assert!(
+            ref_names.contains(&"Execute"),
+            "Should have reference to Execute method call: {:?}",
+            ref_names
+        );
+        assert!(
+            ref_names.contains(&"ExecuteAndCapture"),
+            "Should have reference to ExecuteAndCapture method call: {:?}",
+            ref_names
+        );
+
+        // Static method calls should be extracted
+        assert!(
+            ref_names.contains(&"Process"),
+            "Should have reference to Helper.Process method call: {:?}",
+            ref_names
+        );
+        assert!(
+            ref_names.contains(&"WriteLine"),
+            "Should have reference to Console.WriteLine method call: {:?}",
+            ref_names
+        );
+
+        // Direct method calls should be extracted
+        assert!(
+            ref_names.contains(&"DoWork"),
+            "Should have reference to DoWork method call: {:?}",
+            ref_names
+        );
+        assert!(
+            ref_names.contains(&"DoSomething"),
+            "Should have reference to DoSomething method call: {:?}",
+            ref_names
+        );
+
+        // Generic method calls should be extracted
+        assert!(
+            ref_names.contains(&"GenericMethod"),
+            "Should have reference to GenericMethod<T> call: {:?}",
             ref_names
         );
     }

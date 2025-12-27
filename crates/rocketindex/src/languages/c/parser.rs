@@ -728,7 +728,7 @@ fn extract_enum_values(
     }
 }
 
-/// Recursively extract type references from the AST
+/// Recursively extract references (types and function calls) from the AST
 fn extract_references_recursive(
     node: &tree_sitter::Node,
     source: &[u8],
@@ -745,11 +745,76 @@ fn extract_references_recursive(
         }
     }
 
+    // call_expression represents a function call: functionName(args)
+    // Extract the function name as a reference
+    if node.kind() == "call_expression" {
+        if let Some(func_name) = extract_call_function_name(node, source) {
+            // Use the function field's location for precise positioning
+            let location = if let Some(func_node) = node.child_by_field_name("function") {
+                node_to_location(file, &func_node)
+            } else {
+                node_to_location(file, node)
+            };
+            result.references.push(Reference {
+                name: func_name,
+                location,
+            });
+        }
+    }
+
     // Recurse into children
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             extract_references_recursive(&child, source, file, result);
         }
+    }
+}
+
+/// Extract the function name from a call_expression node
+/// Handles simple calls like `foo()` and field expressions like `obj->method()`
+fn extract_call_function_name(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let func_node = node.child_by_field_name("function")?;
+
+    match func_node.kind() {
+        // Simple function call: functionName(args)
+        "identifier" => func_node.utf8_text(source).ok().map(|s| s.to_string()),
+
+        // Field expression: obj->method() or obj.method()
+        // Extract just the method name for matching
+        "field_expression" => {
+            if let Some(field) = func_node.child_by_field_name("field") {
+                field.utf8_text(source).ok().map(|s| s.to_string())
+            } else {
+                None
+            }
+        }
+
+        // Pointer dereference: (*funcPtr)(args)
+        "pointer_expression" => {
+            // Try to get the dereferenced identifier
+            for i in 0..func_node.child_count() {
+                if let Some(child) = func_node.child(i) {
+                    if child.kind() == "identifier" {
+                        return child.utf8_text(source).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        }
+
+        // Parenthesized expression: (funcPtr)(args)
+        "parenthesized_expression" => {
+            for i in 0..func_node.child_count() {
+                if let Some(child) = func_node.child(i) {
+                    if child.kind() == "identifier" {
+                        return child.utf8_text(source).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        }
+
+        _ => None,
     }
 }
 
@@ -1052,6 +1117,65 @@ User* create_user(const char* name) {
         assert!(
             ref_names.contains(&"User"),
             "Should extract references from C code: {:?}",
+            ref_names
+        );
+    }
+
+    #[test]
+    fn extracts_function_call_references() {
+        let parser = CParser;
+        let source = r#"
+void helper() {
+    // does something
+}
+
+void processCommand(int cmd) {
+    // process the command
+}
+
+int main() {
+    helper();
+    processCommand(42);
+    return 0;
+}
+"#;
+        let result = parser.extract_symbols(Path::new("test.c"), source, 100);
+
+        let ref_names: Vec<&str> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should extract function call references
+        assert!(
+            ref_names.contains(&"helper"),
+            "Should extract 'helper' function call reference: {:?}",
+            ref_names
+        );
+        assert!(
+            ref_names.contains(&"processCommand"),
+            "Should extract 'processCommand' function call reference: {:?}",
+            ref_names
+        );
+    }
+
+    #[test]
+    fn extracts_method_call_references() {
+        let parser = CParser;
+        let source = r#"
+struct Client {
+    int (*send)(struct Client*, const char*);
+};
+
+void use_client(struct Client* client) {
+    client->send(client, "hello");
+}
+"#;
+        let result = parser.extract_symbols(Path::new("test.c"), source, 100);
+
+        let ref_names: Vec<&str> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should extract method-like call through field expression
+        assert!(
+            ref_names.contains(&"send"),
+            "Should extract 'send' field call reference: {:?}",
             ref_names
         );
     }

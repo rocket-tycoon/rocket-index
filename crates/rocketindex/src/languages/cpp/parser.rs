@@ -724,7 +724,7 @@ fn extract_enum_values(
     }
 }
 
-/// Recursively extract type references from the AST
+/// Recursively extract type references and call references from the AST
 fn extract_references_recursive(
     node: &tree_sitter::Node,
     source: &[u8],
@@ -755,6 +755,21 @@ fn extract_references_recursive(
                 return; // Don't recurse into qualified_identifier children
             }
         }
+        // call_expression represents a function/method call: functionName(args) or obj.method(args)
+        "call_expression" => {
+            if let Some(func_name) = extract_call_function_name(node, source) {
+                // Use the function field's location for precise positioning
+                let location = if let Some(func_node) = node.child_by_field_name("function") {
+                    node_to_location(file, &func_node)
+                } else {
+                    node_to_location(file, node)
+                };
+                result.references.push(Reference {
+                    name: func_name,
+                    location,
+                });
+            }
+        }
         _ => {}
     }
 
@@ -763,6 +778,95 @@ fn extract_references_recursive(
         if let Some(child) = node.child(i) {
             extract_references_recursive(&child, source, file, result);
         }
+    }
+}
+
+/// Extract the function/method name from a call_expression node
+/// Handles simple calls like `foo()`, method calls like `obj.method()`, and qualified calls like `ns::func()`
+fn extract_call_function_name(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let func_node = node.child_by_field_name("function")?;
+
+    match func_node.kind() {
+        // Simple function call: functionName(args)
+        "identifier" => func_node.utf8_text(source).ok().map(|s| s.to_string()),
+
+        // Field expression: obj.method() or obj->method()
+        // Extract just the method name for matching
+        "field_expression" => {
+            if let Some(field) = func_node.child_by_field_name("field") {
+                field.utf8_text(source).ok().map(|s| s.to_string())
+            } else {
+                None
+            }
+        }
+
+        // Qualified identifier: ns::function() or Class::staticMethod()
+        // Extract just the function/method name (last part)
+        "qualified_identifier" => {
+            if let Some(name_node) = func_node.child_by_field_name("name") {
+                name_node.utf8_text(source).ok().map(|s| s.to_string())
+            } else {
+                // Fallback: get the full qualified name
+                func_node.utf8_text(source).ok().map(|s| s.to_string())
+            }
+        }
+
+        // Template function call: func<T>(args)
+        "template_function" => {
+            if let Some(name_node) = func_node.child_by_field_name("name") {
+                extract_call_function_name_from_node(&name_node, source)
+            } else {
+                None
+            }
+        }
+
+        // Pointer dereference: (*funcPtr)(args)
+        "pointer_expression" => {
+            for i in 0..func_node.child_count() {
+                if let Some(child) = func_node.child(i) {
+                    if child.kind() == "identifier" {
+                        return child.utf8_text(source).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        }
+
+        // Parenthesized expression: (funcPtr)(args)
+        "parenthesized_expression" => {
+            for i in 0..func_node.child_count() {
+                if let Some(child) = func_node.child(i) {
+                    if child.kind() == "identifier" {
+                        return child.utf8_text(source).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        }
+
+        _ => None,
+    }
+}
+
+/// Helper to extract function name from a node (used for recursive cases like template functions)
+fn extract_call_function_name_from_node(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" => node.utf8_text(source).ok().map(|s| s.to_string()),
+        "qualified_identifier" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                name_node.utf8_text(source).ok().map(|s| s.to_string())
+            } else {
+                node.utf8_text(source).ok().map(|s| s.to_string())
+            }
+        }
+        "field_expression" => {
+            if let Some(field) = node.child_by_field_name("field") {
+                field.utf8_text(source).ok().map(|s| s.to_string())
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
@@ -1173,5 +1277,95 @@ struct Derived : Base {
             .iter()
             .find(|s| s.qualified == "Derived::value");
         assert!(derived_val.is_some());
+    }
+
+    #[test]
+    fn extracts_cpp_call_references() {
+        let source = r#"
+class MyClass {
+public:
+    void dump() { }
+};
+
+void helper() { }
+
+void test() {
+    MyClass obj;
+    obj.dump();
+    helper();
+}
+
+void callerA() {
+    test();
+}
+
+void callerB() {
+    test();
+    helper();
+}
+"#;
+        let parser = CppParser;
+        let result = parser.extract_symbols(Path::new("test.cpp"), source, 100);
+
+        let ref_names: Vec<&str> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should extract method call: obj.dump()
+        assert!(
+            ref_names.contains(&"dump"),
+            "Should extract method call reference 'dump': {:?}",
+            ref_names
+        );
+
+        // Should extract function calls: helper(), test()
+        assert!(
+            ref_names.contains(&"helper"),
+            "Should extract function call reference 'helper': {:?}",
+            ref_names
+        );
+        assert!(
+            ref_names.contains(&"test"),
+            "Should extract function call reference 'test': {:?}",
+            ref_names
+        );
+    }
+
+    #[test]
+    fn extracts_cpp_qualified_call_references() {
+        let source = r#"
+namespace utils {
+    void process() { }
+}
+
+class Base {
+public:
+    virtual int method() { return 0; }
+};
+
+class Derived : public Base {
+public:
+    int method() override {
+        utils::process();
+        return Base::method();
+    }
+};
+"#;
+        let parser = CppParser;
+        let result = parser.extract_symbols(Path::new("test.cpp"), source, 100);
+
+        let ref_names: Vec<&str> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Should extract qualified call: utils::process()
+        assert!(
+            ref_names.contains(&"process"),
+            "Should extract qualified call reference 'process': {:?}",
+            ref_names
+        );
+
+        // Should extract qualified call: Base::method()
+        assert!(
+            ref_names.contains(&"method"),
+            "Should extract qualified call reference 'method': {:?}",
+            ref_names
+        );
     }
 }
