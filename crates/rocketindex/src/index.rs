@@ -363,9 +363,12 @@ impl CodeIndex {
                 // 1. The short name: "helper"
                 // 2. The full qualified name: "MyApp.Utils.helper"
                 // 3. A partial qualified name: "Utils.helper"
+                // 4. A receiver.method call: "obj.helper" where obj is a variable
+                //    (for languages like Go, Java, C++ where method calls use receiver syntax)
                 if reference.name == *short_name
                     || reference.name == qualified_name
                     || qualified_name.ends_with(&format!(".{}", reference.name))
+                    || reference.name.ends_with(&format!(".{}", short_name))
                 {
                     results.push(reference);
                 }

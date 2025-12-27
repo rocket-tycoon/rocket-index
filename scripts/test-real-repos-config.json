@@ -1,0 +1,280 @@
+{
+  "c/redis": {
+    "language": "c",
+    "def_symbol": "createClient",
+    "caller_symbol": "processCommand",
+    "wildcard_pattern": "*Command*",
+    "grep_def_pattern": "createClient",
+    "grep_caller_pattern": "processCommand"
+  },
+  "cpp/json": {
+    "language": "cpp",
+    "def_symbol": "parse",
+    "caller_symbol": "dump",
+    "wildcard_pattern": "*json*",
+    "grep_def_pattern": "parse",
+    "grep_caller_pattern": "dump"
+  },
+  "csharp/Polly": {
+    "language": "csharp",
+    "def_symbol": "Policy",
+    "caller_symbol": "Execute",
+    "wildcard_pattern": "*Policy*",
+    "subclass_parent": "Policy",
+    "grep_def_pattern": "class Policy",
+    "grep_caller_pattern": "\\.Execute\\("
+  },
+  "fsharp/FsUnit": {
+    "language": "fsharp",
+    "def_symbol": "should",
+    "caller_symbol": "equal",
+    "wildcard_pattern": "*should*",
+    "grep_def_pattern": "let should",
+    "grep_caller_pattern": "should"
+  },
+  "fsharp/Giraffe": {
+    "language": "fsharp",
+    "def_symbol": "HttpHandler",
+    "caller_symbol": "route",
+    "wildcard_pattern": "*Handler*",
+    "grep_def_pattern": "HttpHandler",
+    "grep_caller_pattern": "route"
+  },
+  "fsharp/Fable": {
+    "language": "fsharp",
+    "def_symbol": "Compiler",
+    "caller_symbol": "compile",
+    "wildcard_pattern": "*Compiler*",
+    "grep_def_pattern": "Compiler",
+    "grep_caller_pattern": "compile"
+  },
+  "fsharp/fantomas": {
+    "language": "fsharp",
+    "def_symbol": "formatDocument",
+    "caller_symbol": "format",
+    "wildcard_pattern": "*format*",
+    "grep_def_pattern": "formatDocument",
+    "grep_caller_pattern": "format"
+  },
+  "go/cobra": {
+    "language": "go",
+    "def_symbol": "Command",
+    "caller_symbol": "cobra.Command.Run",
+    "wildcard_pattern": "*Command*",
+    "grep_def_pattern": "type Command struct",
+    "grep_caller_pattern": "\\.Run\\("
+  },
+  "go/gin": {
+    "language": "go",
+    "def_symbol": "Engine",
+    "caller_symbol": "Run",
+    "wildcard_pattern": "*Engine*",
+    "grep_def_pattern": "type Engine struct",
+    "grep_caller_pattern": "\\.Run\\("
+  },
+  "go/docker": {
+    "language": "go",
+    "def_symbol": "Container",
+    "caller_symbol": "Start",
+    "wildcard_pattern": "*Container*",
+    "grep_def_pattern": "type Container struct",
+    "grep_caller_pattern": "\\.Start\\("
+  },
+  "java/guava": {
+    "language": "java",
+    "def_symbol": "Optional",
+    "caller_symbol": "get",
+    "wildcard_pattern": "*Optional*",
+    "subclass_parent": "AbstractCollection",
+    "grep_def_pattern": "class Optional",
+    "grep_caller_pattern": "\\.get\\("
+  },
+  "java/spring-boot": {
+    "language": "java",
+    "def_symbol": "Application",
+    "caller_symbol": "run",
+    "wildcard_pattern": "*Application*",
+    "subclass_parent": "ApplicationContext",
+    "grep_def_pattern": "class.*Application",
+    "grep_caller_pattern": "\\.run\\("
+  },
+  "javascript/lodash": {
+    "language": "javascript",
+    "def_symbol": "map",
+    "caller_symbol": "forEach",
+    "wildcard_pattern": "*map*",
+    "grep_def_pattern": "function map",
+    "grep_caller_pattern": "forEach"
+  },
+  "javascript/express": {
+    "language": "javascript",
+    "def_symbol": "Router",
+    "caller_symbol": "use",
+    "wildcard_pattern": "*Router*",
+    "grep_def_pattern": "Router",
+    "grep_caller_pattern": "\\.use\\("
+  },
+  "javascript/react": {
+    "language": "javascript",
+    "def_symbol": "Component",
+    "caller_symbol": "render",
+    "wildcard_pattern": "*Component*",
+    "grep_def_pattern": "Component",
+    "grep_caller_pattern": "render"
+  },
+  "kotlin/fuel": {
+    "language": "kotlin",
+    "def_symbol": "Fuel",
+    "caller_symbol": "get",
+    "wildcard_pattern": "*Fuel*",
+    "grep_def_pattern": "class Fuel",
+    "grep_caller_pattern": "\\.get\\("
+  },
+  "kotlin/kotlinx.coroutines": {
+    "language": "kotlin",
+    "def_symbol": "CoroutineScope",
+    "caller_symbol": "launch",
+    "wildcard_pattern": "*Coroutine*",
+    "grep_def_pattern": "interface CoroutineScope",
+    "grep_caller_pattern": "launch"
+  },
+  "kotlin/sqldelight": {
+    "language": "kotlin",
+    "def_symbol": "SqlDriver",
+    "caller_symbol": "execute",
+    "wildcard_pattern": "*Sql*",
+    "grep_def_pattern": "interface SqlDriver",
+    "grep_caller_pattern": "execute"
+  },
+  "php/symfony": {
+    "language": "php",
+    "def_symbol": "Controller",
+    "caller_symbol": "render",
+    "wildcard_pattern": "*Controller*",
+    "subclass_parent": "Controller",
+    "grep_def_pattern": "class.*Controller",
+    "grep_caller_pattern": "->render\\("
+  },
+  "python/click": {
+    "language": "python",
+    "def_symbol": "command",
+    "caller_symbol": "echo",
+    "wildcard_pattern": "*command*",
+    "grep_def_pattern": "def command",
+    "grep_caller_pattern": "echo"
+  },
+  "python/django": {
+    "language": "python",
+    "def_symbol": "Model",
+    "caller_symbol": "save",
+    "wildcard_pattern": "*Model*",
+    "subclass_parent": "Model",
+    "grep_def_pattern": "class Model",
+    "grep_caller_pattern": "\\.save\\("
+  },
+  "python/fastapi": {
+    "language": "python",
+    "def_symbol": "FastAPI",
+    "caller_symbol": "get",
+    "wildcard_pattern": "*API*",
+    "grep_def_pattern": "class FastAPI",
+    "grep_caller_pattern": "@.*\\.get"
+  },
+  "ruby/devise": {
+    "language": "ruby",
+    "def_symbol": "User",
+    "caller_symbol": "authenticate",
+    "wildcard_pattern": "*User*",
+    "grep_def_pattern": "class User",
+    "grep_caller_pattern": "authenticate"
+  },
+  "ruby/rails": {
+    "language": "ruby",
+    "def_symbol": "ApplicationController",
+    "caller_symbol": "render",
+    "wildcard_pattern": "*Controller*",
+    "subclass_parent": "ApplicationController",
+    "grep_def_pattern": "class ApplicationController",
+    "grep_caller_pattern": "render"
+  },
+  "ruby/vets-api": {
+    "language": "ruby",
+    "def_symbol": "ApiProviderFactory",
+    "caller_symbol": "create",
+    "wildcard_pattern": "*Factory*",
+    "grep_def_pattern": "class ApiProviderFactory",
+    "grep_caller_pattern": "\\.create"
+  },
+  "rust/serde": {
+    "language": "rust",
+    "def_symbol": "Serialize",
+    "caller_symbol": "serialize",
+    "wildcard_pattern": "*Serialize*",
+    "grep_def_pattern": "trait Serialize",
+    "grep_caller_pattern": "serialize"
+  },
+  "rust/ripgrep": {
+    "language": "rust",
+    "def_symbol": "Searcher",
+    "caller_symbol": "search",
+    "wildcard_pattern": "*Search*",
+    "grep_def_pattern": "struct Searcher",
+    "grep_caller_pattern": "\\.search\\("
+  },
+  "rust/tokio": {
+    "language": "rust",
+    "def_symbol": "spawn",
+    "caller_symbol": "block_on",
+    "wildcard_pattern": "*Runtime*",
+    "grep_def_pattern": "fn spawn",
+    "grep_caller_pattern": "block_on"
+  },
+  "swift/files-small": {
+    "language": "swift",
+    "def_symbol": "File",
+    "caller_symbol": "read",
+    "wildcard_pattern": "*File*",
+    "grep_def_pattern": "class File",
+    "grep_caller_pattern": "\\.read\\("
+  },
+  "swift/snapkit-medium": {
+    "language": "swift",
+    "def_symbol": "ConstraintMaker",
+    "caller_symbol": "makeConstraints",
+    "wildcard_pattern": "*Constraint*",
+    "grep_def_pattern": "class ConstraintMaker",
+    "grep_caller_pattern": "makeConstraints"
+  },
+  "swift/vapor-large": {
+    "language": "swift",
+    "def_symbol": "Application",
+    "caller_symbol": "run",
+    "wildcard_pattern": "*Application*",
+    "grep_def_pattern": "class Application",
+    "grep_caller_pattern": "\\.run\\("
+  },
+  "typescript/zod": {
+    "language": "typescript",
+    "def_symbol": "ZodType",
+    "caller_symbol": "parse",
+    "wildcard_pattern": "*Zod*",
+    "grep_def_pattern": "class ZodType",
+    "grep_caller_pattern": "\\.parse\\("
+  },
+  "typescript/nestjs": {
+    "language": "typescript",
+    "def_symbol": "Controller",
+    "caller_symbol": "Get",
+    "wildcard_pattern": "*Controller*",
+    "grep_def_pattern": "Controller",
+    "grep_caller_pattern": "@Get"
+  },
+  "typescript/date-fns": {
+    "language": "typescript",
+    "def_symbol": "format",
+    "caller_symbol": "addDays",
+    "wildcard_pattern": "*format*",
+    "grep_def_pattern": "function format",
+    "grep_caller_pattern": "addDays"
+  }
+}
