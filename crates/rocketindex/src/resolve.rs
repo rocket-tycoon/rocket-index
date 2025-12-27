@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use crate::languages::{
-    c, cpp, csharp, fsharp, java, javascript, kotlin, objc, php, ruby, typescript,
+    c, cpp, csharp, fsharp, java, javascript, kotlin, objc, php, ruby, swift, typescript,
 };
 use crate::type_cache::TypeMember;
 use crate::{CodeIndex, Symbol};
@@ -97,6 +97,7 @@ impl CodeIndex {
             "kt" | "kts" => kotlin::KotlinResolver.resolve(self, name, from_file),
             "m" | "mm" => objc::ObjCResolver.resolve(self, name, from_file),
             "php" => php::PhpResolver.resolve(self, name, from_file),
+            "swift" => swift::SwiftResolver.resolve(self, name, from_file),
             "rb" => ruby::RubyResolver.resolve(self, name, from_file),
             "ts" | "tsx" => typescript::TypeScriptResolver.resolve(self, name, from_file),
             "js" | "jsx" | "mjs" | "cjs" => {
@@ -127,6 +128,7 @@ impl CodeIndex {
             "kt" | "kts" => kotlin::KotlinResolver.resolve_dotted(self, name, from_file),
             "m" | "mm" => objc::ObjCResolver.resolve_dotted(self, name, from_file),
             "php" => php::PhpResolver.resolve_dotted(self, name, from_file),
+            "swift" => swift::SwiftResolver.resolve_dotted(self, name, from_file),
             "rb" => ruby::RubyResolver.resolve_dotted(self, name, from_file),
             "ts" | "tsx" => typescript::TypeScriptResolver.resolve_dotted(self, name, from_file),
             "js" | "jsx" | "mjs" | "cjs" => {

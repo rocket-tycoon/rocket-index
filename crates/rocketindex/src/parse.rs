@@ -54,7 +54,8 @@
 use std::path::Path;
 
 use crate::languages::{
-    c, cpp, csharp, fsharp, go, java, javascript, kotlin, objc, php, python, ruby, rust, typescript,
+    c, cpp, csharp, fsharp, go, java, javascript, kotlin, objc, php, python, ruby, rust, swift,
+    typescript,
 };
 use crate::{Location, Reference, Symbol};
 
@@ -129,6 +130,7 @@ pub fn extract_symbols(file: &Path, source: &str, max_depth: usize) -> ParseResu
         "java" => java::JavaParser.extract_symbols(file, source, max_depth),
         "kt" | "kts" => kotlin::KotlinParser.extract_symbols(file, source, max_depth),
         "m" | "mm" => objc::ObjCParser.extract_symbols(file, source, max_depth),
+        "swift" => swift::SwiftParser.extract_symbols(file, source, max_depth),
         "cs" => csharp::CSharpParser.extract_symbols(file, source, max_depth),
         "ts" | "tsx" => typescript::TypeScriptParser.extract_symbols(file, source, max_depth),
         "js" | "jsx" | "mjs" | "cjs" => {

@@ -806,6 +806,14 @@ fn smoke_test_all_languages() -> TestResult {
             "smoke_function",
             "lib.rs",
         ),
+        // Swift
+        (
+            "swift",
+            "App.swift",
+            "func smokeFunction() -> Int { return 42 }",
+            "smokeFunction",
+            "App.swift",
+        ),
         // TypeScript
         (
             "ts",
