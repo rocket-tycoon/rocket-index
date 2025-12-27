@@ -228,6 +228,7 @@ They're complementary—RocketIndex for structural navigation, LSP for type-awar
 | Kotlin | Beta | `.kt`, `.kts` | Classes, Objects, Interfaces, Functions, Properties |
 | Objective-C | Beta | `.m`, `.mm` | Classes, Protocols, Methods, Properties, Categories |
 | PHP | Beta | `.php` | |
+| Swift | Beta | `.swift` | Classes, Structs, Enums, Protocols, Functions, Properties |
 | C/C++ | Beta | `.c`, `.cpp`, `.cc`, `.h`, `.hpp`, `.cxx`, `.hxx`, `.hh` | Namespaces, Classes, Inheritance, Templates |
 
 **Full:** Production-ready with visibility, inheritance, and language-specific patterns.
