@@ -85,7 +85,7 @@
     "def_symbol": "Optional",
     "caller_symbol": "get",
     "wildcard_pattern": "*Optional*",
-    "subclass_parent": "AbstractCollection",
+    "subclass_parent": "TestCase",
     "grep_def_pattern": "class Optional",
     "grep_caller_pattern": "\\.get\\("
   },
@@ -94,7 +94,7 @@
     "def_symbol": "Application",
     "caller_symbol": "run",
     "wildcard_pattern": "*Application*",
-    "subclass_parent": "ApplicationContext",
+    "subclass_parent": "SpringBootCondition",
     "grep_def_pattern": "class.*Application",
     "grep_caller_pattern": "\\.run\\("
   },
