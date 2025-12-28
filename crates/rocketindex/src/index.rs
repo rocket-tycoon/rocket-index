@@ -384,7 +384,8 @@ impl CodeIndex {
         let query_lower = query.to_lowercase();
         let is_glob = query.contains('*');
 
-        self.definitions
+        let mut results: Vec<&Symbol> = self
+            .definitions
             .values()
             .flat_map(|syms| syms.iter())
             .filter(|sym| {
@@ -406,7 +407,32 @@ impl CodeIndex {
                         || sym.qualified.to_lowercase().contains(&query_lower)
                 }
             })
-            .collect()
+            .collect();
+
+        // Sort by relevance: exact name matches first, then prefix matches, then contains
+        results.sort_by(|a, b| {
+            let a_name = a.name.to_lowercase();
+            let b_name = b.name.to_lowercase();
+
+            // Exact name match has highest priority
+            let a_exact = a_name == query_lower;
+            let b_exact = b_name == query_lower;
+            if a_exact != b_exact {
+                return b_exact.cmp(&a_exact);
+            }
+
+            // Name prefix match is next
+            let a_prefix = a_name.starts_with(&query_lower);
+            let b_prefix = b_name.starts_with(&query_lower);
+            if a_prefix != b_prefix {
+                return b_prefix.cmp(&a_prefix);
+            }
+
+            // Otherwise sort by name length (shorter = more specific)
+            a.name.len().cmp(&b.name.len())
+        });
+
+        results
     }
 
     /// Get all qualified names in the index (for fuzzy matching).
