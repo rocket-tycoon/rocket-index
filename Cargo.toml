@@ -61,3 +61,12 @@ rocketindex = { path = "crates/rocketindex" }
 lto = "thin"
 strip = true
 codegen-units = 1
+
+# Patched tree-sitter-fsharp grammar to fix exponential parse time bug.
+# Without this fix, files with `{ 1..10 }` sequence expressions take 60+ seconds
+# to parse instead of milliseconds. The fix adds a `sequence_expression` rule
+# and enables the `range_expression` in `_comp_or_range_expression`.
+# See: crates/rocketindex/src/languages/fsharp/parser.rs::test_sequence_expression_parses_quickly
+# TODO: Contribute upstream to ionide/tree-sitter-fsharp, then remove this patch
+[patch.crates-io]
+tree-sitter-fsharp = { path = "vendor/tree-sitter-fsharp" }

@@ -3297,8 +3297,6 @@ dependencies = [
 [[package]]
 name = "tree-sitter-fsharp"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2db500a0948bf37c43febe2c3d67bfb9ad690b06aaa20780a5106da6f620b41"
 dependencies = [
  "cc",
  "tree-sitter-language",

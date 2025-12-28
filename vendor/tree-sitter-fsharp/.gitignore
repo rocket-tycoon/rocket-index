@@ -1,0 +1,39 @@
+.DS_Store
+
+# Rust artifacts
+/Cargo.lock
+/target/
+
+# Node artifacts
+/build/
+/node_modules/
+
+# Swift artifacts
+/.build/
+
+# Python artifacts
+/dist/
+*.egg-info
+*.whl
+
+# Zig artifacts
+/zig-cache/
+/zig-out/
+
+# C artifacts
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.pc
+
+# Example dirs
+/examples/playground/
+
+# Grammar volatiles
+dsl.d.ts
+*.out.js
+*.wasm
+*.obj
+*.o
