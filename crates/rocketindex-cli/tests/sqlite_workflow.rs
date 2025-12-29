@@ -274,9 +274,8 @@ fn spider_reverse_finds_callers() -> TestResult {
         .assert()
         .success();
 
-    // Reverse spider from getUserById should find the local binding 'user'
-    // Note: The indexer identifies the local variable 'user' as the caller because
-    // it's the closest symbol definition to the call site.
+    // Reverse spider from getUserById should find the enclosing function 'main'
+    // (not local variables, which cannot be callers)
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args([
@@ -290,7 +289,7 @@ fn spider_reverse_finds_callers() -> TestResult {
         ])
         .assert()
         .success()
-        .stdout(contains("MyApp.App.user"));
+        .stdout(contains("MyApp.App.main"));
 
     Ok(())
 }
@@ -306,14 +305,15 @@ fn callers_command_finds_direct_callers() -> TestResult {
         .assert()
         .success();
 
-    // Callers of processOrder should include the local binding 'order'
+    // Callers of processOrder should be the enclosing function 'main'
+    // (not local variable bindings, which cannot be callers)
     Command::cargo_bin("rkt")?
         .current_dir(workspace.root())
         .args(["callers", "MyApp.Services.processOrder", "--format", "text"])
         .assert()
         .success()
         .stdout(contains("Callers of MyApp.Services.processOrder"))
-        .stdout(contains("MyApp.App.order"));
+        .stdout(contains("MyApp.App.main"));
 
     Ok(())
 }

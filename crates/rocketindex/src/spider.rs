@@ -262,16 +262,21 @@ pub fn reverse_spider(index: &CodeIndex, entry_point: &str, max_depth: usize) ->
 
 /// Find the symbol that contains a given reference (for determining callers).
 ///
-/// Uses a heuristic: the symbol whose definition starts closest to (but before)
-/// the reference line in the same file is likely the containing symbol.
+/// Uses a heuristic: the callable symbol (Function or Member) whose definition
+/// starts closest to (but before) the reference line in the same file is likely
+/// the containing symbol.
+///
+/// Only considers callable symbols (Function, Member) as potential callers,
+/// filtering out variables, types, modules, etc. which cannot be callers.
 fn find_containing_symbol<'a>(index: &'a CodeIndex, reference: &Reference) -> Option<&'a Symbol> {
     let symbols = index.symbols_in_file(&reference.location.file);
 
-    // Find symbol that most likely contains this reference
-    // Heuristic: the symbol with the largest line number that's still <= reference line
+    // Find the callable symbol that most likely contains this reference
+    // Heuristic: the callable symbol with the largest line number that's still <= reference line
     symbols
         .into_iter()
         .filter(|s| s.location.line <= reference.location.line)
+        .filter(|s| s.kind.is_callable())
         .max_by_key(|s| s.location.line)
 }
 
@@ -309,10 +314,20 @@ mod tests {
     use std::path::PathBuf;
 
     fn make_symbol(name: &str, qualified: &str, file: &str, line: u32) -> Symbol {
+        make_symbol_with_kind(name, qualified, file, line, SymbolKind::Function)
+    }
+
+    fn make_symbol_with_kind(
+        name: &str,
+        qualified: &str,
+        file: &str,
+        line: u32,
+        kind: SymbolKind,
+    ) -> Symbol {
         Symbol {
             name: name.to_string(),
             qualified: qualified.to_string(),
-            kind: SymbolKind::Function,
+            kind,
             location: Location::new(PathBuf::from(file), line, 1),
             visibility: Visibility::Public,
             language: "fsharp".to_string(),
@@ -574,5 +589,77 @@ mod tests {
         let result = reverse_spider(&index, "M.a", 10);
 
         assert_eq!(result.nodes.len(), 2);
+    }
+
+    #[test]
+    fn test_find_containing_symbol_prefers_functions_over_variables() {
+        // This test reproduces a bug where local variables were incorrectly
+        // selected as callers instead of the enclosing function.
+        //
+        // Scenario (like redis networking.c):
+        //   Line 2860: fn processCommandAndResetClient  <- enclosing function
+        //   Line 2861: let deadclient = ...             <- local variable
+        //   Line 2862: let old_client = ...             <- local variable
+        //   Line 2864: processCommand(c)                <- call site (reference)
+        //
+        // The bug: old_client (line 2862) was selected as caller because
+        // it has the largest line number <= 2864.
+        // The fix: only consider callable symbols (Function, Member).
+
+        let mut index = CodeIndex::new();
+
+        // Target function being called
+        index.add_symbol(make_symbol("helper", "helper", "utils.c", 10));
+
+        // Enclosing function (the actual caller) - line 100
+        index.add_symbol(make_symbol(
+            "processCommand",
+            "processCommand",
+            "main.c",
+            100,
+        ));
+
+        // Local variables inside the function - lines 101, 102 (after function start)
+        index.add_symbol(make_symbol_with_kind(
+            "deadclient",
+            "deadclient",
+            "main.c",
+            101,
+            SymbolKind::Value,
+        ));
+        index.add_symbol(make_symbol_with_kind(
+            "old_client",
+            "old_client",
+            "main.c",
+            102,
+            SymbolKind::Value,
+        ));
+
+        // Reference to helper() at line 105 (inside the function)
+        index.add_reference(
+            PathBuf::from("main.c"),
+            make_reference("helper", "main.c", 105),
+        );
+
+        // Reverse spider should find processCommand as the caller, NOT old_client
+        let result = reverse_spider(&index, "helper", 1);
+
+        assert_eq!(result.nodes.len(), 2, "Should have helper and one caller");
+
+        let caller = result
+            .nodes
+            .iter()
+            .find(|n| n.depth == 1)
+            .expect("Should have a caller at depth 1");
+
+        assert_eq!(
+            caller.symbol.qualified, "processCommand",
+            "Caller should be the function, not a local variable"
+        );
+        assert_eq!(
+            caller.symbol.kind,
+            SymbolKind::Function,
+            "Caller should be a Function, not a Value"
+        );
     }
 }

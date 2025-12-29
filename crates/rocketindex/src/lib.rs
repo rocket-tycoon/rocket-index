@@ -174,6 +174,17 @@ impl std::fmt::Display for SymbolKind {
     }
 }
 
+impl SymbolKind {
+    /// Returns true if this symbol kind can be a caller (i.e., contains executable code).
+    ///
+    /// Only Functions and Members can contain code that calls other functions.
+    /// Values, Types, Modules, etc. cannot be callers.
+    #[must_use]
+    pub const fn is_callable(self) -> bool {
+        matches!(self, SymbolKind::Function | SymbolKind::Member)
+    }
+}
+
 /// Visibility of a symbol
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Visibility {
@@ -379,6 +390,22 @@ mod tests {
     fn test_symbol_kind_display() {
         assert_eq!(format!("{}", SymbolKind::Function), "Function");
         assert_eq!(format!("{}", SymbolKind::Module), "Module");
+    }
+
+    #[test]
+    fn test_symbol_kind_is_callable() {
+        // Callable kinds - can contain code that calls other functions
+        assert!(SymbolKind::Function.is_callable());
+        assert!(SymbolKind::Member.is_callable());
+
+        // Non-callable kinds - cannot be callers
+        assert!(!SymbolKind::Module.is_callable());
+        assert!(!SymbolKind::Value.is_callable());
+        assert!(!SymbolKind::Type.is_callable());
+        assert!(!SymbolKind::Record.is_callable());
+        assert!(!SymbolKind::Union.is_callable());
+        assert!(!SymbolKind::Interface.is_callable());
+        assert!(!SymbolKind::Class.is_callable());
     }
 
     #[test]
