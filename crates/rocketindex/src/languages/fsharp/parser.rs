@@ -616,7 +616,19 @@ fn extract_recursive_with_depth(
 /// Extract documentation comment from preceding sibling nodes.
 /// F# uses `/// comment` style which becomes `line_comment` nodes.
 fn extract_doc_comment(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
-    // Get the parent node to find siblings
+    // Try tree-based extraction first (sibling line_comment nodes)
+    if let Some(doc) = extract_doc_comment_from_siblings(node, source) {
+        return Some(doc);
+    }
+
+    // Fallback: Look at source lines directly before this node.
+    // This handles cases where tree-sitter embeds doc comments inside the previous
+    // sibling's node rather than as separate line_comment nodes.
+    extract_doc_comment_from_source(node, source)
+}
+
+/// Extract doc comments from sibling line_comment nodes.
+fn extract_doc_comment_from_siblings(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
     let parent = node.parent()?;
 
     // Find our position in the parent's children
@@ -667,6 +679,63 @@ fn extract_doc_comment(node: &tree_sitter::Node, source: &[u8]) -> Option<String
                 }
             }
         }
+    }
+
+    if doc_lines.is_empty() {
+        return None;
+    }
+
+    // Reverse to get original order (we collected backwards)
+    doc_lines.reverse();
+    Some(doc_lines.join("\n"))
+}
+
+/// Extract doc comments by looking at source lines directly before the node.
+/// This handles tree-sitter grammars that embed trailing comments in previous nodes.
+fn extract_doc_comment_from_source(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let source_str = std::str::from_utf8(source).ok()?;
+    let lines: Vec<&str> = source_str.lines().collect();
+
+    let node_line = node.start_position().row;
+    if node_line == 0 {
+        return None;
+    }
+
+    // Walk backwards from the line before our node, collecting doc comments
+    let mut doc_lines = Vec::new();
+    let mut line_idx = node_line - 1;
+
+    loop {
+        if line_idx >= lines.len() {
+            break;
+        }
+
+        let line = lines[line_idx].trim();
+
+        if line.starts_with("///") {
+            // Doc comment line - extract content after ///
+            let doc_text = line.trim_start_matches('/').trim();
+            doc_lines.push(doc_text.to_string());
+        } else if line.is_empty() {
+            // Skip blank lines between doc comments and declaration
+            // (but only if we haven't found any doc comments yet)
+            if doc_lines.is_empty() {
+                // Continue looking
+            } else {
+                // We found some doc comments and hit a blank line - stop
+                break;
+            }
+        } else if line.starts_with("[<") && line.ends_with(">]") {
+            // F# attribute - skip over it
+        } else {
+            // Non-comment, non-blank line - stop looking
+            break;
+        }
+
+        if line_idx == 0 {
+            break;
+        }
+        line_idx -= 1;
     }
 
     if doc_lines.is_empty() {
