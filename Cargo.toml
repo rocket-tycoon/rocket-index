@@ -70,3 +70,4 @@ codegen-units = 1
 # TODO: Contribute upstream to ionide/tree-sitter-fsharp, then remove this patch
 [patch.crates-io]
 tree-sitter-fsharp = { path = "vendor/tree-sitter-fsharp" }
+tree-sitter-haxe = { path = "vendor/tree-sitter-haxe" }

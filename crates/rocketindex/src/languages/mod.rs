@@ -3,6 +3,7 @@ pub mod cpp;
 pub mod csharp;
 pub mod fsharp;
 pub mod go;
+pub mod haxe;
 pub mod java;
 pub mod javascript;
 pub mod kotlin;

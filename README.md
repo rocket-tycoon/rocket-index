@@ -224,6 +224,7 @@ They're complementary—RocketIndex for structural navigation, LSP for type-awar
 | Rust | Full | `.rs` | |
 | TypeScript | Full | `.ts`, `.tsx` | |
 | C# | Beta | `.cs` | |
+| Haxe | Beta | `.hx` | Classes, Interfaces, Typedefs, Functions, Variables, Metadata |
 | Java | Beta | `.java` | |
 | Kotlin | Beta | `.kt`, `.kts` | Classes, Objects, Interfaces, Functions, Properties |
 | Objective-C | Beta | `.m`, `.mm` | Classes, Protocols, Methods, Properties, Categories |

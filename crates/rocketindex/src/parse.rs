@@ -54,8 +54,8 @@
 use std::path::Path;
 
 use crate::languages::{
-    c, cpp, csharp, fsharp, go, java, javascript, kotlin, objc, php, python, ruby, rust, swift,
-    typescript,
+    c, cpp, csharp, fsharp, go, haxe, java, javascript, kotlin, objc, php, python, ruby, rust,
+    swift, typescript,
 };
 use crate::{Location, Reference, Symbol};
 
@@ -137,6 +137,7 @@ pub fn extract_symbols(file: &Path, source: &str, max_depth: usize) -> ParseResu
             javascript::JavaScriptParser.extract_symbols(file, source, max_depth)
         }
         "php" => php::PhpParser.extract_symbols(file, source, max_depth),
+        "hx" => haxe::HaxeParser.extract_symbols(file, source, max_depth),
         _ => {
             tracing::warn!("Unsupported file extension: {}", extension);
             ParseResult::default()
