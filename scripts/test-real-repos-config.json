@@ -10,7 +10,7 @@
   "cpp/json": {
     "language": "cpp",
     "def_symbol": "parse",
-    "caller_symbol": "dump",
+    "caller_symbol": "serializer::dump",
     "wildcard_pattern": "*json*",
     "grep_def_pattern": "parse",
     "grep_caller_pattern": "dump"
