@@ -340,13 +340,23 @@ fn extract_recursive_inner(
         }
 
         // Visibility modifiers: private, protected, public (when called without args)
+        // Also extract bare function call references (identifiers used as statements)
         "identifier" => {
             let text = node.utf8_text(source).unwrap_or_default();
             match text {
                 "private" => current_visibility = VisibilityState::Private,
                 "protected" => current_visibility = VisibilityState::Protected,
                 "public" => current_visibility = VisibilityState::Public,
-                _ => {}
+                _ => {
+                    // Check if this identifier is a bare function call reference
+                    // (standalone identifier in a statement context)
+                    if is_bare_function_call(node, text) {
+                        result.references.push(Reference {
+                            name: text.to_string(),
+                            location: node_to_location(file, node),
+                        });
+                    }
+                }
             }
         }
 
@@ -1032,6 +1042,63 @@ fn is_reference_context(node: &tree_sitter::Node) -> bool {
     true
 }
 
+/// Check if an identifier node is a bare function call (no parentheses)
+/// In Ruby, `foo` can be either a local variable reference or a method call.
+/// We treat standalone identifiers in statement context as potential function calls.
+fn is_bare_function_call(node: &tree_sitter::Node, text: &str) -> bool {
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    let parent_kind = parent.kind();
+
+    // Statement contexts where an identifier is likely a function call:
+    // - body_statement (method body, class body)
+    // - then, else (if/unless branches)
+    // - do_block, block (block bodies)
+    // - program (top-level)
+    // - begin (begin/rescue blocks)
+    // - ensure
+    let is_statement_context = matches!(
+        parent_kind,
+        "body_statement" | "then" | "else" | "do_block" | "block" | "program" | "begin" | "ensure"
+    );
+
+    if !is_statement_context {
+        return false;
+    }
+
+    // Exclude known keywords/builtins that aren't really function calls
+    if matches!(
+        text,
+        "nil" | "true" | "false" | "self" | "super" | "__FILE__" | "__LINE__" | "__ENCODING__"
+    ) {
+        return false;
+    }
+
+    // Exclude if the identifier is the method name in a "call" parent
+    // (though this shouldn't happen since call uses "method" field)
+    if parent_kind == "call" {
+        if let Some(method) = parent.child_by_field_name("method") {
+            if method.id() == node.id() {
+                return false;
+            }
+        }
+    }
+
+    // Exclude if this is the name of a method definition
+    if parent_kind == "method" || parent_kind == "singleton_method" {
+        if let Some(name) = parent.child_by_field_name("name") {
+            if name.id() == node.id() {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
 /// Check if a call node is Struct.new (or similar struct-creating calls)
 fn is_struct_new_call(node: &tree_sitter::Node, source: &[u8]) -> bool {
     // Look for pattern: Struct.new or OpenStruct.new
@@ -1064,6 +1131,57 @@ fn is_struct_new_call(node: &tree_sitter::Node, source: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::parse::extract_symbols;
+
+    #[test]
+    fn extracts_bare_function_call_references() {
+        // Test that bare function calls (without parentheses) are extracted as references
+        // Matches the actual fixture at tests/fixtures/minimal/ruby/main.rb
+        let source = r#"
+def helper
+  42
+end
+
+def main_function
+  x = helper
+  puts x
+end
+
+def caller_a
+  main_function
+end
+
+def caller_b
+  main_function
+  helper
+end
+
+class ChildClass < MyClass
+  def method
+    main_function
+    super
+  end
+end
+"#;
+        let result = extract_symbols(Path::new("test.rb"), source, 500);
+
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+
+        // Bare function calls should be extracted as references
+        assert!(
+            ref_names.contains(&"main_function"),
+            "Should have reference to 'main_function', found: {:?}",
+            ref_names
+        );
+
+        // Count occurrences - main_function is called 3 times
+        // (in caller_a, caller_b, and ChildClass#method)
+        let main_function_count = ref_names.iter().filter(|&&n| n == "main_function").count();
+        assert!(
+            main_function_count >= 3,
+            "Should have at least 3 references to 'main_function', found: {}",
+            main_function_count
+        );
+    }
 
     #[test]
     fn extracts_ruby_class() {
