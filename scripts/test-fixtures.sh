@@ -140,7 +140,7 @@ echo "================================================"
 echo ""
 
 # Test each language
-for lang in rust python typescript; do
+for lang in rust python typescript go ruby java javascript csharp fsharp php c cpp; do
     LANG_DIR="$FIXTURES_DIR/$lang"
 
     if [ ! -d "$LANG_DIR" ]; then
@@ -180,18 +180,18 @@ for lang in rust python typescript; do
             DEF_RESULT=$("$RKT" def "main_function" --quiet 2>&1)
             assert_json_contains "$DEF_RESULT" ".name" "main_function" "def finds main_function"
             assert_json_contains "$DEF_RESULT" ".kind" "Function" "main_function is a Function"
-            assert_json_line "$DEF_RESULT" 11 "main_function is on line 11"
+            assert_json_line "$DEF_RESULT" 9 "main_function is on line 9"
             assert_def_has_fields "$DEF_RESULT" "definition has required fields"
 
             # Test qualified name disambiguation
             echo "  Testing qualified name disambiguation..."
             MYSTRUCT_NEW=$("$RKT" def "MyStruct::new" --quiet 2>&1)
             assert_json_contains "$MYSTRUCT_NEW" ".qualified" "MyStruct::new" "qualified name is MyStruct::new"
-            assert_json_line "$MYSTRUCT_NEW" 30 "MyStruct::new is on line 30"
+            assert_json_line "$MYSTRUCT_NEW" 28 "MyStruct::new is on line 28"
 
             OTHERSTRUCT_NEW=$("$RKT" def "OtherStruct::new" --quiet 2>&1)
             assert_json_contains "$OTHERSTRUCT_NEW" ".qualified" "OtherStruct::new" "qualified name is OtherStruct::new"
-            assert_json_line "$OTHERSTRUCT_NEW" 56 "OtherStruct::new is on line 56"
+            assert_json_line "$OTHERSTRUCT_NEW" 53 "OtherStruct::new is on line 53"
 
             # Test common names with disambiguation
             echo "  Testing common names..."
@@ -288,7 +288,7 @@ for lang in rust python typescript; do
 
             OTHERCLASS_INIT=$("$RKT" def "OtherClass.init" --quiet 2>&1)
             assert_json_contains "$OTHERCLASS_INIT" ".qualified" "OtherClass.init" "qualified name is OtherClass.init"
-            assert_json_line "$OTHERCLASS_INIT" 44 "OtherClass.init is on line 44"
+            assert_json_line "$OTHERCLASS_INIT" 43 "OtherClass.init is on line 43"
 
             # Test common names
             echo "  Testing common names..."
@@ -362,6 +362,141 @@ for lang in rust python typescript; do
                 echo -e "  ${RED}✗${NC} caller missing required fields"
                 ((FAILED++))
             fi
+            ;;
+
+        go)
+            # Test find_definition
+            echo "  Testing find_definition..."
+            DEF_RESULT=$("$RKT" def "mainFunction" --quiet 2>&1)
+            assert_json_contains "$DEF_RESULT" ".name" "mainFunction" "def finds mainFunction"
+            assert_json_line "$DEF_RESULT" 9 "mainFunction is on line 9"
+            assert_def_has_fields "$DEF_RESULT" "definition has required fields"
+
+            # Test find_callers
+            echo "  Testing find_callers..."
+            CALLERS_RESULT=$("$RKT" callers "mainFunction" --quiet 2>&1)
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerA" "callerA calls mainFunction"
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerB" "callerB calls mainFunction"
+            ;;
+
+        ruby)
+            # Test find_definition
+            echo "  Testing find_definition..."
+            DEF_RESULT=$("$RKT" def "main_function" --quiet 2>&1)
+            assert_json_contains "$DEF_RESULT" ".name" "main_function" "def finds main_function"
+            assert_json_line "$DEF_RESULT" 7 "main_function is on line 7"
+            assert_def_has_fields "$DEF_RESULT" "definition has required fields"
+
+            # Test find_callers (now supported)
+            echo "  Testing find_callers..."
+            CALLERS_RESULT=$("$RKT" callers "main_function" --quiet 2>&1)
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "caller_a" "caller_a calls main_function"
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "caller_b" "caller_b calls main_function"
+            ;;
+
+        java)
+            # Test find_definition
+            echo "  Testing find_definition..."
+            DEF_RESULT=$("$RKT" def "mainFunction" --quiet 2>&1)
+            assert_json_contains "$DEF_RESULT" ".name" "mainFunction" "def finds mainFunction"
+            assert_json_line "$DEF_RESULT" 8 "mainFunction is on line 8"
+            assert_def_has_fields "$DEF_RESULT" "definition has required fields"
+
+            # Test find_callers
+            echo "  Testing find_callers..."
+            CALLERS_RESULT=$("$RKT" callers "mainFunction" --quiet 2>&1)
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerA" "callerA calls mainFunction"
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerB" "callerB calls mainFunction"
+            ;;
+
+        javascript)
+            # Test find_definition
+            echo "  Testing find_definition..."
+            DEF_RESULT=$("$RKT" def "mainFunction" --quiet 2>&1)
+            assert_json_contains "$DEF_RESULT" ".name" "mainFunction" "def finds mainFunction"
+            assert_json_line "$DEF_RESULT" 7 "mainFunction is on line 7"
+            assert_def_has_fields "$DEF_RESULT" "definition has required fields"
+
+            # Test find_callers
+            echo "  Testing find_callers..."
+            CALLERS_RESULT=$("$RKT" callers "mainFunction" --quiet 2>&1)
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerA" "callerA calls mainFunction"
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerB" "callerB calls mainFunction"
+            ;;
+
+        csharp)
+            # Test find_definition
+            echo "  Testing find_definition..."
+            DEF_RESULT=$("$RKT" def "MainFunction" --quiet 2>&1)
+            assert_json_contains "$DEF_RESULT" ".name" "MainFunction" "def finds MainFunction"
+            assert_json_line "$DEF_RESULT" 13 "MainFunction is on line 13"
+            assert_def_has_fields "$DEF_RESULT" "definition has required fields"
+
+            # Test find_callers
+            echo "  Testing find_callers..."
+            CALLERS_RESULT=$("$RKT" callers "MainFunction" --quiet 2>&1)
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "CallerA" "CallerA calls MainFunction"
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "CallerB" "CallerB calls MainFunction"
+            ;;
+
+        fsharp)
+            # Test find_definition
+            echo "  Testing find_definition..."
+            DEF_RESULT=$("$RKT" def "mainFunction" --quiet 2>&1)
+            assert_json_contains "$DEF_RESULT" ".name" "mainFunction" "def finds mainFunction"
+            assert_json_line "$DEF_RESULT" 5 "mainFunction is on line 5"
+            assert_def_has_fields "$DEF_RESULT" "definition has required fields"
+
+            # Test find_callers
+            echo "  Testing find_callers..."
+            CALLERS_RESULT=$("$RKT" callers "mainFunction" --quiet 2>&1)
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerA" "callerA calls mainFunction"
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerB" "callerB calls mainFunction"
+            ;;
+
+        php)
+            # Test find_definition
+            echo "  Testing find_definition..."
+            DEF_RESULT=$("$RKT" def "mainFunction" --quiet 2>&1)
+            assert_json_contains "$DEF_RESULT" ".name" "mainFunction" "def finds mainFunction"
+            assert_json_line "$DEF_RESULT" 7 "mainFunction is on line 7"
+            assert_def_has_fields "$DEF_RESULT" "definition has required fields"
+
+            # Test find_callers
+            echo "  Testing find_callers..."
+            CALLERS_RESULT=$("$RKT" callers "mainFunction" --quiet 2>&1)
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerA" "callerA calls mainFunction"
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerB" "callerB calls mainFunction"
+            ;;
+
+        c)
+            # Test find_definition
+            echo "  Testing find_definition..."
+            DEF_RESULT=$("$RKT" def "main_function" --quiet 2>&1)
+            assert_json_contains "$DEF_RESULT" ".name" "main_function" "def finds main_function"
+            assert_json_line "$DEF_RESULT" 7 "main_function is on line 7"
+            assert_def_has_fields "$DEF_RESULT" "definition has required fields"
+
+            # Test find_callers
+            echo "  Testing find_callers..."
+            CALLERS_RESULT=$("$RKT" callers "main_function" --quiet 2>&1)
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "caller_a" "caller_a calls main_function"
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "caller_b" "caller_b calls main_function"
+            ;;
+
+        cpp)
+            # Test find_definition
+            echo "  Testing find_definition..."
+            DEF_RESULT=$("$RKT" def "mainFunction" --quiet 2>&1)
+            assert_json_contains "$DEF_RESULT" ".name" "mainFunction" "def finds mainFunction"
+            assert_json_line "$DEF_RESULT" 7 "mainFunction is on line 7"
+            assert_def_has_fields "$DEF_RESULT" "definition has required fields"
+
+            # Test find_callers
+            echo "  Testing find_callers..."
+            CALLERS_RESULT=$("$RKT" callers "mainFunction" --quiet 2>&1)
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerA" "callerA calls mainFunction"
+            assert_json_array_contains "$CALLERS_RESULT" ".callers" "name" "callerB" "callerB calls mainFunction"
             ;;
     esac
 
