@@ -428,8 +428,10 @@ fn extract_class_or_struct(
             let qualified = qualified_name(name, parent_path);
             let doc = extract_doc_comments(node, source);
 
-            // Extract base classes
+            // Extract base classes - first one becomes parent, rest go to implements
             let bases = extract_base_classes(node, source);
+            let parent_class = bases.first().cloned();
+            let remaining_bases: Vec<String> = bases.into_iter().skip(1).collect();
 
             result.symbols.push(Symbol {
                 name: name.to_string(),
@@ -438,14 +440,18 @@ fn extract_class_or_struct(
                 location: node_to_location(file, &name_node),
                 visibility: Visibility::Public,
                 language: "cpp".to_string(),
-                parent: None,
+                parent: parent_class,
                 mixins: None,
                 attributes: if is_template {
                     Some(vec!["template".to_string()])
                 } else {
                     None
                 },
-                implements: if bases.is_empty() { None } else { Some(bases) },
+                implements: if remaining_bases.is_empty() {
+                    None
+                } else {
+                    Some(remaining_bases)
+                },
                 doc,
                 signature: None,
             });
@@ -1095,7 +1101,40 @@ class Derived : public Base {
         let result = parser.extract_symbols(Path::new("test.cpp"), source, 100);
 
         let derived = result.symbols.iter().find(|s| s.name == "Derived").unwrap();
-        assert!(derived.implements.is_some());
+        assert_eq!(
+            derived.parent,
+            Some("Base".to_string()),
+            "First base class should be set as parent"
+        );
+        assert!(
+            derived.implements.is_none(),
+            "No additional base classes means implements should be None"
+        );
+    }
+
+    #[test]
+    fn extracts_cpp_multiple_inheritance() {
+        let source = r#"
+class Base {};
+class Mixin {};
+
+class Derived : public Base, public Mixin {
+};
+"#;
+        let parser = CppParser;
+        let result = parser.extract_symbols(Path::new("test.cpp"), source, 100);
+
+        let derived = result.symbols.iter().find(|s| s.name == "Derived").unwrap();
+        assert_eq!(
+            derived.parent,
+            Some("Base".to_string()),
+            "First base class should be set as parent"
+        );
+        assert_eq!(
+            derived.implements,
+            Some(vec!["Mixin".to_string()]),
+            "Additional base classes should be in implements"
+        );
     }
 
     #[test]

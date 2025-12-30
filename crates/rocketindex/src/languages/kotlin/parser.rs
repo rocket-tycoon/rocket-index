@@ -275,6 +275,37 @@ fn is_data_class(node: &tree_sitter::Node, source: &[u8]) -> bool {
     false
 }
 
+/// Extract parent class from class_declaration's delegation_specifiers
+/// In Kotlin, `class Dog : Animal()` - the first constructor_invocation is the parent class
+fn extract_parent_class(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    // Find delegation_specifiers child
+    let delegation_specs = find_child_by_kind(node, "delegation_specifiers")?;
+
+    // Iterate through delegation_specifier children
+    let mut cursor = delegation_specs.walk();
+    if cursor.goto_first_child() {
+        loop {
+            let child = cursor.node();
+            if child.kind() == "delegation_specifier" {
+                // Look for constructor_invocation (indicates class inheritance, not interface)
+                if let Some(ctor_inv) = find_child_by_kind(&child, "constructor_invocation") {
+                    // Get the type from constructor_invocation
+                    if let Some(user_type) = find_child_by_kind(&ctor_inv, "user_type") {
+                        // Get the identifier from user_type
+                        if let Some(id) = find_child_by_kind(&user_type, "identifier") {
+                            return id.utf8_text(source).ok().map(|s| s.to_string());
+                        }
+                    }
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    None
+}
+
 fn extract_recursive(
     node: &tree_sitter::Node,
     source: &[u8],
@@ -306,6 +337,9 @@ fn extract_recursive(
                         SymbolKind::Class
                     };
 
+                    // Extract parent class (first constructor_invocation in delegation_specifiers)
+                    let parent = extract_parent_class(node, source);
+
                     result.symbols.push(Symbol {
                         name: name.to_string(),
                         qualified: qualified.clone(),
@@ -313,7 +347,7 @@ fn extract_recursive(
                         location: node_to_location(file, &name_node),
                         visibility,
                         language: "kotlin".to_string(),
-                        parent: None,
+                        parent,
                         mixins: None,
                         attributes: annotations,
                         implements: None,
@@ -830,6 +864,49 @@ fn is_simple_identifier_reference(node: &tree_sitter::Node) -> bool {
 mod tests {
     use super::*;
     use crate::parse::LanguageParser;
+
+    #[test]
+    fn extracts_kotlin_subclass() {
+        let source = r#"
+package com.example
+
+class Dog : Animal() {
+    fun bark() {}
+}
+
+class Cat(name: String) : Pet(name), Walkable {
+    fun meow() {}
+}
+
+class Simple
+"#;
+        let parser = KotlinParser;
+        let result = parser.extract_symbols(std::path::Path::new("Animals.kt"), source, 100);
+
+        // Dog extends Animal
+        let dog = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Dog")
+            .expect("Should find Dog");
+        assert_eq!(dog.parent, Some("Animal".to_string()));
+
+        // Cat extends Pet (first constructor_invocation wins)
+        let cat = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Cat")
+            .expect("Should find Cat");
+        assert_eq!(cat.parent, Some("Pet".to_string()));
+
+        // Simple has no parent
+        let simple = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Simple")
+            .expect("Should find Simple");
+        assert_eq!(simple.parent, None);
+    }
 
     #[test]
     fn extracts_kotlin_class() {

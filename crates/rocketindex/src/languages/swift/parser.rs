@@ -159,6 +159,33 @@ fn extract_attributes(node: &tree_sitter::Node, source: &[u8]) -> Option<Vec<Str
     }
 }
 
+/// Extract the base class from a class declaration's inheritance clause.
+/// In Swift, the first inheritance_specifier is typically the superclass,
+/// but only if it's a class (not a protocol). Since we can't distinguish
+/// at parse time, we take the first one.
+fn extract_base_class(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    // Look for the first inheritance_specifier child
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        loop {
+            let child = cursor.node();
+            if child.kind() == "inheritance_specifier" {
+                // Get the user_type inside
+                if let Some(user_type) = find_child_by_kind(&child, "user_type") {
+                    // Get the type_identifier inside user_type
+                    if let Some(type_id) = find_child_by_kind(&user_type, "type_identifier") {
+                        return type_id.utf8_text(source).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    None
+}
+
 /// Extract function signature
 fn extract_function_signature(
     node: &tree_sitter::Node,
@@ -362,6 +389,13 @@ fn extract_recursive(
                     DeclarationKind::Protocol => SymbolKind::Interface,
                 };
 
+                // Extract base class (only for actual classes, not structs/enums/protocols)
+                let base_class = if actual_kind == DeclarationKind::Class {
+                    extract_base_class(node, source)
+                } else {
+                    None
+                };
+
                 result.symbols.push(Symbol {
                     name: name.to_string(),
                     qualified: qualified.clone(),
@@ -369,7 +403,7 @@ fn extract_recursive(
                     location: node_to_location(file, node),
                     visibility,
                     language: "swift".to_string(),
-                    parent: parent.map(|s| s.to_string()),
+                    parent: base_class,
                     mixins: None,
                     attributes,
                     implements: None,
@@ -753,6 +787,56 @@ class User {
             .expect("Should find User class");
         assert_eq!(class_sym.kind, SymbolKind::Class);
         assert_eq!(class_sym.qualified, "User");
+    }
+
+    #[test]
+    fn extracts_swift_class_with_base_class() {
+        let source = r#"
+class Animal {
+}
+
+class Dog: Animal {
+    var name: String = ""
+}
+"#;
+        let parser = SwiftParser;
+        let result = parser.extract_symbols(std::path::Path::new("Animal.swift"), source, 100);
+
+        let dog = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Dog")
+            .expect("Should find Dog class");
+        assert_eq!(dog.kind, SymbolKind::Class);
+        assert_eq!(dog.parent, Some("Animal".to_string()));
+
+        // Animal should have no parent
+        let animal = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Animal")
+            .expect("Should find Animal class");
+        assert_eq!(animal.parent, None);
+    }
+
+    #[test]
+    fn extracts_swift_class_with_protocol_conformance() {
+        let source = r#"
+class MyService: ServiceProtocol, Codable {
+    var id: Int = 0
+}
+"#;
+        let parser = SwiftParser;
+        let result = parser.extract_symbols(std::path::Path::new("Service.swift"), source, 100);
+
+        let service = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "MyService")
+            .expect("Should find MyService class");
+        assert_eq!(service.kind, SymbolKind::Class);
+        // First inheritance specifier is treated as parent (could be protocol or class)
+        assert_eq!(service.parent, Some("ServiceProtocol".to_string()));
     }
 
     #[test]

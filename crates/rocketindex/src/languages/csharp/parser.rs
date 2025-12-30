@@ -328,6 +328,13 @@ fn extract_type_declaration(
     let visibility = extract_visibility(node, source);
     let doc = extract_doc_comments(node, source);
 
+    // Extract base class from base_list (for classes)
+    let parent = if kind == SymbolKind::Class {
+        extract_base_class(node, source)
+    } else {
+        None
+    };
+
     Some(Symbol {
         name,
         qualified,
@@ -335,13 +342,75 @@ fn extract_type_declaration(
         location: node_to_location(file, node),
         visibility,
         language: "csharp".to_string(),
-        parent: None,
+        parent,
         mixins: None,
         attributes: None,
         implements: None,
         doc,
         signature: None,
     })
+}
+
+/// Extract the base class name from a class declaration's base_list.
+/// In C#, the base_list contains `: BaseClass, IInterface1, IInterface2`.
+/// The first non-interface type is the base class.
+/// By convention, interfaces start with 'I' followed by uppercase letter.
+fn extract_base_class(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    // Find the base_list child
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "base_list" {
+                // Iterate through base_list children to find the first type
+                for j in 0..child.child_count() {
+                    if let Some(type_node) = child.child(j) {
+                        match type_node.kind() {
+                            "identifier" => {
+                                let name = node_text(&type_node, source);
+                                // Check if this looks like an interface (IFoo pattern)
+                                if !is_interface_name(&name) {
+                                    return Some(name);
+                                }
+                            }
+                            "generic_name" => {
+                                // Generic type like List<T> - get the base identifier
+                                if let Some(ident) = type_node.child(0) {
+                                    if ident.kind() == "identifier" {
+                                        let name = node_text(&ident, source);
+                                        if !is_interface_name(&name) {
+                                            return Some(name);
+                                        }
+                                    }
+                                }
+                            }
+                            "qualified_name" => {
+                                // Qualified name like System.Object - use the full text
+                                let name = node_text(&type_node, source);
+                                // For qualified names, check the last segment for interface pattern
+                                let last_segment = name.rsplit('.').next().unwrap_or(&name);
+                                if !is_interface_name(last_segment) {
+                                    return Some(name);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Check if a type name looks like an interface (C# convention: IFoo).
+/// Returns true if name starts with 'I' followed by an uppercase letter.
+fn is_interface_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    if let Some('I') = chars.next() {
+        if let Some(second) = chars.next() {
+            return second.is_uppercase();
+        }
+    }
+    false
 }
 
 fn extract_delegate_declaration(
@@ -1725,6 +1794,137 @@ public class PolicyExample {
             ref_names.contains(&"GenericMethod"),
             "Should have reference to GenericMethod<T> call: {:?}",
             ref_names
+        );
+    }
+
+    #[test]
+    fn test_class_inheritance() {
+        let source = r#"
+namespace MyApp;
+
+public class Base { }
+
+public class Child : Base {
+    public void Method() { }
+}
+"#;
+        let parser = CSharpParser;
+        let result = parser.extract_symbols(Path::new("Inheritance.cs"), source, 100);
+
+        let child = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Child" && s.kind == SymbolKind::Class);
+        assert!(child.is_some(), "Child class should be indexed");
+        let child = child.unwrap();
+        assert_eq!(
+            child.parent,
+            Some("Base".to_string()),
+            "Child should have Base as parent"
+        );
+
+        // Base class should have no parent
+        let base = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Base" && s.kind == SymbolKind::Class);
+        assert!(base.is_some(), "Base class should be indexed");
+        assert_eq!(base.unwrap().parent, None, "Base should have no parent");
+    }
+
+    #[test]
+    fn test_class_with_interface_only() {
+        let source = r#"
+namespace MyApp;
+
+public class Service : IDisposable {
+    public void Dispose() { }
+}
+"#;
+        let parser = CSharpParser;
+        let result = parser.extract_symbols(Path::new("Service.cs"), source, 100);
+
+        let service = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Service" && s.kind == SymbolKind::Class);
+        assert!(service.is_some(), "Service class should be indexed");
+        // IDisposable is an interface, so no parent class
+        assert_eq!(
+            service.unwrap().parent,
+            None,
+            "Service with only interface should have no parent"
+        );
+    }
+
+    #[test]
+    fn test_class_with_base_and_interfaces() {
+        let source = r#"
+namespace MyApp;
+
+public class Child : Parent, IDisposable, ICloneable {
+    public void Dispose() { }
+}
+"#;
+        let parser = CSharpParser;
+        let result = parser.extract_symbols(Path::new("Child.cs"), source, 100);
+
+        let child = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Child" && s.kind == SymbolKind::Class);
+        assert!(child.is_some(), "Child class should be indexed");
+        assert_eq!(
+            child.unwrap().parent,
+            Some("Parent".to_string()),
+            "Child should have Parent as base class, ignoring interfaces"
+        );
+    }
+
+    #[test]
+    fn test_class_with_generic_base() {
+        let source = r#"
+namespace MyApp;
+
+public class UserRepository : Repository<User> {
+    public User GetById(int id) { return null; }
+}
+"#;
+        let parser = CSharpParser;
+        let result = parser.extract_symbols(Path::new("UserRepository.cs"), source, 100);
+
+        let repo = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "UserRepository" && s.kind == SymbolKind::Class);
+        assert!(repo.is_some(), "UserRepository class should be indexed");
+        assert_eq!(
+            repo.unwrap().parent,
+            Some("Repository".to_string()),
+            "UserRepository should have Repository as parent (without type args)"
+        );
+    }
+
+    #[test]
+    fn test_class_with_qualified_base() {
+        let source = r#"
+namespace MyApp;
+
+public class MyClass : System.Object {
+}
+"#;
+        let parser = CSharpParser;
+        let result = parser.extract_symbols(Path::new("MyClass.cs"), source, 100);
+
+        let my_class = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "MyClass" && s.kind == SymbolKind::Class);
+        assert!(my_class.is_some(), "MyClass should be indexed");
+        assert_eq!(
+            my_class.unwrap().parent,
+            Some("System.Object".to_string()),
+            "MyClass should have System.Object as qualified parent"
         );
     }
 }
