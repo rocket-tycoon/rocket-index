@@ -396,6 +396,9 @@ enum ServeAction {
 }
 
 fn main() -> ExitCode {
+    // Parse CLI first so we can respect --quiet for logging
+    let cli = Cli::parse();
+
     // Initialize logging with indicatif integration
     // This prevents terminal corruption when progress bars and log messages overlap
     let indicatif_layer = IndicatifLayer::new();
@@ -403,16 +406,19 @@ fn main() -> ExitCode {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
+    // Set log level based on --quiet flag
+    // When quiet, only show errors (suppress warnings that break JSON parsing)
+    let log_level = if cli.quiet {
+        tracing::Level::ERROR
+    } else {
+        tracing::Level::WARN
+    };
+
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_writer(indicatif_layer.get_stderr_writer()))
-        .with(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::WARN.into()),
-        )
+        .with(tracing_subscriber::EnvFilter::from_default_env().add_directive(log_level.into()))
         .with(indicatif_layer)
         .init();
-
-    let cli = Cli::parse();
 
     match run(cli.command, cli.format, cli.quiet, cli.concise) {
         Ok(code) => ExitCode::from(code),
