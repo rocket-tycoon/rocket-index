@@ -35,7 +35,7 @@
   "fsharp/Giraffe": {
     "language": "fsharp",
     "def_symbol": "HttpHandler",
-    "caller_symbol": "route",
+    "caller_symbol": "Giraffe.Routing.route",
     "wildcard_pattern": "*Handler*",
     "grep_def_pattern": "HttpHandler",
     "grep_caller_pattern": "route"
