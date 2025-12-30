@@ -365,6 +365,8 @@ fn incremental_indexing_updates_symbols() -> TestResult {
 
     // Modify the file
     let new_content = "module Incremental\n\nlet goodbye() = \"world\"\n";
+    // Sleep to ensure mtime changes (filesystem granularity can be 1 second)
+    std::thread::sleep(std::time::Duration::from_millis(1100));
     fs::write(&file_path, new_content)?;
 
     // Reindex (incremental)
