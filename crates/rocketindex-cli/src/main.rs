@@ -188,6 +188,10 @@ enum Commands {
         /// Number of files to process per batch (for memory control)
         #[arg(long, default_value = "1000")]
         batch_size: usize,
+
+        /// Force full rebuild (ignore cached index)
+        #[arg(long)]
+        rebuild: bool,
     },
 
     /// Find the definition of a symbol
@@ -443,7 +447,8 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
             root,
             extract_types,
             batch_size,
-        } => cmd_index(&root, extract_types, batch_size, format, quiet),
+            rebuild,
+        } => cmd_index(&root, extract_types, batch_size, rebuild, format, quiet),
 
         Commands::Def {
             symbol,
@@ -645,6 +650,7 @@ fn cmd_index(
     root: &Path,
     extract_types: bool,
     batch_size: usize,
+    rebuild: bool,
     format: OutputFormat,
     quiet: bool,
 ) -> Result<u8> {
@@ -660,7 +666,7 @@ fn cmd_index(
         eprintln!("Custom exclusions: {}", config.exclude_dirs.join(", "));
     }
 
-    let files = find_source_files_with_config(&root, &exclude_dirs, config.respect_gitignore)
+    let all_files = find_source_files_with_config(&root, &exclude_dirs, config.respect_gitignore)
         .context("Failed to find source files")?;
 
     // Try to find and parse .fsproj files for compilation order
@@ -687,20 +693,88 @@ fn cmd_index(
 
     let db_path = index_dir.join(DEFAULT_DB_NAME);
 
-    // Remove existing database to rebuild from scratch
-    if db_path.exists() {
-        std::fs::remove_file(&db_path).context("Failed to remove existing index")?;
-    }
+    // Determine if we can do incremental indexing
+    let (index, files_to_process, deleted_count, is_incremental) = if db_path.exists() && !rebuild {
+        // Try incremental update
+        let index = SqliteIndex::open(&db_path).context("Failed to open existing index")?;
 
-    let index = SqliteIndex::create(&db_path).context("Failed to create SQLite index")?;
+        // Find stale files (modified, deleted, new)
+        let stale = index
+            .find_stale_files(&all_files)
+            .context("Failed to check for stale files")?;
 
-    // Store workspace root in metadata
-    index
-        .set_metadata("workspace_root", &root.to_string_lossy())
-        .context("Failed to set workspace root")?;
+        if stale.is_empty() {
+            // Nothing changed - early exit
+            if format == OutputFormat::Json {
+                let output = serde_json::json!({
+                    "files": all_files.len(),
+                    "files_checked": all_files.len(),
+                    "files_updated": 0,
+                    "files_deleted": 0,
+                    "incremental": true,
+                    "symbols": index.count_symbols().unwrap_or(0),
+                    "database": db_path.display().to_string(),
+                    "message": "Index is up to date",
+                });
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            } else if !quiet {
+                println!("Index is up to date ({} files)", all_files.len());
+            }
+            return Ok(exit_codes::SUCCESS);
+        }
 
-    // Store file order if we found .fsproj files
-    if !file_order.is_empty() {
+        // Process deletions first
+        let mut deleted = 0;
+        let mut files_to_update = Vec::new();
+
+        for (path, reason) in stale {
+            match reason {
+                "deleted" => {
+                    index.delete_symbols_in_file(&path)?;
+                    index.delete_file_mtime(&path)?;
+                    deleted += 1;
+                }
+                "modified" | "new" => {
+                    if reason == "modified" {
+                        // Clear old data for modified files
+                        index.delete_symbols_in_file(&path)?;
+                    }
+                    files_to_update.push(path);
+                }
+                _ => {}
+            }
+        }
+
+        if !quiet && format != OutputFormat::Json {
+            if deleted > 0 {
+                eprintln!("Removed {} deleted file(s) from index", deleted);
+            }
+            eprintln!("Updating {} file(s) (incremental)", files_to_update.len());
+        }
+
+        (index, files_to_update, deleted, true)
+    } else {
+        // Full rebuild
+        if db_path.exists() {
+            std::fs::remove_file(&db_path).context("Failed to remove existing index")?;
+        }
+
+        let index = SqliteIndex::create(&db_path).context("Failed to create SQLite index")?;
+
+        // Store workspace root in metadata
+        index
+            .set_metadata("workspace_root", &root.to_string_lossy())
+            .context("Failed to set workspace root")?;
+
+        if !quiet && format != OutputFormat::Json {
+            eprintln!("Building full index ({} files)", all_files.len());
+        }
+
+        (index, all_files.clone(), 0, false)
+    };
+
+    // Store file order if we found .fsproj files (only on full rebuild)
+    if !is_incremental && !file_order.is_empty() {
         let file_order_json = serde_json::to_string(&file_order)?;
         index
             .set_metadata("file_order", &file_order_json)
@@ -708,6 +782,7 @@ fn cmd_index(
     }
 
     let max_depth = config.max_recursion_depth;
+    let files = &files_to_process;
     let total_files = files.len();
     let batch_size = batch_size.max(1); // Ensure at least 1
 
@@ -845,10 +920,21 @@ fn cmd_index(
     let _ref_count = total_refs;
     let _open_count = total_opens;
 
+    // Get total symbol count (for incremental, includes existing + new)
+    let total_symbol_count = if is_incremental {
+        index.count_symbols().unwrap_or(symbol_count)
+    } else {
+        symbol_count
+    };
+
     if format == OutputFormat::Json {
         let output = serde_json::json!({
-            "files": files.len(),
-            "symbols": symbol_count,
+            "files": all_files.len(),
+            "files_updated": files.len(),
+            "files_deleted": deleted_count,
+            "symbols": total_symbol_count,
+            "symbols_added": symbol_count,
+            "incremental": is_incremental,
             "fsproj_files": fsproj_count,
             "file_order_count": file_order.len(),
             "errors": errors,
@@ -857,7 +943,18 @@ fn cmd_index(
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if !quiet {
-        println!("Indexed {} files, {} symbols", files.len(), symbol_count);
+        if is_incremental {
+            println!(
+                "Updated {} file(s), {} total symbols",
+                files.len(),
+                total_symbol_count
+            );
+            if deleted_count > 0 {
+                println!("Removed {} deleted file(s)", deleted_count);
+            }
+        } else {
+            println!("Indexed {} files, {} symbols", files.len(), symbol_count);
+        }
         println!("Database: {}", db_path.display());
         if fsproj_count > 0 {
             println!(
@@ -2026,11 +2123,11 @@ fn cmd_watch(root: &Path, format: OutputFormat, quiet: bool) -> Result<u8> {
         }
     };
 
-    // First, ensure index exists
+    // First, ensure index exists (incremental if already exists)
     if !quiet {
         println!("Building initial index...");
     }
-    cmd_index(&root, false, 1000, format, quiet)?;
+    cmd_index(&root, false, 1000, false, format, quiet)?;
 
     // Load config for recursion depth
     let config = Config::load(&root);
@@ -3194,7 +3291,7 @@ Estimated time: ~1-3 seconds per 1,000 files
     let started = Instant::now();
     println!("\nIndexing codebase...");
 
-    match cmd_index(cwd, false, 1000, format, quiet) {
+    match cmd_index(cwd, false, 1000, false, format, quiet) {
         Ok(code) if code == exit_codes::SUCCESS => {
             if !quiet {
                 println!("Indexed in {:.1?}", started.elapsed());
@@ -3373,7 +3470,7 @@ fn ensure_initial_index(cwd: &Path, format: OutputFormat, quiet: bool) -> Result
         println!("Building initial RocketIndex index (rkt index)...");
     }
 
-    match cmd_index(cwd, false, 1000, format, quiet) {
+    match cmd_index(cwd, false, 1000, false, format, quiet) {
         Ok(code) if code == exit_codes::SUCCESS => {
             if show_feedback {
                 println!(
