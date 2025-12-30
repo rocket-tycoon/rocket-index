@@ -14,6 +14,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
+use clap_mangen::Man;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use rocketindex::git;
@@ -360,6 +361,13 @@ enum Commands {
         shell: Shell,
     },
 
+    /// Generate man pages
+    Manpages {
+        /// Output directory for man pages
+        #[arg(short, long, default_value = "man")]
+        out: PathBuf,
+    },
+
     /// Start MCP server for AI assistant integration
     Serve {
         #[command(subcommand)]
@@ -488,6 +496,11 @@ fn run(command: Commands, format: OutputFormat, quiet: bool, concise: bool) -> R
             Ok(exit_codes::SUCCESS)
         }
 
+        Commands::Manpages { out } => {
+            cmd_manpages(&out)?;
+            Ok(exit_codes::SUCCESS)
+        }
+
         Commands::Serve { action } => cmd_serve(action),
 
         Commands::Update => {
@@ -572,6 +585,53 @@ fn cmd_serve(action: Option<ServeAction>) -> Result<u8> {
             Ok(exit_codes::SUCCESS)
         }
     }
+}
+
+/// Generate man pages for the CLI
+fn cmd_manpages(out_dir: &Path) -> Result<()> {
+    use std::fs;
+
+    // Create output directory
+    fs::create_dir_all(out_dir)
+        .with_context(|| format!("Failed to create output directory: {}", out_dir.display()))?;
+
+    let cmd = Cli::command();
+
+    // Generate main man page (rkt.1)
+    let man = Man::new(cmd.clone());
+    let mut buffer = Vec::new();
+    man.render(&mut buffer)?;
+    let path = out_dir.join("rkt.1");
+    fs::write(&path, buffer)
+        .with_context(|| format!("Failed to write man page: {}", path.display()))?;
+    println!("Generated: {}", path.display());
+
+    // Generate man pages for each subcommand
+    for subcommand in cmd.get_subcommands() {
+        let name = subcommand.get_name();
+        // Skip hidden commands
+        if subcommand.is_hide_set() {
+            continue;
+        }
+
+        let man = Man::new(subcommand.clone());
+        let mut buffer = Vec::new();
+        man.render(&mut buffer)?;
+
+        let filename = format!("rkt-{}.1", name);
+        let path = out_dir.join(&filename);
+        fs::write(&path, buffer)
+            .with_context(|| format!("Failed to write man page: {}", path.display()))?;
+        println!("Generated: {}", path.display());
+    }
+
+    println!("\nMan pages generated in: {}", out_dir.display());
+    println!(
+        "To install: sudo cp {}/*.1 /usr/local/share/man/man1/",
+        out_dir.display()
+    );
+
+    Ok(())
 }
 
 /// Index the codebase using SQLite (build or rebuild)
