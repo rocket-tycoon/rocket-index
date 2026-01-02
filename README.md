@@ -223,6 +223,7 @@ They're complementary—RocketIndex for structural navigation, LSP for type-awar
 | Go | Full | `.go` | |
 | Java | Full | `.java` | |
 | JavaScript | Full | `.js`, `.jsx`, `.mjs`, `.cjs` | |
+| Kotlin | Full | `.kt`, `.kts` | Classes, Objects, Interfaces, Functions, Properties |
 | PHP | Full | `.php` | |
 | Python | Full | `.py`, `.pyi` | |
 | Ruby | Full | `.rb` | |
@@ -230,7 +231,6 @@ They're complementary—RocketIndex for structural navigation, LSP for type-awar
 | Swift | Full | `.swift` | Classes, Structs, Enums, Protocols, Functions, Properties |
 | TypeScript | Full | `.ts`, `.tsx` | |
 | Haxe | Beta | `.hx` | Classes, Interfaces, Typedefs, Functions, Variables, Metadata |
-| Kotlin | Beta | `.kt`, `.kts` | Classes, Objects, Interfaces, Functions, Properties |
 | Objective-C | Beta | `.m`, `.mm` | Classes, Protocols, Methods, Properties, Categories |
 
 **Full:** Production-ready with visibility, inheritance, and language-specific patterns.

@@ -104,4 +104,114 @@ mod tests {
         let result = resolver.resolve(&index, "NonExistent", Path::new("test.m"));
         assert!(result.is_none());
     }
+
+    #[test]
+    fn resolve_same_file_symbol() {
+        let mut index = CodeIndex::new();
+        let file = PathBuf::from("MyViewController.m");
+
+        index.add_symbol(Symbol::new(
+            "MyViewController".to_string(),
+            "MyViewController".to_string(),
+            SymbolKind::Class,
+            Location::new(file.clone(), 5, 1),
+            Visibility::Public,
+            "objc".to_string(),
+        ));
+        index.add_symbol(Symbol::new(
+            "viewDidLoad".to_string(),
+            "MyViewController.viewDidLoad".to_string(),
+            SymbolKind::Function,
+            Location::new(file.clone(), 10, 1),
+            Visibility::Public,
+            "objc".to_string(),
+        ));
+
+        let resolver = ObjCResolver;
+        let result = resolver.resolve(&index, "viewDidLoad", &file);
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap().symbol.qualified,
+            "MyViewController.viewDidLoad"
+        );
+    }
+
+    #[test]
+    fn resolve_protocol() {
+        let mut index = CodeIndex::new();
+        index.add_symbol(Symbol::new(
+            "UITableViewDelegate".to_string(),
+            "UITableViewDelegate".to_string(),
+            SymbolKind::Interface,
+            Location::new(PathBuf::from("UIKit.h"), 100, 1),
+            Visibility::Public,
+            "objc".to_string(),
+        ));
+
+        let resolver = ObjCResolver;
+        let result = resolver.resolve(&index, "UITableViewDelegate", Path::new("test.m"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().symbol.kind, SymbolKind::Interface);
+    }
+
+    #[test]
+    fn resolve_category_method() {
+        let mut index = CodeIndex::new();
+        index.add_symbol(Symbol::new(
+            "stringByTrimmingWhitespace".to_string(),
+            "NSString(Utilities).stringByTrimmingWhitespace".to_string(),
+            SymbolKind::Function,
+            Location::new(PathBuf::from("NSString+Utilities.m"), 15, 1),
+            Visibility::Public,
+            "objc".to_string(),
+        ));
+
+        let resolver = ObjCResolver;
+        let result = resolver.resolve(
+            &index,
+            "NSString(Utilities).stringByTrimmingWhitespace",
+            Path::new("test.m"),
+        );
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn resolve_property() {
+        let mut index = CodeIndex::new();
+        index.add_symbol(Symbol::new(
+            "name".to_string(),
+            "User.name".to_string(),
+            SymbolKind::Member,
+            Location::new(PathBuf::from("User.h"), 8, 1),
+            Visibility::Public,
+            "objc".to_string(),
+        ));
+
+        let resolver = ObjCResolver;
+        let result = resolver.resolve(&index, "User.name", Path::new("test.m"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().symbol.kind, SymbolKind::Member);
+    }
+
+    #[test]
+    fn resolve_dotted_falls_back() {
+        let mut index = CodeIndex::new();
+        index.add_symbol(Symbol::new(
+            "sharedInstance".to_string(),
+            "AppDelegate.sharedInstance".to_string(),
+            SymbolKind::Function,
+            Location::new(PathBuf::from("AppDelegate.m"), 20, 1),
+            Visibility::Public,
+            "objc".to_string(),
+        ));
+
+        let resolver = ObjCResolver;
+        let result =
+            resolver.resolve_dotted(&index, "AppDelegate.sharedInstance", Path::new("test.m"));
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap().symbol.qualified,
+            "AppDelegate.sharedInstance"
+        );
+    }
 }
