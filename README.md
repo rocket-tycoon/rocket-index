@@ -230,8 +230,8 @@ They're complementary—RocketIndex for structural navigation, LSP for type-awar
 | Rust | Full | `.rs` | |
 | Swift | Full | `.swift` | Classes, Structs, Enums, Protocols, Functions, Properties |
 | TypeScript | Full | `.ts`, `.tsx` | |
+| Objective-C | Full | `.m`, `.mm` | Classes, Protocols, Methods, Properties, Categories |
 | Haxe | Beta | `.hx` | Classes, Interfaces, Typedefs, Functions, Variables, Metadata |
-| Objective-C | Beta | `.m`, `.mm` | Classes, Protocols, Methods, Properties, Categories |
 
 **Full:** Production-ready with visibility, inheritance, and language-specific patterns.
 **Beta:** Core symbols extracted; some advanced patterns may be missing.
