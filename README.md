@@ -216,21 +216,21 @@ They're complementary—RocketIndex for structural navigation, LSP for type-awar
 
 | Language | Status | Extensions | Features |
 |----------|--------|------------|----------|
+| C# | Full | `.cs` | |
 | F# | Full | `.fs`, `.fsi`, `.fsx` | |
 | Go | Full | `.go` | |
+| Java | Full | `.java` | |
 | JavaScript | Full | `.js`, `.jsx`, `.mjs`, `.cjs` | |
+| PHP | Full | `.php` | |
 | Python | Full | `.py`, `.pyi` | |
 | Ruby | Full | `.rb` | |
 | Rust | Full | `.rs` | |
 | TypeScript | Full | `.ts`, `.tsx` | |
-| C# | Beta | `.cs` | |
+| C/C++ | Beta | `.c`, `.cpp`, `.cc`, `.h`, `.hpp`, `.cxx`, `.hxx`, `.hh` | Namespaces, Classes, Inheritance, Templates |
 | Haxe | Beta | `.hx` | Classes, Interfaces, Typedefs, Functions, Variables, Metadata |
-| Java | Beta | `.java` | |
 | Kotlin | Beta | `.kt`, `.kts` | Classes, Objects, Interfaces, Functions, Properties |
 | Objective-C | Beta | `.m`, `.mm` | Classes, Protocols, Methods, Properties, Categories |
-| PHP | Beta | `.php` | |
 | Swift | Beta | `.swift` | Classes, Structs, Enums, Protocols, Functions, Properties |
-| C/C++ | Beta | `.c`, `.cpp`, `.cc`, `.h`, `.hpp`, `.cxx`, `.hxx`, `.hh` | Namespaces, Classes, Inheritance, Templates |
 
 **Full:** Production-ready with visibility, inheritance, and language-specific patterns.
 **Beta:** Core symbols extracted; some advanced patterns may be missing.
