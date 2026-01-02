@@ -1179,4 +1179,59 @@ void use_client(struct Client* client) {
             ref_names
         );
     }
+
+    #[test]
+    fn extracts_function_pointer_typedef() {
+        let parser = CParser;
+        let source = r#"
+typedef void (*signal_handler_t)(int signum);
+typedef int (*comparator_fn)(const void*, const void*);
+"#;
+        let result = parser.extract_symbols(Path::new("test.c"), source, 100);
+
+        let names: Vec<&str> = result.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"signal_handler_t"),
+            "Should extract function pointer typedef: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"comparator_fn"),
+            "Should extract function pointer typedef: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn extracts_nested_struct() {
+        let parser = CParser;
+        let source = r#"
+struct Outer {
+    int id;
+    struct Inner {
+        char* name;
+        int value;
+    } inner;
+};
+"#;
+        let result = parser.extract_symbols(Path::new("test.c"), source, 100);
+
+        let names: Vec<&str> = result.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"Outer"),
+            "Should extract outer struct: {:?}",
+            names
+        );
+        // Nested struct should be extracted with qualified name
+        let qualified: Vec<&str> = result
+            .symbols
+            .iter()
+            .map(|s| s.qualified.as_str())
+            .collect();
+        assert!(
+            qualified.iter().any(|q| q.contains("Inner")),
+            "Should extract nested struct: {:?}",
+            qualified
+        );
+    }
 }

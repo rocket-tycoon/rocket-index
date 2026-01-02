@@ -216,6 +216,7 @@ They're complementary—RocketIndex for structural navigation, LSP for type-awar
 
 | Language | Status | Extensions | Features |
 |----------|--------|------------|----------|
+| C | Full | `.c`, `.h` | Structs, Unions, Enums, Typedefs, Functions |
 | C# | Full | `.cs` | |
 | C++ | Full | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.hh` | Namespaces, Classes, Inheritance, Templates |
 | F# | Full | `.fs`, `.fsi`, `.fsx` | |
@@ -228,7 +229,6 @@ They're complementary—RocketIndex for structural navigation, LSP for type-awar
 | Rust | Full | `.rs` | |
 | Swift | Full | `.swift` | Classes, Structs, Enums, Protocols, Functions, Properties |
 | TypeScript | Full | `.ts`, `.tsx` | |
-| C | Beta | `.c`, `.h` | Structs, Unions, Enums, Typedefs, Functions |
 | Haxe | Beta | `.hx` | Classes, Interfaces, Typedefs, Functions, Variables, Metadata |
 | Kotlin | Beta | `.kt`, `.kts` | Classes, Objects, Interfaces, Functions, Properties |
 | Objective-C | Beta | `.m`, `.mm` | Classes, Protocols, Methods, Properties, Categories |
