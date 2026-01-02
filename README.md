@@ -217,6 +217,7 @@ They're complementary—RocketIndex for structural navigation, LSP for type-awar
 | Language | Status | Extensions | Features |
 |----------|--------|------------|----------|
 | C# | Full | `.cs` | |
+| C++ | Full | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.hh` | Namespaces, Classes, Inheritance, Templates |
 | F# | Full | `.fs`, `.fsi`, `.fsx` | |
 | Go | Full | `.go` | |
 | Java | Full | `.java` | |
@@ -225,12 +226,12 @@ They're complementary—RocketIndex for structural navigation, LSP for type-awar
 | Python | Full | `.py`, `.pyi` | |
 | Ruby | Full | `.rb` | |
 | Rust | Full | `.rs` | |
+| Swift | Full | `.swift` | Classes, Structs, Enums, Protocols, Functions, Properties |
 | TypeScript | Full | `.ts`, `.tsx` | |
-| C/C++ | Beta | `.c`, `.cpp`, `.cc`, `.h`, `.hpp`, `.cxx`, `.hxx`, `.hh` | Namespaces, Classes, Inheritance, Templates |
+| C | Beta | `.c`, `.h` | Structs, Unions, Enums, Typedefs, Functions |
 | Haxe | Beta | `.hx` | Classes, Interfaces, Typedefs, Functions, Variables, Metadata |
 | Kotlin | Beta | `.kt`, `.kts` | Classes, Objects, Interfaces, Functions, Properties |
 | Objective-C | Beta | `.m`, `.mm` | Classes, Protocols, Methods, Properties, Categories |
-| Swift | Beta | `.swift` | Classes, Structs, Enums, Protocols, Functions, Properties |
 
 **Full:** Production-ready with visibility, inheritance, and language-specific patterns.
 **Beta:** Core symbols extracted; some advanced patterns may be missing.
