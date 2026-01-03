@@ -65,7 +65,26 @@ Traditional Language Servers choke on large codebases. RocketIndex doesn't.
 
 ## Quick Start
 
+Choose your path:
+
+| Use Case | Setup |
+|----------|-------|
+| **Claude Code** | [Plugin install](#claude-code) (no binary needed) |
+| **Claude Desktop, Gemini, Zed** | [Install binary](#install) + [configure MCP](#other-mcp-clients) |
+| **CLI for humans/scripts** | [Install binary](#install) + [run commands](#cli-usage) |
+
+### Claude Code
+
+No install required. The plugin auto-downloads the binary.
+
+```bash
+/plugin marketplace add rocket-tycoon/rocket-index
+/plugin install rocketindex
+```
+
 ### Install
+
+Required for Claude Desktop, Gemini, Zed, and CLI usage.
 
 **macOS**
 ```bash
@@ -85,30 +104,11 @@ tar -xzf rocketindex-x86_64-unknown-linux-gnu.tar.gz
 sudo mv rkt rocketindex-lsp /usr/local/bin/
 ```
 
-### For AI Assistants (Recommended)
+### Other MCP Clients
 
-RocketIndex exposes tools via [MCP (Model Context Protocol)](https://modelcontextprotocol.io/). This is the recommended integration—our testing shows agents use navigation tools consistently when exposed via MCP, but fall back to grep when given CLI instructions.
+After [installing](#install), configure your client:
 
-The MCP server auto-indexes on first use. No manual setup required.
-
-#### Claude Code
-
-```bash
-# Add the plugin (recommended)
-/plugin marketplace add rocket-tycoon/rocket-index
-/plugin install rocketindex
-```
-
-Or configure MCP manually:
-
-```bash
-cd /path/to/your/repo
-claude mcp add --transport stdio rocket-index -- rkt serve
-```
-
-#### Claude Desktop
-
-Add to your config file:
+**Claude Desktop** — add to config file:
 
 | Platform | Config Path |
 |----------|-------------|
@@ -127,10 +127,6 @@ Add to your config file:
 }
 ```
 
-Restart Claude Desktop. RocketIndex tools will appear in the toolbox.
-
-#### Other AI Tools
-
 **Gemini CLI:**
 ```bash
 gemini mcp add rocket-index rkt serve
@@ -148,7 +144,9 @@ gemini mcp add rocket-index rkt serve
 }
 ```
 
-### For Humans and Scripts
+### CLI Usage
+
+After [installing](#install):
 
 ```bash
 cd /path/to/your/repo
@@ -156,7 +154,7 @@ rkt index                    # Build index
 rkt watch                    # Keep index fresh (run in background terminal)
 ```
 
-**Important:** Run `rkt watch` in a background terminal during coding sessions. Without it, the index becomes stale as files change.
+Run `rkt watch` in a background terminal during coding sessions to keep the index fresh.
 
 ---
 
