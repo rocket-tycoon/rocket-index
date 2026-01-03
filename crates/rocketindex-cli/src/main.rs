@@ -1442,11 +1442,11 @@ fn cmd_refs_symbol(
         if format == OutputFormat::Json {
             println!("[]");
         } else if !quiet {
-            if path_filter.is_some() {
+            if let Some(filter) = &path_filter {
                 eprintln!(
                     "No references found for '{}' in path '{}'",
                     symbol,
-                    path_filter.unwrap().display()
+                    filter.display()
                 );
             } else {
                 eprintln!("No references found for '{}'", symbol);
