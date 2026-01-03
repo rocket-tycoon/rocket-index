@@ -48,6 +48,12 @@ coverage/
 *.temp
 .claude/
 
+# Test results (generated)
+results/
+
+# AI assistant configs
+.gemini/
+
 # Integration test repos (cloned external projects)
 test-repos/
 tests/fixtures/ci/

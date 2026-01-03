@@ -15,6 +15,14 @@ AI coding agents waste tokens because they navigate code by guessing. Grep retur
 
 RocketIndex replaces guesswork with structure. It parses your code into an AST using Tree-sitter, stores the symbol graph in SQLite, and answers navigation queries deterministically.
 
+| Capability | RocketIndex | LSP | Vector Search | Grep |
+|------------|-------------|-----|---------------|------|
+| Query model | Symbol name | File coordinates | Natural language | Pattern |
+| Find callers | Yes | Refs only | No | No |
+| Dependency graph | Yes | No | No | No |
+| Precision | Deterministic | Deterministic | Probabilistic | Noisy |
+| Best for | Navigation, refactoring | Type-aware edits | Exploration | Simple edits |
+
 ### vs Grep: Structure beats text matching
 
 **Example: Finding `spawn` in Tokio (751 Rust files)**
@@ -46,23 +54,7 @@ LSPs also require language runtimes and often fail on incomplete code. RocketInd
 
 ---
 
-## How It Works
-
-```
-Source Files → Tree-sitter → AST → SQLite → Deterministic Queries
-```
-
-| Capability | RocketIndex | LSP | Vector Search | Grep |
-|------------|-------------|-----|---------------|------|
-| Query model | Symbol name | File coordinates | Natural language | Pattern |
-| Find callers | Yes | Refs only | No | No |
-| Dependency graph | Yes | No | No | No |
-| Precision | Deterministic | Deterministic | Probabilistic | Noisy |
-| Best for | Navigation, refactoring | Type-aware edits | Exploration | Simple edits |
-
----
- 
- ## Built for Scale
+## Built for Scale
  
  Rocket Index was built specifically because traditional Language Servers often choke on large codebases.
  
