@@ -185,14 +185,32 @@ rkt watch                    # Keep index fresh (run in background terminal)
 
 ### CLI Commands (for humans)
 
+**Navigation:**
 ```bash
 rkt def "User"                          # Find definition
 rkt callers "User.save"                 # Find all callers
 rkt refs "Config"                       # Find all references
 rkt spider "validate_email" --reverse   # Reverse dependency graph
-rkt symbols "*Service" --concise        # Search by pattern
-rkt blame "UserService.save"            # Blame by symbol (or file:line)
+rkt symbols "*Service"                  # Search by pattern
+rkt subclasses "BaseController"         # Find subclasses
+rkt implements "IDisposable"            # Find implementations
 ```
+
+**Git Integration:**
+```bash
+rkt blame "UserService.save"            # Blame by symbol (or file:line)
+rkt history "processPayment"            # Git history for a symbol
+```
+
+**Utilities:**
+```bash
+rkt doctor                              # Health check
+rkt setup claude                        # Configure editor integration
+rkt completions zsh                     # Generate shell completions
+rkt update                              # Update to latest version
+```
+
+Run `rkt --help` for all commands and `rkt <command> --help` for options.
 
 ---
 
