@@ -11,27 +11,38 @@ One call. Exact answer.
 
 ## Why RocketIndex?
 
-AI coding agents waste tokens because they navigate code by guessing. Grep returns 17 candidates when you need one. Vector search hallucinates. Both force agents into multi-turn loops reading files to verify what they found.
+AI coding agents waste tokens because they navigate code by guessing. Grep returns 17 candidates when you need one. LSPs require file coordinates when agents only have a symbol name. Both force agents into multi-turn loops.
 
 RocketIndex replaces guesswork with structure. It parses your code into an AST using Tree-sitter, stores the symbol graph in SQLite, and answers navigation queries deterministically.
 
+### vs Grep: Structure beats text matching
+
 **Example: Finding `spawn` in Tokio (751 Rust files)**
 
-Without RocketIndex, grep returns 17 candidates. The agent reads each file to verify—3-5 tool calls, 5,000+ tokens consumed.
-
-With RocketIndex:
 ```bash
 $ rkt def "spawn"
 # -> tokio/src/runtime/blocking/pool.rs:57
 ```
 
-One call. 200 tokens. Exact answer.
-
-| Metric | RocketIndex | Grep Workflow |
-|--------|-------------|---------------|
+| Metric | RocketIndex | Grep |
+|--------|-------------|------|
 | Tool calls | 1 | 3-5+ |
 | Tokens | ~200 | 5,000+ |
-| Result | Exact definition | 17 candidates to sift |
+| Result | Exact definition | 17 candidates to verify |
+
+Grep matches text. RocketIndex understands code structure—it knows the difference between a definition, a call site, and a comment.
+
+### vs LSPs: Query by name, not coordinates
+
+LSPs are designed for editors where a cursor is already positioned on a symbol. AI agents don't have cursors—they have symbol names from user requests.
+
+| Task | RocketIndex | LSP |
+|------|-------------|-----|
+| "Find `UserService.save`" | `find_definition("UserService.save")` | Find file containing text → position cursor → goToDefinition |
+| "Who calls this?" | `find_callers("save")` | ❌ Only "find references" (callers + callees mixed) |
+| "Trace the call graph" | `analyze_dependencies("main")` | ❌ Not available |
+
+LSPs also require language runtimes and often fail on incomplete code. RocketIndex uses pure syntactic analysis—it works on partial checkouts, broken builds, and across 15 languages with a single binary.
 
 ---
 
@@ -187,27 +198,11 @@ rkt blame "UserService.save"            # Blame by symbol (or file:line)
 
 ## RocketIndex vs Language Servers
 
-Some AI tools (like Claude Code) include LSP support. When should you use RocketIndex instead?
+They're complementary. Use both.
 
-| Capability | RocketIndex | LSP |
-|------------|-------------|-----|
-| Query model | Symbol name: `find_definition("Foo.bar")` | Coordinates: `goToDefinition(file, line, col)` |
-| Find callers | ✅ Native | ❌ Only "find references" |
-| Dependency graph | ✅ `analyze_dependencies` | ❌ Not available |
-| Setup | Single binary, all languages | One server per language |
-| Runtime | None (tree-sitter) | Language runtimes required |
+**Use RocketIndex for:** Navigation by symbol name, caller/callee analysis, dependency graphs, multi-language codebases, partial checkouts.
 
-**Use RocketIndex when:**
-- You want to query by symbol name, not file coordinates
-- You need caller/callee analysis or dependency graphs
-- You work across multiple languages
-
-**Use LSP when:**
-- You need type-aware resolution
-- You want hover documentation with type signatures
-- You need compiler diagnostics
-
-They're complementary—RocketIndex for structural navigation, LSP for type-aware features.
+**Use LSP for:** Type-aware resolution, hover documentation, compiler diagnostics, refactoring with type safety.
 
 ---
 
