@@ -554,8 +554,13 @@ impl ProjectManager {
             if let Some(project_root) = self.project_for_file(path).await {
                 return vec![project_root];
             }
-            // Fall back to the explicit path (may be a new/unregistered project)
-            return vec![PathBuf::from(root)];
+            // Security: Do NOT return unregistered paths - this prevents arbitrary file access
+            // via malicious project_root parameters (e.g., "/etc", "~/.ssh")
+            warn!(
+                "Rejected access to unregistered project path: {}",
+                path.display()
+            );
+            return vec![];
         }
 
         // 2. File hint
@@ -611,14 +616,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resolve_projects_unregistered_path_returns_as_is() {
+    async fn test_resolve_projects_unregistered_path_rejected() {
         let manager = ProjectManager::new().await.unwrap();
 
-        // An unregistered path should be returned as-is
+        // Security: Unregistered paths should be rejected (return empty vec)
+        // This prevents arbitrary file access via malicious project_root parameters
         let unregistered = "/some/unregistered/path";
         let resolved = manager.resolve_projects(Some(unregistered), None).await;
 
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0], PathBuf::from(unregistered));
+        assert!(
+            resolved.is_empty(),
+            "Unregistered paths must be rejected for security"
+        );
     }
 }
