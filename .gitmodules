@@ -1,3 +1,0 @@
-[submodule "vendor/tree-sitter-haxe"]
-	path = vendor/tree-sitter-haxe
-	url = https://github.com/vantreeseba/tree-sitter-haxe.git
