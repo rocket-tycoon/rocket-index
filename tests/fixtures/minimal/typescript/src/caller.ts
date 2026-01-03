@@ -1,5 +1,4 @@
-// Cross-file caller module for testing
-
+// Cross-file caller for testing find_callers across files
 import { mainFunction, helper } from './index';
 
 export function crossFileCaller(): void {

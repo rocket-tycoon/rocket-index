@@ -1,7 +1,5 @@
 //! Minimal Rust fixture for testing
 
-pub mod caller;
-
 pub mod utils {
     pub fn helper() -> i32 {
         42
@@ -46,23 +44,20 @@ impl MyTrait for MyStruct {
     }
 }
 
-/// Second struct to test disambiguation of common names
+/// OtherStruct for testing disambiguation of common names
 pub struct OtherStruct {
     value: String,
 }
 
 impl OtherStruct {
-    /// Another 'new' - tests disambiguation
     pub fn new(s: &str) -> Self {
         Self { value: s.to_string() }
     }
 
-    /// Common name 'init'
     pub fn init(&mut self) {
         self.value = "initialized".to_string();
     }
 
-    /// Common name 'run'
     pub fn run(&self) {
         println!("{}", self.value);
     }

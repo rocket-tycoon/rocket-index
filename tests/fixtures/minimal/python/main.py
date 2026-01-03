@@ -34,17 +34,16 @@ class ChildClass(MyClass):
         main_function()
         return super().method()
 
-
 class OtherClass:
-    """Second class to test disambiguation"""
+    """Another class for testing disambiguation"""
 
     def __init__(self, value):
         self.value = value
 
     def init(self):
-        """Common name 'init'"""
+        """Common method name for testing"""
         self.value = "initialized"
 
     def run(self):
-        """Common name 'run'"""
+        """Common method name for testing"""
         print(self.value)
