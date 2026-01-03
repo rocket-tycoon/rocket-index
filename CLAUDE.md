@@ -17,8 +17,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Coding Guidelines
 
 Follow the Rust best practices in `coding-guidelines.md`
-   
-## Build & Test Commands
+
+## Task Runner
+
+This project uses [just](https://github.com/casey/just) as a task runner. Run `just` to see available commands:
+
+```bash
+just              # Show available commands
+just build        # Build release binary
+just test         # Run all tests
+just check        # Format check + clippy
+just fmt          # Format code
+just lint         # Run clippy
+
+# Testing
+just fixtures     # Setup minimal test fixtures
+just test-fixtures # Run fixture tests
+just test-repos   # Test against real-world repos
+
+# Benchmarks
+just bench-semantic  # RocketIndex vs grep comparison
+just bench-stress    # Auto-refresh stress test
+
+# Release
+just bump 0.1.0   # Bump version across all files
+
+# Git hooks
+just install-hooks # Install pre-commit and pre-push hooks
+```
+
+Install just: `brew install just` or `cargo install just`
+
+## Build & Test Commands (cargo)
 
 ```bash
 # Build
