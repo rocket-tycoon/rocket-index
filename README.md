@@ -52,18 +52,16 @@ LSPs are designed for editors where a cursor is already positioned on a symbol. 
 
 LSPs also require language runtimes and often fail on incomplete code. RocketIndex uses pure syntactic analysis—it works on partial checkouts, broken builds, and across 15 languages with a single binary.
 
----
+### Built for Scale
 
-## Built for Scale
- 
- Rocket Index was built specifically because traditional Language Servers often choke on large codebases.
- 
- *   **Zero Compilation**: Unlike LSPs that attempt to compile your project (which fails on partial checkouts or missing dependencies), Rocket Index uses **pure syntactic analysis**. It doesn't care if your code compiles, only that it parses.
- *   **Monorepo Ready**: Designed to handle repositories with **10,000+ files** without breaking a sweat.
- *   **Instant Access**: Uses an embedded **SQLite** database with aggressive performance tuning (WAL mode, memory-mapped I/O) to ensure symbol lookups take milliseconds, regardless of project size.
- *   **Low Footprint**: Keeps your agent's context lightweight. Instead of loading the entire project structure into memory, it performs targeted disk-based queries.
- 
- ---
+Traditional Language Servers choke on large codebases. RocketIndex doesn't.
+
+- **Zero Compilation**: Pure syntactic analysis. Doesn't care if your code compiles, only that it parses.
+- **Monorepo Ready**: Handles repositories with 10,000+ files.
+- **Instant Access**: SQLite with WAL mode and memory-mapped I/O. Symbol lookups in milliseconds.
+- **Low Footprint**: Targeted disk-based queries instead of loading entire project into memory.
+
+---
 
 ## Quick Start
 
