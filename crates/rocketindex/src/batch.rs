@@ -192,55 +192,54 @@ impl BatchProcessor {
         }
 
         // Now process everything in a single transaction
-        let tx = index.begin_transaction()?;
-
-        // Process deletes first (in case a file was renamed)
-        for path in &deletes {
-            if let Err(e) = Self::clear_file_in_tx(&tx, path) {
-                tracing::warn!("Failed to clear file {:?}: {}", path, e);
-            } else {
-                stats.files_deleted += 1;
-            }
-        }
-
-        // Process updates
-        for (path, result) in &parsed_files {
-            // Clear existing data for this file
-            if let Err(e) = Self::clear_file_in_tx(&tx, path) {
-                tracing::warn!("Failed to clear file {:?}: {}", path, e);
-                continue;
-            }
-
-            // Insert symbols
-            for symbol in &result.symbols {
-                if let Err(e) = Self::insert_symbol_in_tx(&tx, symbol) {
-                    tracing::warn!("Failed to insert symbol {}: {}", symbol.name, e);
+        index.with_transaction(|tx| {
+            // Process deletes first (in case a file was renamed)
+            for path in &deletes {
+                if let Err(e) = Self::clear_file_in_tx(tx, path) {
+                    tracing::warn!("Failed to clear file {:?}: {}", path, e);
                 } else {
-                    stats.symbols_inserted += 1;
+                    stats.files_deleted += 1;
                 }
             }
 
-            // Insert references
-            for reference in &result.references {
-                if let Err(e) = Self::insert_reference_in_tx(&tx, path, reference) {
-                    tracing::warn!("Failed to insert reference: {}", e);
-                } else {
-                    stats.references_inserted += 1;
+            // Process updates
+            for (path, result) in &parsed_files {
+                // Clear existing data for this file
+                if let Err(e) = Self::clear_file_in_tx(tx, path) {
+                    tracing::warn!("Failed to clear file {:?}: {}", path, e);
+                    continue;
                 }
+
+                // Insert symbols
+                for symbol in &result.symbols {
+                    if let Err(e) = Self::insert_symbol_in_tx(tx, symbol) {
+                        tracing::warn!("Failed to insert symbol {}: {}", symbol.name, e);
+                    } else {
+                        stats.symbols_inserted += 1;
+                    }
+                }
+
+                // Insert references
+                for reference in &result.references {
+                    if let Err(e) = Self::insert_reference_in_tx(tx, path, reference) {
+                        tracing::warn!("Failed to insert reference: {}", e);
+                    } else {
+                        stats.references_inserted += 1;
+                    }
+                }
+
+                // Insert opens
+                for (line, open) in result.opens.iter().enumerate() {
+                    if let Err(e) = Self::insert_open_in_tx(tx, path, open, line as u32 + 1) {
+                        tracing::warn!("Failed to insert open: {}", e);
+                    }
+                }
+
+                stats.files_updated += 1;
             }
 
-            // Insert opens
-            for (line, open) in result.opens.iter().enumerate() {
-                if let Err(e) = Self::insert_open_in_tx(&tx, path, open, line as u32 + 1) {
-                    tracing::warn!("Failed to insert open: {}", e);
-                }
-            }
-
-            stats.files_updated += 1;
-        }
-
-        // Commit all changes atomically
-        tx.commit()?;
+            Ok(())
+        })?;
 
         stats.duration = flush_start.elapsed();
         Ok(stats)

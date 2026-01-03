@@ -49,6 +49,7 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -100,10 +101,18 @@ pub const DEFAULT_DB_NAME: &str = "index.db";
 /// let index = SqliteIndex::open(Path::new(".rocketindex/index.db")).unwrap();
 /// ```
 pub struct SqliteIndex {
-    conn: Connection,
+    /// Connection wrapped in Mutex for thread-safety.
+    /// This makes SqliteIndex Send + Sync, allowing it to be used across async tasks.
+    conn: Mutex<Connection>,
 }
 
 impl SqliteIndex {
+    /// Lock and return a reference to the underlying connection.
+    /// Panics if the mutex is poisoned.
+    fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().expect("SqliteIndex mutex poisoned")
+    }
+
     /// Create a new database at the given path, initializing the schema.
     /// Fails if the database already exists.
     pub fn create(path: &Path) -> Result<Self> {
@@ -115,7 +124,9 @@ impl SqliteIndex {
         }
 
         let conn = Connection::open(path)?;
-        let index = Self { conn };
+        let index = Self {
+            conn: Mutex::new(conn),
+        };
         index.init_schema()?;
         Ok(index)
     }
@@ -137,7 +148,9 @@ impl SqliteIndex {
              PRAGMA temp_store = MEMORY;",
         )?;
 
-        let index = Self { conn };
+        let index = Self {
+            conn: Mutex::new(conn),
+        };
 
         // Check and migrate schema if needed
         let version = index.get_schema_version()?;
@@ -160,7 +173,7 @@ impl SqliteIndex {
     fn migrate_schema(&self, from_version: u32) -> Result<()> {
         // Migration v3 -> v4: Add file_mtimes table
         if from_version < 4 {
-            self.conn.execute_batch(
+            self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS file_mtimes (
                     path TEXT PRIMARY KEY,
                     mtime INTEGER NOT NULL
@@ -189,7 +202,9 @@ impl SqliteIndex {
     /// Create an in-memory database (useful for testing).
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let index = Self { conn };
+        let index = Self {
+            conn: Mutex::new(conn),
+        };
         index.init_schema()?;
         Ok(index)
     }
@@ -198,7 +213,7 @@ impl SqliteIndex {
     fn init_schema(&self) -> Result<()> {
         // Performance tuning for write-heavy indexing
         // Note: synchronous=NORMAL is safe with WAL mode and has minimal overhead
-        self.conn.execute_batch(
+        self.conn().execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA cache_size = -64000;
@@ -206,7 +221,7 @@ impl SqliteIndex {
              PRAGMA temp_store = MEMORY;
              PRAGMA locking_mode = EXCLUSIVE;",
         )?;
-        self.conn.execute_batch(SCHEMA_SQL)?;
+        self.conn().execute_batch(SCHEMA_SQL)?;
         self.set_metadata("schema_version", &SCHEMA_VERSION.to_string())?;
         Ok(())
     }
@@ -214,7 +229,7 @@ impl SqliteIndex {
     /// Get the schema version from metadata.
     pub fn get_schema_version(&self) -> Result<u32> {
         let version: Option<String> = self
-            .conn
+            .conn()
             .query_row(
                 "SELECT value FROM metadata WHERE key = 'schema_version'",
                 [],
@@ -235,7 +250,7 @@ impl SqliteIndex {
 
     /// Set a metadata key-value pair.
     pub fn set_metadata(&self, key: &str, value: &str) -> Result<()> {
-        self.conn.execute(
+        self.conn().execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
             params![key, value],
         )?;
@@ -245,7 +260,7 @@ impl SqliteIndex {
     /// Get a metadata value by key.
     pub fn get_metadata(&self, key: &str) -> Result<Option<String>> {
         let value: Option<String> = self
-            .conn
+            .conn()
             .query_row(
                 "SELECT value FROM metadata WHERE key = ?1",
                 params![key],
@@ -261,7 +276,7 @@ impl SqliteIndex {
 
     /// Insert a symbol into the database. Returns the inserted row ID.
     pub fn insert_symbol(&self, symbol: &Symbol) -> Result<i64> {
-        self.conn.execute(
+        self.conn().execute(
             "INSERT INTO symbols (name, qualified, kind, file, line, column, end_line, end_column, visibility, source, language, parent, mixins, attributes, implements, doc, signature)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'syntactic', ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
@@ -283,12 +298,12 @@ impl SqliteIndex {
                 symbol.signature,
             ],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(self.conn().last_insert_rowid())
     }
 
     /// Insert a symbol with type signature.
     pub fn insert_symbol_with_type(&self, symbol: &Symbol, type_signature: &str) -> Result<i64> {
-        self.conn.execute(
+        self.conn().execute(
             "INSERT INTO symbols (name, qualified, kind, type_signature, file, line, column, end_line, end_column, visibility, source, language, parent, mixins, attributes, implements, doc, signature)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'semantic', ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
@@ -311,12 +326,13 @@ impl SqliteIndex {
                 symbol.signature,
             ],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(self.conn().last_insert_rowid())
     }
 
     /// Insert multiple symbols in a transaction for efficiency.
     pub fn insert_symbols(&self, symbols: &[Symbol]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO symbols (name, qualified, kind, file, line, column, end_line, end_column, visibility, language, source, parent, mixins, attributes, implements, doc, signature)
@@ -365,7 +381,7 @@ impl SqliteIndex {
             SYMBOL_COLUMNS
         );
         let symbol = self
-            .conn
+            .conn()
             .query_row(&query, params![qualified], row_to_symbol)
             .optional()?;
         Ok(symbol)
@@ -377,7 +393,8 @@ impl SqliteIndex {
             "SELECT {} FROM symbols WHERE qualified = ?1",
             SYMBOL_COLUMNS
         );
-        let mut stmt = self.conn.prepare(&query)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&query)?;
 
         let symbols = stmt
             .query_map(params![qualified], row_to_symbol)?
@@ -408,7 +425,8 @@ impl SqliteIndex {
                 SYMBOL_COLUMNS
             )
         };
-        let mut stmt = self.conn.prepare(&query)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&query)?;
 
         let symbols = if let Some(lang) = language {
             stmt.query_map(params![sql_pattern, lang, limit as i64], row_to_symbol)?
@@ -503,7 +521,8 @@ impl SqliteIndex {
                 prefixed_cols
             )
         };
-        let mut stmt = self.conn.prepare(&query)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&query)?;
 
         let symbols = if let Some(lang) = language {
             stmt.query_map(params![fts_query, lang, limit as i64], row_to_symbol)?
@@ -520,7 +539,8 @@ impl SqliteIndex {
     pub fn symbols_in_file(&self, file: &Path) -> Result<Vec<Symbol>> {
         let file_str = file.to_string_lossy();
         let query = format!("SELECT {} FROM symbols WHERE file = ?1", SYMBOL_COLUMNS);
-        let mut stmt = self.conn.prepare(&query)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&query)?;
 
         let symbols = stmt
             .query_map(params![file_str.as_ref()], row_to_symbol)?
@@ -532,7 +552,7 @@ impl SqliteIndex {
     /// Delete all symbols in a file.
     pub fn delete_symbols_in_file(&self, file: &Path) -> Result<usize> {
         let file_str = file.to_string_lossy();
-        let count = self.conn.execute(
+        let count = self.conn().execute(
             "DELETE FROM symbols WHERE file = ?1",
             params![file_str.as_ref()],
         )?;
@@ -542,7 +562,7 @@ impl SqliteIndex {
     /// Count total symbols in the index.
     pub fn count_symbols(&self) -> Result<usize> {
         let count: i64 = self
-            .conn
+            .conn()
             .query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get(0))?;
         Ok(count as usize)
     }
@@ -564,7 +584,8 @@ impl SqliteIndex {
         max_suggestions: usize,
     ) -> Result<Vec<crate::fuzzy::Suggestion>> {
         // Get all unique symbol names and qualified names
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
             "SELECT DISTINCT name FROM symbols
              UNION
              SELECT DISTINCT qualified FROM symbols",
@@ -632,7 +653,8 @@ impl SqliteIndex {
                 )
             };
 
-            let mut stmt = self.conn.prepare(&sql)?;
+            let conn = self.conn();
+            let mut stmt = conn.prepare(&sql)?;
             let result: Vec<Symbol> = if let Some(lang) = language {
                 stmt.query_map(
                     params![fts_query, lang, candidate_limit as i64],
@@ -688,7 +710,8 @@ impl SqliteIndex {
         } else {
             format!("SELECT {} FROM symbols LIMIT ?1", SYMBOL_COLUMNS)
         };
-        let mut stmt = self.conn.prepare(&sql)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&sql)?;
 
         let symbols: Vec<Symbol> = if let Some(lang) = language {
             stmt.query_map(params![lang, limit as i64], row_to_symbol)?
@@ -705,7 +728,8 @@ impl SqliteIndex {
     pub fn find_subclasses(&self, parent: &str) -> Result<Vec<Symbol>> {
         // First try exact match using the index (fast path)
         let query = format!("SELECT {} FROM symbols WHERE parent = ?1", SYMBOL_COLUMNS);
-        let mut stmt = self.conn.prepare(&query)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&query)?;
         let mut symbols: Vec<Symbol> = stmt
             .query_map(params![parent], row_to_symbol)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -713,7 +737,7 @@ impl SqliteIndex {
         // Also match with leading :: (e.g., "::Common::Client::Base")
         let prefixed = format!("::{}", parent);
         let query2 = format!("SELECT {} FROM symbols WHERE parent = ?1", SYMBOL_COLUMNS);
-        let mut stmt2 = self.conn.prepare(&query2)?;
+        let mut stmt2 = conn.prepare(&query2)?;
         let prefixed_symbols: Vec<Symbol> = stmt2
             .query_map(params![prefixed], row_to_symbol)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -732,7 +756,8 @@ impl SqliteIndex {
             "SELECT {} FROM symbols WHERE implements LIKE ?1",
             SYMBOL_COLUMNS
         );
-        let mut stmt = self.conn.prepare(&query)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&query)?;
         let symbols: Vec<Symbol> = stmt
             .query_map(params![pattern], row_to_symbol)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -742,9 +767,8 @@ impl SqliteIndex {
 
     /// List all indexed files.
     pub fn list_files(&self) -> Result<Vec<PathBuf>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT DISTINCT file FROM symbols ORDER BY file")?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT DISTINCT file FROM symbols ORDER BY file")?;
 
         let files = stmt
             .query_map([], |row| {
@@ -759,7 +783,7 @@ impl SqliteIndex {
     /// Get type signature for a symbol by qualified name.
     pub fn get_symbol_type(&self, qualified: &str) -> Result<Option<String>> {
         let type_sig: Option<String> = self
-            .conn
+            .conn()
             .query_row(
                 "SELECT type_signature FROM symbols WHERE qualified = ?1 AND type_signature IS NOT NULL LIMIT 1",
                 params![qualified],
@@ -771,7 +795,7 @@ impl SqliteIndex {
 
     /// Update type signature for existing symbol(s).
     pub fn update_symbol_type(&self, qualified: &str, type_signature: &str) -> Result<usize> {
-        let count = self.conn.execute(
+        let count = self.conn().execute(
             "UPDATE symbols SET type_signature = ?1, source = 'semantic' WHERE qualified = ?2",
             params![type_signature, qualified],
         )?;
@@ -785,7 +809,7 @@ impl SqliteIndex {
     /// Insert a reference.
     pub fn insert_reference(&self, file: &Path, reference: &Reference) -> Result<i64> {
         let file_str = file.to_string_lossy();
-        self.conn.execute(
+        self.conn().execute(
             "INSERT INTO refs (name, file, line, column) VALUES (?1, ?2, ?3, ?4)",
             params![
                 reference.name,
@@ -794,12 +818,13 @@ impl SqliteIndex {
                 reference.location.column,
             ],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(self.conn().last_insert_rowid())
     }
 
     /// Insert multiple references in a transaction for efficiency.
     pub fn insert_references(&self, refs: &[(&Path, &Reference)]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
         {
             let mut stmt =
                 tx.prepare("INSERT INTO refs (name, file, line, column) VALUES (?1, ?2, ?3, ?4)")?;
@@ -822,7 +847,8 @@ impl SqliteIndex {
     /// Matches exact name or qualified names ending with the name (e.g., "User" matches
     /// "User", "Module.User", "Module::User", "Namespace\User", etc.)
     pub fn find_references(&self, name: &str) -> Result<Vec<Reference>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
             "SELECT name, file, line, column FROM refs
              WHERE name = ?1
                 OR name LIKE '%.' || ?1
@@ -849,9 +875,8 @@ impl SqliteIndex {
     /// Get all references in a file.
     pub fn references_in_file(&self, file: &Path) -> Result<Vec<Reference>> {
         let file_str = file.to_string_lossy();
-        let mut stmt = self
-            .conn
-            .prepare("SELECT name, file, line, column FROM refs WHERE file = ?1")?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT name, file, line, column FROM refs WHERE file = ?1")?;
 
         let refs = stmt
             .query_map(params![file_str.as_ref()], |row| {
@@ -872,7 +897,7 @@ impl SqliteIndex {
     /// Delete all references in a file.
     pub fn delete_references_in_file(&self, file: &Path) -> Result<usize> {
         let file_str = file.to_string_lossy();
-        let count = self.conn.execute(
+        let count = self.conn().execute(
             "DELETE FROM refs WHERE file = ?1",
             params![file_str.as_ref()],
         )?;
@@ -886,16 +911,17 @@ impl SqliteIndex {
     /// Insert an open statement.
     pub fn insert_open(&self, file: &Path, module_path: &str, line: u32) -> Result<i64> {
         let file_str = file.to_string_lossy();
-        self.conn.execute(
+        self.conn().execute(
             "INSERT INTO opens (file, module_path, line) VALUES (?1, ?2, ?3)",
             params![file_str.as_ref(), module_path, line],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(self.conn().last_insert_rowid())
     }
 
     /// Insert multiple open statements in a transaction for efficiency.
     pub fn insert_opens(&self, opens: &[(&Path, &str, u32)]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
         {
             let mut stmt =
                 tx.prepare("INSERT INTO opens (file, module_path, line) VALUES (?1, ?2, ?3)")?;
@@ -912,9 +938,9 @@ impl SqliteIndex {
     /// Get all opens for a file.
     pub fn opens_for_file(&self, file: &Path) -> Result<Vec<String>> {
         let file_str = file.to_string_lossy();
-        let mut stmt = self
-            .conn
-            .prepare("SELECT module_path FROM opens WHERE file = ?1 ORDER BY line")?;
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT module_path FROM opens WHERE file = ?1 ORDER BY line")?;
 
         let opens = stmt
             .query_map(params![file_str.as_ref()], |row| row.get(0))?
@@ -926,7 +952,7 @@ impl SqliteIndex {
     /// Delete all opens in a file.
     pub fn delete_opens_in_file(&self, file: &Path) -> Result<usize> {
         let file_str = file.to_string_lossy();
-        let count = self.conn.execute(
+        let count = self.conn().execute(
             "DELETE FROM opens WHERE file = ?1",
             params![file_str.as_ref()],
         )?;
@@ -939,7 +965,7 @@ impl SqliteIndex {
 
     /// Insert a type member.
     pub fn insert_member(&self, member: &TypeMember) -> Result<i64> {
-        self.conn.execute(
+        self.conn().execute(
             "INSERT INTO members (type_name, member_name, member_type, kind) VALUES (?1, ?2, ?3, ?4)",
             params![
                 member.type_name,
@@ -948,12 +974,13 @@ impl SqliteIndex {
                 member_kind_to_str(member.kind),
             ],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(self.conn().last_insert_rowid())
     }
 
     /// Insert multiple type members in a transaction.
     pub fn insert_members(&self, members: &[TypeMember]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO members (type_name, member_name, member_type, kind) VALUES (?1, ?2, ?3, ?4)",
@@ -974,7 +1001,8 @@ impl SqliteIndex {
 
     /// Get all members of a type.
     pub fn get_members(&self, type_name: &str) -> Result<Vec<TypeMember>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
             "SELECT type_name, member_name, member_type, kind FROM members WHERE type_name = ?1",
         )?;
 
@@ -988,7 +1016,7 @@ impl SqliteIndex {
     /// Get a specific member of a type.
     pub fn get_member(&self, type_name: &str, member_name: &str) -> Result<Option<TypeMember>> {
         let member = self
-            .conn
+            .conn()
             .query_row(
                 "SELECT type_name, member_name, member_type, kind
                  FROM members WHERE type_name = ?1 AND member_name = ?2 LIMIT 1",
@@ -1001,7 +1029,7 @@ impl SqliteIndex {
 
     /// Delete all members of a type.
     pub fn delete_type_members(&self, type_name: &str) -> Result<usize> {
-        let count = self.conn.execute(
+        let count = self.conn().execute(
             "DELETE FROM members WHERE type_name = ?1",
             params![type_name],
         )?;
@@ -1010,7 +1038,7 @@ impl SqliteIndex {
 
     /// Clear all members (used before re-extraction).
     pub fn clear_all_members(&self) -> Result<usize> {
-        let count = self.conn.execute("DELETE FROM members", [])?;
+        let count = self.conn().execute("DELETE FROM members", [])?;
         Ok(count)
     }
 
@@ -1028,7 +1056,8 @@ impl SqliteIndex {
         references: &[Reference],
         opens: &[(String, u32)], // (module_path, line)
     ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
         let file_str = file.to_string_lossy();
 
         // Clear existing data
@@ -1117,9 +1146,17 @@ impl SqliteIndex {
         Ok(())
     }
 
-    /// Begin a transaction for batch operations.
-    pub fn begin_transaction(&self) -> Result<rusqlite::Transaction<'_>> {
-        Ok(self.conn.unchecked_transaction()?)
+    /// Execute a function within a transaction.
+    /// The transaction is automatically committed on success, rolled back on error.
+    pub fn with_transaction<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&rusqlite::Transaction<'_>) -> Result<R>,
+    {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let result = f(&tx)?;
+        tx.commit()?;
+        Ok(result)
     }
 
     // =========================================================================
@@ -1129,7 +1166,7 @@ impl SqliteIndex {
     /// Record the modification time of a file.
     pub fn set_file_mtime(&self, file: &Path, mtime: u64) -> Result<()> {
         let file_str = file.to_string_lossy();
-        self.conn.execute(
+        self.conn().execute(
             "INSERT OR REPLACE INTO file_mtimes (path, mtime) VALUES (?1, ?2)",
             params![file_str.as_ref(), mtime as i64],
         )?;
@@ -1140,7 +1177,7 @@ impl SqliteIndex {
     pub fn get_file_mtime(&self, file: &Path) -> Result<Option<u64>> {
         let file_str = file.to_string_lossy();
         let mtime: Option<i64> = self
-            .conn
+            .conn()
             .query_row(
                 "SELECT mtime FROM file_mtimes WHERE path = ?1",
                 params![file_str.as_ref()],
@@ -1153,7 +1190,7 @@ impl SqliteIndex {
     /// Delete the mtime record for a file.
     pub fn delete_file_mtime(&self, file: &Path) -> Result<()> {
         let file_str = file.to_string_lossy();
-        self.conn.execute(
+        self.conn().execute(
             "DELETE FROM file_mtimes WHERE path = ?1",
             params![file_str.as_ref()],
         )?;
@@ -1162,13 +1199,14 @@ impl SqliteIndex {
 
     /// Clear all mtime records.
     pub fn clear_all_mtimes(&self) -> Result<usize> {
-        let count = self.conn.execute("DELETE FROM file_mtimes", [])?;
+        let count = self.conn().execute("DELETE FROM file_mtimes", [])?;
         Ok(count)
     }
 
     /// Get all tracked file paths.
     pub fn get_tracked_files(&self) -> Result<Vec<PathBuf>> {
-        let mut stmt = self.conn.prepare("SELECT path FROM file_mtimes")?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT path FROM file_mtimes")?;
         let files = stmt
             .query_map([], |row| {
                 let path: String = row.get(0)?;
@@ -1193,7 +1231,8 @@ impl SqliteIndex {
         let mut stale = Vec::new();
 
         // Check tracked files for modifications/deletions
-        let mut stmt = self.conn.prepare("SELECT path, mtime FROM file_mtimes")?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT path, mtime FROM file_mtimes")?;
         let tracked: Vec<(String, i64)> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<std::result::Result<Vec<_>, _>>()?;

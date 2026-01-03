@@ -27,9 +27,6 @@ pub struct ProjectState {
     pub watching: bool,
 }
 
-// Safety: ProjectState is protected by a Mutex at the manager level
-unsafe impl Send for ProjectState {}
-
 impl ProjectState {
     /// Load a project from its root directory, auto-indexing if needed
     pub fn load(root: PathBuf) -> Result<Self> {
