@@ -39,8 +39,8 @@ LSPs are designed for editors where a cursor is already positioned on a symbol. 
 | Task | RocketIndex | LSP |
 |------|-------------|-----|
 | "Find `UserService.save`" | `find_definition("UserService.save")` | Find file containing text → position cursor → goToDefinition |
-| "Who calls this?" | `find_callers("save")` | ❌ Only "find references" (callers + callees mixed) |
-| "Trace the call graph" | `analyze_dependencies("main")` | ❌ Not available |
+| "Who calls this?" | `find_callers("save")` | Only "find references" (callers + callees mixed) |
+| "Trace the call graph" | `analyze_dependencies("main")` | Not available |
 
 LSPs also require language runtimes and often fail on incomplete code. RocketIndex uses pure syntactic analysis—it works on partial checkouts, broken builds, and across 15 languages with a single binary.
 
@@ -55,8 +55,8 @@ Source Files → Tree-sitter → AST → SQLite → Deterministic Queries
 | Capability | RocketIndex | LSP | Vector Search | Grep |
 |------------|-------------|-----|---------------|------|
 | Query model | Symbol name | File coordinates | Natural language | Pattern |
-| Find callers | ✅ Native | ❌ Refs only | ❌ | ❌ |
-| Dependency graph | ✅ Native | ❌ | ❌ | ❌ |
+| Find callers | Yes | Refs only | No | No |
+| Dependency graph | Yes | No | No | No |
 | Precision | Deterministic | Deterministic | Probabilistic | Noisy |
 | Best for | Navigation, refactoring | Type-aware edits | Exploration | Simple edits |
 
