@@ -691,6 +691,13 @@ fn cmd_index(
     let index_dir = root.join(".rocketindex");
     std::fs::create_dir_all(&index_dir).context("Failed to create index directory")?;
 
+    // SECURITY: Set directory permissions to 0700 (owner only)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&index_dir, std::fs::Permissions::from_mode(0o700));
+    }
+
     let db_path = index_dir.join(DEFAULT_DB_NAME);
 
     // Determine if we can do incremental indexing

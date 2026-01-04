@@ -60,32 +60,80 @@ impl McpConfig {
     }
 
     /// Save config to disk
+    ///
+    /// SECURITY: Sets restrictive permissions (0600) to protect project paths from other users.
     pub fn save(&self) -> anyhow::Result<()> {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+            // Set directory permissions to 0700 (owner only)
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
         }
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, content)?;
+        std::fs::write(&path, &content)?;
+
+        // SECURITY: Set file permissions to 0600 (owner read/write only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+
         Ok(())
     }
 
     /// Add a project to the config
-    pub fn add_project(&mut self, root: PathBuf) {
-        let canonical = root.canonicalize().unwrap_or(root);
-        if !self.projects.contains(&canonical) {
-            self.projects.push(canonical);
+    ///
+    /// SECURITY: Only accepts canonicalizable paths to prevent symlink attacks.
+    /// Returns true if added, false if already exists or path cannot be canonicalized.
+    pub fn add_project(&mut self, root: PathBuf) -> bool {
+        match root.canonicalize() {
+            Ok(canonical) => {
+                if !self.projects.contains(&canonical) {
+                    self.projects.push(canonical);
+                    true
+                } else {
+                    false // Already exists
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Cannot add project '{}': path canonicalization failed: {}",
+                    root.display(),
+                    e
+                );
+                false
+            }
         }
     }
 
     /// Remove a project from the config
+    ///
+    /// SECURITY: Requires path to be canonicalizable.
     pub fn remove_project(&mut self, root: &Path) -> bool {
-        let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        if let Some(pos) = self.projects.iter().position(|p| p == &canonical) {
-            self.projects.remove(pos);
-            true
-        } else {
-            false
+        match root.canonicalize() {
+            Ok(canonical) => {
+                if let Some(pos) = self.projects.iter().position(|p| p == &canonical) {
+                    self.projects.remove(pos);
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(_) => {
+                // Try matching the raw path as fallback for removal only
+                // This allows removing projects whose paths no longer exist
+                if let Some(pos) = self.projects.iter().position(|p| p == root) {
+                    self.projects.remove(pos);
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 }

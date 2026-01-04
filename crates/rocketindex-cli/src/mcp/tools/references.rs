@@ -57,23 +57,26 @@ pub async fn find_references(
     let mut all_results = Vec::new();
 
     for root in project_roots {
+        let context_lines = input.context_lines;
+        let root_for_context = root.clone();
         let result = manager
             .with_project(&root, |state| {
                 match state.sqlite.find_references(&input.symbol) {
                     Ok(refs) => refs
                         .into_iter()
                         .map(|r| {
-                            let context = if input.context_lines > 0 {
+                            let context = if context_lines > 0 {
                                 read_context(
                                     &r.location.file,
                                     r.location.line as usize,
-                                    input.context_lines,
+                                    context_lines,
+                                    &root_for_context,
                                 )
                             } else {
                                 None
                             };
                             ReferenceInfo {
-                                file: to_relative_path(&r.location.file, &root),
+                                file: to_relative_path(&r.location.file, &root_for_context),
                                 line: r.location.line,
                                 column: r.location.column,
                                 context,
@@ -108,8 +111,28 @@ pub async fn find_references(
 }
 
 /// Read context lines around a specific line
-fn read_context(file: &std::path::Path, line: usize, context: usize) -> Option<String> {
+///
+/// SECURITY: Validates that the file is within the project boundary before reading.
+fn read_context(
+    file: &std::path::Path,
+    line: usize,
+    context: usize,
+    project_root: &std::path::Path,
+) -> Option<String> {
     use std::io::BufRead;
+
+    // SECURITY: Validate file is within project boundary
+    let canonical_file = file.canonicalize().ok()?;
+    let canonical_root = project_root.canonicalize().ok()?;
+
+    if !canonical_file.starts_with(&canonical_root) {
+        tracing::warn!(
+            "Rejected file read outside project boundary: {} (project: {})",
+            file.display(),
+            project_root.display()
+        );
+        return None;
+    }
 
     let f = std::fs::File::open(file).ok()?;
     let reader = std::io::BufReader::new(f);

@@ -115,6 +115,8 @@ impl SqliteIndex {
 
     /// Create a new database at the given path, initializing the schema.
     /// Fails if the database already exists.
+    ///
+    /// SECURITY: Sets restrictive permissions (0600) to protect symbol data from other users.
     pub fn create(path: &Path) -> Result<Self> {
         if path.exists() {
             return Err(IndexError::IoError(std::io::Error::new(
@@ -128,6 +130,17 @@ impl SqliteIndex {
             conn: Mutex::new(conn),
         };
         index.init_schema()?;
+
+        // SECURITY: Set file permissions to 0600 (owner read/write only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+                // Log but don't fail - the database is still usable
+                tracing::warn!("Failed to set database permissions: {}", e);
+            }
+        }
+
         Ok(index)
     }
 

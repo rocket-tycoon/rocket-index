@@ -94,6 +94,13 @@ impl ProjectState {
             )
         })?;
 
+        // SECURITY: Set directory permissions to 0700 (owner only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&index_dir, std::fs::Permissions::from_mode(0o700));
+        }
+
         let db_path = index_dir.join("index.db");
 
         // Create SQLite index
@@ -278,7 +285,9 @@ impl ProjectManager {
     /// Register a project without persisting to config (for testing)
     #[cfg(test)]
     pub async fn register_in_memory(&self, root: PathBuf) -> Result<()> {
-        let canonical = root.canonicalize().unwrap_or(root);
+        let canonical = root
+            .canonicalize()
+            .with_context(|| format!("Failed to canonicalize path: {}", root.display()))?;
         let state = ProjectState::load(canonical.clone())?;
         let mut projects = self.projects.write().await;
         projects.insert(canonical.clone(), Mutex::new(state));
@@ -288,6 +297,7 @@ impl ProjectManager {
     /// Unregister a project
     #[allow(dead_code)]
     pub async fn unregister(&self, root: &Path) -> Result<bool> {
+        // For unregister, we allow non-canonical paths to support removing stale entries
         let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
 
         let removed = {
@@ -434,102 +444,18 @@ impl ProjectManager {
         projects.contains_key(&canonical)
     }
 
-    /// Ensure a project is registered, creating the index if necessary (JIT)
-    pub async fn ensure_registered(&self, root: PathBuf) -> Result<()> {
-        let canonical = root
-            .canonicalize()
-            .with_context(|| format!("Failed to canonicalize path: {}", root.display()))?;
-
-        // Try to register first
-        if self.register(canonical.clone()).await.is_err() {
-            // If failed, likely missing index. Try to create it.
-            info!("JIT indexing project: {}", canonical.display());
-
-            // Run rkt index (async to not block server)
-            let output = tokio::process::Command::new("rkt")
-                .arg("index")
-                .current_dir(&canonical)
-                .output()
-                .await
-                .with_context(|| "Failed to run 'rkt index'")?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                anyhow::bail!("JIT rkt index failed: {}", stderr);
-            }
-
-            // Try register again
-            self.register(canonical).await?;
-        }
-
-        Ok(())
-    }
-
     /// Get the default project based on CWD.
     ///
-    /// This is the key method for MCP tool default behavior:
-    /// 1. Check if CWD is inside a registered project
-    /// 2. If not, try to JIT-register the CWD as a project
-    /// 3. Return the project root (or None if CWD is not a valid project)
+    /// Returns the registered project containing the current working directory,
+    /// or None if CWD is not inside any registered project.
     ///
-    /// This ensures that when Claude Code calls tools without explicit project_root,
-    /// they operate on the project the user is working in rather than all projects.
+    /// SECURITY: We do NOT JIT-register projects. Users must explicitly register
+    /// projects with 'rkt serve add' or 'rkt index' to prevent arbitrary directory access.
     pub async fn default_project(&self) -> Option<PathBuf> {
         let cwd = std::env::current_dir().ok()?;
 
-        // First check if CWD is inside an already-registered project
-        if let Some(root) = self.project_for_file(&cwd).await {
-            return Some(root);
-        }
-
-        // CWD not in any registered project - try to JIT register it
-        // Only if it has a .rocketindex folder or source files we can index
-        if (cwd.join(".rocketindex").exists() || self.looks_like_project(&cwd))
-            && self.ensure_registered(cwd.clone()).await.is_ok()
-        {
-            // After registering, find which project root contains CWD
-            return self.project_for_file(&cwd).await;
-        }
-
-        None
-    }
-
-    /// Check if a directory looks like a project we should auto-index
-    fn looks_like_project(&self, dir: &Path) -> bool {
-        // Check for common project markers
-        let markers = [
-            "Cargo.toml",
-            "package.json",
-            "pyproject.toml",
-            "setup.py",
-            "Gemfile",
-            "go.mod",
-            ".git",
-            "*.fsproj",
-            "*.csproj",
-            "pom.xml",
-            "build.gradle",
-        ];
-
-        for marker in markers {
-            if marker.contains('*') {
-                // Glob pattern
-                if let Ok(entries) = std::fs::read_dir(dir) {
-                    for entry in entries.flatten() {
-                        if let Some(name) = entry.file_name().to_str() {
-                            let pattern = marker.replace('*', "");
-                            if name.ends_with(&pattern) {
-                                return true;
-                            }
-                        }
-                    }
-                }
-            } else if dir.join(marker).exists() {
-                return true;
-            }
-        }
-
-        false
+        // Return the registered project containing CWD, if any
+        self.project_for_file(&cwd).await
     }
 
     /// Get project roots for a tool invocation.

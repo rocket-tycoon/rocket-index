@@ -127,7 +127,7 @@ pub async fn find_definition(
     let mut output_results = Vec::new();
     for (root, sym) in results {
         let context_line = if input.include_context {
-            read_context_line(&sym.location.file, sym.location.line as usize)
+            read_context_line(&sym.location.file, sym.location.line as usize, &root)
         } else {
             None
         };
@@ -162,8 +162,29 @@ pub async fn find_definition(
 }
 
 /// Read a single line from a file for context
-fn read_context_line(file: &std::path::Path, line: usize) -> Option<String> {
+///
+/// SECURITY: Validates that the file is within the project boundary before reading.
+/// This prevents reading arbitrary files if symbol locations are manipulated.
+fn read_context_line(
+    file: &std::path::Path,
+    line: usize,
+    project_root: &std::path::Path,
+) -> Option<String> {
     use std::io::BufRead;
+
+    // SECURITY: Validate file is within project boundary
+    let canonical_file = file.canonicalize().ok()?;
+    let canonical_root = project_root.canonicalize().ok()?;
+
+    if !canonical_file.starts_with(&canonical_root) {
+        // File is outside project boundary - reject for security
+        tracing::warn!(
+            "Rejected file read outside project boundary: {} (project: {})",
+            file.display(),
+            project_root.display()
+        );
+        return None;
+    }
 
     let f = std::fs::File::open(file).ok()?;
     let reader = std::io::BufReader::new(f);

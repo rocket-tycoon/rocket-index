@@ -10,7 +10,10 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
 use serde_json::json;
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use super::config::McpConfig;
@@ -40,15 +43,71 @@ fn tool(name: &'static str, description: &'static str, schema: serde_json::Value
     }
 }
 
+/// Simple sliding window rate limiter for DoS protection.
+///
+/// SECURITY: Prevents resource exhaustion from rapid tool invocations.
+/// Uses a sliding window of timestamps to track request rate.
+struct RateLimiter {
+    /// Timestamps of recent requests within the window
+    timestamps: Mutex<VecDeque<Instant>>,
+    /// Maximum requests allowed in the window
+    max_requests: usize,
+    /// Time window for rate limiting
+    window: Duration,
+}
+
+impl RateLimiter {
+    /// Create a new rate limiter
+    fn new(max_requests: usize, window: Duration) -> Self {
+        Self {
+            timestamps: Mutex::new(VecDeque::with_capacity(max_requests + 1)),
+            max_requests,
+            window,
+        }
+    }
+
+    /// Check if a request is allowed. Returns true if allowed, false if rate limited.
+    async fn check(&self) -> bool {
+        let mut timestamps = self.timestamps.lock().await;
+        let now = Instant::now();
+
+        // Remove expired timestamps
+        while let Some(&oldest) = timestamps.front() {
+            if now.duration_since(oldest) > self.window {
+                timestamps.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        // Check if we're at the limit
+        if timestamps.len() >= self.max_requests {
+            false
+        } else {
+            timestamps.push_back(now);
+            true
+        }
+    }
+}
+
 /// RocketIndex MCP server
 pub struct RocketIndexServer {
     manager: Arc<ProjectManager>,
+    rate_limiter: RateLimiter,
 }
 
 impl RocketIndexServer {
+    /// Maximum tool calls per second (rate limit)
+    const RATE_LIMIT_REQUESTS: usize = 30;
+    /// Rate limit window duration
+    const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
+
     /// Create a new RocketIndex MCP server
     pub fn new(manager: Arc<ProjectManager>) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            rate_limiter: RateLimiter::new(Self::RATE_LIMIT_REQUESTS, Self::RATE_LIMIT_WINDOW),
+        }
     }
 
     /// Build the list of available tools
@@ -247,7 +306,16 @@ impl ServerHandler for RocketIndexServer {
         _context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
         let manager = self.manager.clone();
+        let rate_limiter = &self.rate_limiter;
         async move {
+            // SECURITY: Rate limiting to prevent DoS via tool spam
+            if !rate_limiter.check().await {
+                warn!("Rate limit exceeded for tool call");
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Rate limit exceeded. Please slow down requests.",
+                )]));
+            }
+
             let name = request.name.as_ref();
             let args = request
                 .arguments

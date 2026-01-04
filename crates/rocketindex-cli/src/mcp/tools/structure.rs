@@ -28,24 +28,19 @@ pub async fn describe_project(
 
     // Find the project root for this path
     // We allow passing a subdirectory, but we generally want the root
+    // SECURITY: We do NOT JIT-index arbitrary paths. Only registered projects are accessible.
     let project_root = match manager.project_for_file(&path).await {
         Some(root) => root,
         None => {
-            // Check if it is a root itself
-            // Check if it is a root itself
+            // Check if it is a registered root itself
             if manager.has_project(&path).await {
                 path
             } else {
-                // JIT: Try to ensure it is registered/indexed
-                match manager.ensure_registered(path.clone()).await {
-                    Ok(_) => path,
-                    Err(e) => {
-                        return CallToolResult::error(vec![Content::text(format!(
-                            "Path '{}' is not a registered project and JIT indexing failed: {}. Register it with 'rkt index' first.",
-                            input.path, e
-                        ))]);
-                    }
-                }
+                // SECURITY: Reject unregistered paths to prevent arbitrary directory access
+                return CallToolResult::error(vec![Content::text(format!(
+                    "Path '{}' is not a registered project. Register it first with 'rkt serve add {}' or run 'rkt index' in that directory.",
+                    input.path, input.path
+                ))]);
             }
         }
     };
