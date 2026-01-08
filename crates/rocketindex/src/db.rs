@@ -918,6 +918,251 @@ impl SqliteIndex {
     }
 
     // =========================================================================
+    // Ranking Operations
+    // =========================================================================
+
+    /// Rank symbols by importance using file diversity.
+    ///
+    /// Returns symbols sorted by how many distinct files reference them,
+    /// with secondary sorting by symbol kind and visibility.
+    ///
+    /// # Arguments
+    /// * `limit` - Maximum number of symbols to return
+    ///
+    /// # Algorithm
+    /// Symbols are ranked by:
+    /// 1. File diversity (distinct files referencing the symbol)
+    /// 2. Symbol kind weight (module > class > function > variable)
+    /// 3. Visibility (public > internal > private)
+    /// 4. Total reference count (tiebreaker)
+    pub fn rank_symbols(&self, limit: usize) -> Result<Vec<crate::ranking::RankedSymbol>> {
+        use crate::ranking::{compute_score, RankedSymbol, RankingConfig};
+
+        let conn = self.conn();
+
+        // Query symbols with their reference counts
+        // We match refs to symbols by:
+        // - Exact name match (e.g., "User" matches "User")
+        // - Qualified name ending (e.g., "Module.User" refs match "User" symbol)
+        let mut stmt = conn.prepare(
+            // NOTE: Using exact name match only for performance.
+            // LIKE patterns ('%.' || s.name) are too slow with millions of refs.
+            // This may under-count qualified references but is 100x faster.
+            r#"
+            SELECT
+                s.name, s.qualified, s.kind, s.file, s.line, s.column,
+                s.end_line, s.end_column, s.visibility, s.language,
+                s.parent, s.mixins, s.attributes, s.implements, s.doc, s.signature,
+                COUNT(DISTINCT r.file) as file_diversity,
+                COUNT(r.id) as total_refs
+            FROM symbols s
+            LEFT JOIN refs r ON (
+                r.name = s.name
+                OR r.name = s.qualified
+            )
+            GROUP BY s.qualified
+            ORDER BY
+                file_diversity DESC,
+                CASE s.kind
+                    WHEN 'module' THEN 5
+                    WHEN 'class' THEN 4
+                    WHEN 'interface' THEN 4
+                    WHEN 'trait' THEN 4
+                    WHEN 'record' THEN 3
+                    WHEN 'union' THEN 3
+                    WHEN 'enum' THEN 3
+                    WHEN 'type' THEN 2
+                    WHEN 'function' THEN 2
+                    ELSE 1
+                END DESC,
+                CASE s.visibility
+                    WHEN 'public' THEN 3
+                    WHEN 'internal' THEN 2
+                    ELSE 1
+                END DESC,
+                total_refs DESC
+            LIMIT ?1
+            "#,
+        )?;
+
+        let config = RankingConfig::default();
+
+        let results = stmt
+            .query_map(params![limit as i64], |row| {
+                let symbol = row_to_symbol(row)?;
+                let file_diversity: i64 = row.get(16)?;
+                let total_refs: i64 = row.get(17)?;
+
+                let score = compute_score(
+                    file_diversity as usize,
+                    total_refs as usize,
+                    symbol.kind,
+                    symbol.visibility,
+                    &config,
+                );
+
+                Ok(RankedSymbol {
+                    symbol,
+                    file_diversity: file_diversity as usize,
+                    total_refs: total_refs as usize,
+                    score,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(results)
+    }
+
+    /// Count references to a specific symbol.
+    ///
+    /// Returns (file_diversity, total_refs) tuple.
+    pub fn count_symbol_references(&self, qualified: &str, name: &str) -> Result<(usize, usize)> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT
+                COUNT(DISTINCT file) as file_diversity,
+                COUNT(*) as total_refs
+            FROM refs
+            WHERE name = ?1 OR name = ?2
+            "#,
+        )?;
+
+        let (file_diversity, total_refs): (i64, i64) = stmt
+            .query_row(params![name, qualified], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?;
+
+        Ok((file_diversity as usize, total_refs as usize))
+    }
+
+    /// Rank symbols with top N per file using window functions.
+    ///
+    /// This ensures every file is represented with its most important symbols,
+    /// rather than just showing globally top symbols (which might all be in one file).
+    ///
+    /// # Arguments
+    /// * `symbols_per_file` - Maximum symbols to return per file
+    /// * `max_files` - Maximum number of files to include (0 = unlimited)
+    pub fn rank_symbols_per_file(
+        &self,
+        symbols_per_file: usize,
+        max_files: usize,
+    ) -> Result<Vec<crate::ranking::RankedSymbol>> {
+        use crate::ranking::{compute_score, RankedSymbol, RankingConfig};
+
+        let conn = self.conn();
+
+        // Use window function to rank symbols within each file
+        // Then filter to top N per file
+        let mut stmt = conn.prepare(
+            r#"
+            WITH ranked_refs AS (
+                SELECT
+                    s.name, s.qualified, s.kind, s.file, s.line, s.column,
+                    s.end_line, s.end_column, s.visibility, s.language,
+                    s.parent, s.mixins, s.attributes, s.implements, s.doc, s.signature,
+                    COUNT(DISTINCT r.file) as file_diversity,
+                    COUNT(r.id) as total_refs
+                FROM symbols s
+                LEFT JOIN refs r ON (r.name = s.name OR r.name = s.qualified)
+                GROUP BY s.qualified
+            ),
+            per_file_ranked AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY file
+                        ORDER BY
+                            file_diversity DESC,
+                            CASE kind
+                                WHEN 'module' THEN 5
+                                WHEN 'class' THEN 4
+                                WHEN 'interface' THEN 4
+                                WHEN 'record' THEN 3
+                                WHEN 'union' THEN 3
+                                ELSE 1
+                            END DESC,
+                            total_refs DESC
+                    ) as rank_in_file
+                FROM ranked_refs
+            )
+            SELECT
+                name, qualified, kind, file, line, column,
+                end_line, end_column, visibility, language,
+                parent, mixins, attributes, implements, doc, signature,
+                file_diversity, total_refs
+            FROM per_file_ranked
+            WHERE rank_in_file <= ?1
+            ORDER BY file, rank_in_file
+            "#,
+        )?;
+
+        let config = RankingConfig::default();
+
+        let results: Vec<RankedSymbol> = stmt
+            .query_map(params![symbols_per_file as i64], |row| {
+                let symbol = row_to_symbol(row)?;
+                let file_diversity: i64 = row.get(16)?;
+                let total_refs: i64 = row.get(17)?;
+
+                let score = compute_score(
+                    file_diversity as usize,
+                    total_refs as usize,
+                    symbol.kind,
+                    symbol.visibility,
+                    &config,
+                );
+
+                Ok(RankedSymbol {
+                    symbol,
+                    file_diversity: file_diversity as usize,
+                    total_refs: total_refs as usize,
+                    score,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // Apply max_files limit if specified
+        if max_files > 0 {
+            let mut seen_files = std::collections::HashSet::new();
+            let filtered: Vec<_> = results
+                .into_iter()
+                .filter(|r| {
+                    if seen_files.len() >= max_files
+                        && !seen_files.contains(&r.symbol.location.file)
+                    {
+                        false
+                    } else {
+                        seen_files.insert(r.symbol.location.file.clone());
+                        true
+                    }
+                })
+                .collect();
+            return Ok(filtered);
+        }
+
+        Ok(results)
+    }
+
+    /// Get all symbols ordered by file, then by line.
+    ///
+    /// This is a single-query alternative to calling `symbols_in_file()` for each file,
+    /// avoiding the N+1 query problem.
+    pub fn get_all_symbols_ordered(&self) -> Result<Vec<Symbol>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {} FROM symbols ORDER BY file, line",
+            SYMBOL_COLUMNS
+        ))?;
+
+        let symbols = stmt
+            .query_map([], row_to_symbol)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(symbols)
+    }
+
+    // =========================================================================
     // Opens Operations
     // =========================================================================
 
@@ -1833,6 +2078,125 @@ mod tests {
 
         let refs = index.references_in_file(Path::new("src/Main.fs")).unwrap();
         assert_eq!(refs.len(), 2);
+    }
+
+    // =========================================================================
+    // Ranking Tests
+    // =========================================================================
+
+    #[test]
+    fn test_rank_symbols_by_file_diversity() {
+        let index = SqliteIndex::in_memory().unwrap();
+
+        // Symbol A: referenced from 3 different files
+        let sym_a = make_symbol("UserService", "app.UserService", "src/services.rs", 10);
+        index.insert_symbol(&sym_a).unwrap();
+
+        // Symbol B: referenced many times but only from 1 file
+        let sym_b = make_symbol("HelperUtils", "app.HelperUtils", "src/utils.rs", 20);
+        index.insert_symbol(&sym_b).unwrap();
+
+        // Add references for UserService from 3 different files
+        for (file, line) in [
+            ("src/main.rs", 5),
+            ("src/handler.rs", 10),
+            ("src/api.rs", 15),
+        ] {
+            index
+                .insert_reference(
+                    Path::new(file),
+                    &Reference {
+                        name: "UserService".to_string(),
+                        location: Location::new(PathBuf::from(file), line, 1),
+                    },
+                )
+                .unwrap();
+        }
+
+        // Add references for HelperUtils from 1 file (10 times)
+        for line in 1..=10 {
+            index
+                .insert_reference(
+                    Path::new("src/utils.rs"),
+                    &Reference {
+                        name: "HelperUtils".to_string(),
+                        location: Location::new(PathBuf::from("src/utils.rs"), line, 1),
+                    },
+                )
+                .unwrap();
+        }
+
+        let ranked = index.rank_symbols(10).unwrap();
+
+        // UserService should be ranked higher due to file diversity
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].symbol.name, "UserService");
+        assert_eq!(ranked[0].file_diversity, 3);
+        assert_eq!(ranked[1].symbol.name, "HelperUtils");
+        assert_eq!(ranked[1].file_diversity, 1);
+    }
+
+    #[test]
+    fn test_rank_symbols_empty_index() {
+        let index = SqliteIndex::in_memory().unwrap();
+        let ranked = index.rank_symbols(10).unwrap();
+        assert!(ranked.is_empty());
+    }
+
+    #[test]
+    fn test_rank_symbols_respects_limit() {
+        let index = SqliteIndex::in_memory().unwrap();
+
+        // Add 5 symbols
+        for i in 1..=5 {
+            let sym = make_symbol(
+                &format!("Sym{}", i),
+                &format!("app.Sym{}", i),
+                "src/lib.rs",
+                i,
+            );
+            index.insert_symbol(&sym).unwrap();
+        }
+
+        let ranked = index.rank_symbols(2).unwrap();
+        assert_eq!(ranked.len(), 2);
+    }
+
+    #[test]
+    fn test_count_symbol_references() {
+        let index = SqliteIndex::in_memory().unwrap();
+
+        let sym = make_symbol("User", "app.User", "src/models.rs", 10);
+        index.insert_symbol(&sym).unwrap();
+
+        // Add references from 2 different files
+        for file in ["src/main.rs", "src/handler.rs"] {
+            index
+                .insert_reference(
+                    Path::new(file),
+                    &Reference {
+                        name: "User".to_string(),
+                        location: Location::new(PathBuf::from(file), 5, 1),
+                    },
+                )
+                .unwrap();
+        }
+
+        // Add another reference from main.rs (same file)
+        index
+            .insert_reference(
+                Path::new("src/main.rs"),
+                &Reference {
+                    name: "User".to_string(),
+                    location: Location::new(PathBuf::from("src/main.rs"), 10, 1),
+                },
+            )
+            .unwrap();
+
+        let (file_diversity, total_refs) =
+            index.count_symbol_references("app.User", "User").unwrap();
+        assert_eq!(file_diversity, 2); // 2 unique files
+        assert_eq!(total_refs, 3); // 3 total references
     }
 
     // =========================================================================

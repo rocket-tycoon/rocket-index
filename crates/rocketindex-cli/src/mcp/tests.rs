@@ -1,7 +1,3 @@
-// Allow holding std::sync::Mutex across await - these tests intentionally
-// serialize CWD modifications and the lock is never contended in practice.
-#![allow(clippy::await_holding_lock)]
-
 use super::*;
 use crate::mcp::tools::definition::{find_definition, FindDefinitionInput};
 use crate::mcp::tools::structure::{describe_project, DescribeProjectInput};
@@ -10,8 +6,8 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 /// Mutex to serialize tests that modify the global CWD.
-/// This prevents race conditions when tests run in parallel.
-static CWD_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Uses tokio::sync::Mutex to avoid blocking the async runtime when contended.
+static CWD_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn setup_project() -> (TempDir, Arc<ProjectManager>) {
     let dir = TempDir::new().unwrap();
@@ -44,7 +40,7 @@ async fn setup_project() -> (TempDir, Arc<ProjectManager>) {
     // Setup Manager
     // We construct a ProjectManager, which reads global config (safe as we don't save back)
     // Then we manually "register" the project in memory
-    let manager = ProjectManager::new().await.unwrap();
+    let manager = ProjectManager::new_empty().await.unwrap();
     manager
         .register_in_memory(root.to_path_buf())
         .await
@@ -57,7 +53,7 @@ async fn setup_project() -> (TempDir, Arc<ProjectManager>) {
 #[tokio::test]
 async fn test_fuzzy_fallback_success() {
     // Acquire CWD lock to prevent interference from CWD-modifying tests
-    let _guard = CWD_MUTEX.lock().unwrap();
+    let _guard = CWD_MUTEX.lock().await;
 
     let (dir, manager) = setup_project().await;
 
@@ -89,6 +85,8 @@ async fn test_describe_project() {
 
     let input = DescribeProjectInput {
         path: dir.path().to_str().unwrap().to_string(),
+        detail: None,
+        max_symbols: None,
     };
 
     let result = describe_project(manager, input).await;
@@ -134,8 +132,8 @@ async fn test_staleness_warning() {
 }
 
 #[tokio::test]
-async fn test_jit_describe_project() {
-    // Setup without manual register
+async fn test_unregistered_project_requires_registration() {
+    // Setup without manual registration - SECURITY: JIT registration is disabled
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     let db_path = root.join(".rocketindex").join("index.db");
@@ -144,19 +142,28 @@ async fn test_jit_describe_project() {
     // Drop index to release lock
     drop(index);
 
-    let manager = ProjectManager::new().await.unwrap();
+    let manager = ProjectManager::new_empty().await.unwrap();
     // Do NOT register manually
 
     let input = DescribeProjectInput {
         path: root.to_str().unwrap().to_string(),
+        detail: None,
+        max_symbols: None,
     };
 
     let result = describe_project(Arc::new(manager), input).await;
     let json = serde_json::to_string(&result).unwrap();
 
-    // Should succeed because index exists, so ensure_registered succeeds
-    assert!(!json.contains("\"isError\":true"));
-    assert!(json.contains("# Project Map"));
+    // Should FAIL because project is not registered (JIT disabled for security)
+    assert!(
+        json.contains("\"isError\":true"),
+        "Unregistered projects should return an error"
+    );
+    assert!(
+        json.contains("not a registered project"),
+        "Error should mention registration: {}",
+        json
+    );
 }
 
 #[tokio::test]
@@ -164,7 +171,7 @@ async fn test_find_definition_hint() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     let file_path = root.join("foo.rs"); // Unregistered file
-    let manager = Arc::new(ProjectManager::new().await.unwrap());
+    let manager = Arc::new(ProjectManager::new_empty().await.unwrap());
 
     let input = FindDefinitionInput {
         symbol: "foo".to_string(),
@@ -184,7 +191,7 @@ async fn test_find_definition_hint() {
 #[tokio::test]
 async fn test_cwd_based_project_resolution() {
     // Acquire the CWD mutex to prevent other tests from running while we modify CWD
-    let _guard = CWD_MUTEX.lock().unwrap();
+    let _guard = CWD_MUTEX.lock().await;
 
     // Setup a project with an index
     let dir = TempDir::new().unwrap();
@@ -221,9 +228,16 @@ async fn test_cwd_based_project_resolution() {
     // Change CWD to the test project
     std::env::set_current_dir(root).unwrap();
 
-    // Create a fresh ProjectManager (after CWD change)
-    // The manager should auto-detect and JIT-register the CWD project
-    let manager = Arc::new(ProjectManager::new().await.unwrap());
+    // Create a fresh ProjectManager and register the test project
+    eprintln!("TEST: Creating manager");
+    let manager = ProjectManager::new_empty().await.unwrap();
+    eprintln!("TEST: Registering project");
+    manager
+        .register_in_memory(root.to_path_buf())
+        .await
+        .unwrap();
+    let manager = Arc::new(manager);
+    eprintln!("TEST: Manager ready");
 
     // Call find_definition WITHOUT project_root - should use CWD
     let input = FindDefinitionInput {
@@ -233,7 +247,9 @@ async fn test_cwd_based_project_resolution() {
         include_context: false,
     };
 
+    eprintln!("TEST: Calling find_definition");
     let result = find_definition(manager, input).await;
+    eprintln!("TEST: find_definition returned");
     let json = serde_json::to_string(&result).unwrap();
 
     // Restore original CWD before assertions (ensures cleanup even if assertions fail)
@@ -260,7 +276,7 @@ async fn test_cwd_based_project_resolution() {
 #[tokio::test]
 async fn test_mcp_tools_use_relative_paths() {
     // Acquire CWD lock to prevent interference
-    let _guard = CWD_MUTEX.lock().unwrap();
+    let _guard = CWD_MUTEX.lock().await;
 
     let (dir, manager) = setup_project().await;
     let root_str = dir.path().to_str().unwrap();

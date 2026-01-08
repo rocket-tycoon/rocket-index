@@ -235,6 +235,10 @@ impl ProjectManager {
         drop(config);
 
         for path in project_paths {
+            // Skip non-existent paths (stale entries from previous runs)
+            if !path.exists() {
+                continue;
+            }
             if let Err(e) = self.register(path.clone()).await {
                 warn!("Failed to load project {}: {}", path.display(), e);
             }
@@ -292,6 +296,15 @@ impl ProjectManager {
         let mut projects = self.projects.write().await;
         projects.insert(canonical.clone(), Mutex::new(state));
         Ok(())
+    }
+
+    /// Create a ProjectManager without loading from global config (for testing)
+    #[cfg(test)]
+    pub async fn new_empty() -> Result<Self> {
+        Ok(Self {
+            projects: Arc::new(RwLock::new(HashMap::new())),
+            config: Arc::new(RwLock::new(McpConfig::default())),
+        })
     }
 
     /// Unregister a project

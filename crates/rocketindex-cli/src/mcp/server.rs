@@ -213,13 +213,22 @@ impl RocketIndexServer {
             ),
             tool(
                 "describe_project",
-                "Generates a semantic map of the project structure, listing files and top-level symbols (classes, modules, functions). Use this tool FIRST when entering a new codebase or directory to build a mental model of the architecture. It provides a structured hierarchy that is much easier to parse than raw file listings.",
+                "Generates a semantic map of the project structure, listing files and top-level symbols (classes, modules, functions). Use this tool FIRST when entering a new codebase or directory to build a mental model of the architecture. By default, shows the most important symbols ranked by how widely they are referenced across the codebase.",
                 json!({
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
                             "description": "The path to the project root directory or subdirectory to describe."
+                        },
+                        "detail": {
+                            "type": "string",
+                            "enum": ["summary", "normal", "full"],
+                            "description": "Detail level: 'summary' (default) shows top N most important symbols ranked by reference count, 'normal' shows all files with ranked symbols, 'full' shows all symbols without ranking."
+                        },
+                        "max_symbols": {
+                            "type": "integer",
+                            "description": "Maximum symbols to show (default: 50). Only applies to 'summary' and 'normal' detail levels."
                         }
                     },
                     "required": ["path"]
