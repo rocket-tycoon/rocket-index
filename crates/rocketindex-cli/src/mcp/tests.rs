@@ -274,6 +274,60 @@ async fn test_cwd_based_project_resolution() {
 }
 
 #[tokio::test]
+async fn test_describe_project_empty_index_shows_helpful_message() {
+    // Bug reproduction: When index.db exists but has 0 symbols,
+    // describe_project should explain how to fix it, not just show the header.
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+
+    // Create an EMPTY index (no symbols, no files)
+    let db_path = root.join(".rocketindex").join("index.db");
+    std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let index = SqliteIndex::create(&db_path).unwrap();
+    // Don't insert any symbols - simulates index created before source files existed
+    drop(index);
+
+    // Register the project
+    let manager = ProjectManager::new_empty().await.unwrap();
+    manager
+        .register_in_memory(root.to_path_buf())
+        .await
+        .unwrap();
+
+    let input = DescribeProjectInput {
+        path: root.to_str().unwrap().to_string(),
+        detail: None,
+        max_symbols: None,
+    };
+
+    let result = describe_project(Arc::new(manager), input).await;
+    let json = serde_json::to_string(&result).unwrap();
+
+    println!("Empty index result:\n{}", json);
+
+    // Should NOT be an error
+    assert!(
+        !json.contains("\"isError\":true"),
+        "Empty index should not be an error: {}",
+        json
+    );
+
+    // Should contain helpful message explaining the empty state
+    assert!(
+        json.contains("No symbols indexed") || json.contains("No symbols found"),
+        "Should explain that no symbols were found: {}",
+        json
+    );
+
+    // Should suggest running `rkt index` to fix
+    assert!(
+        json.contains("rkt index"),
+        "Should suggest running 'rkt index' to populate the index: {}",
+        json
+    );
+}
+
+#[tokio::test]
 async fn test_mcp_tools_use_relative_paths() {
     // Acquire CWD lock to prevent interference
     let _guard = CWD_MUTEX.lock().await;

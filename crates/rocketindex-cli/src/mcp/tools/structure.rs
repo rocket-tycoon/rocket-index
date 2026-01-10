@@ -141,7 +141,22 @@ fn format_ranked_summary(
     match state.sqlite.rank_symbols(max_symbols) {
         Ok(ranked) => {
             if ranked.is_empty() {
-                output.push_str("No symbols found in the project.\n");
+                // Check if this is a stale/empty index
+                let symbol_count = state.sqlite.count_symbols().unwrap_or(0);
+                if symbol_count == 0 {
+                    output.push_str("No symbols indexed.\n\n");
+                    output.push_str(
+                        "The index exists but contains no symbols. This can happen if:\n",
+                    );
+                    output.push_str("- The index was created before source files were added\n");
+                    output.push_str("- Source files use an unsupported language\n\n");
+                    output.push_str(&format!(
+                        "To fix, run `rkt index` in `{}`\n",
+                        project_root.display()
+                    ));
+                } else {
+                    output.push_str("No symbols found matching the query.\n");
+                }
                 return output;
             }
 
@@ -189,7 +204,17 @@ fn format_ranked_by_file(
     {
         Ok(ranked) => {
             if ranked.is_empty() {
-                output.push_str("No symbols found in the project.\n");
+                // Check if this is a stale/empty index
+                let symbol_count = state.sqlite.count_symbols().unwrap_or(0);
+                if symbol_count == 0 {
+                    output.push_str("No symbols indexed.\n\n");
+                    output.push_str(&format!(
+                        "Run `rkt index` in `{}` to populate the index.\n",
+                        project_root.display()
+                    ));
+                } else {
+                    output.push_str("No symbols found in the project.\n");
+                }
                 return output;
             }
 
