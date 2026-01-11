@@ -14,7 +14,16 @@ use std::path::Path;
 ///
 /// Note: `packages` was removed because pnpm/npm/yarn workspaces use it for
 /// source code. NuGet packages contain mostly binaries that aren't indexed anyway.
-pub const DEFAULT_EXCLUDE_DIRS: &[&str] = &["node_modules", "bin", "obj", ".git", ".vs", ".idea"];
+pub const DEFAULT_EXCLUDE_DIRS: &[&str] = &[
+    "node_modules",
+    "bin",
+    "obj",
+    ".git",
+    ".vs",
+    ".idea",
+    "target",
+    "dist",
+];
 
 /// RocketIndex configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
