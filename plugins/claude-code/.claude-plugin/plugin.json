@@ -1,6 +1,6 @@
 {
   "name": "rocketindex",
-  "version": "0.1.0-beta.32",
+  "version": "0.1.0-beta.33",
   "description": "Semantic code navigation - find callers, definitions, and dependencies without grep",
   "author": {
     "name": "Rocket Tycoon",
