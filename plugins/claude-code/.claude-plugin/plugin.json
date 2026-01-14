@@ -1,6 +1,6 @@
 {
   "name": "rocketindex",
-  "version": "0.1.0-beta.33",
+  "version": "0.1.0-beta.35",
   "description": "Semantic code navigation - find callers, definitions, and dependencies without grep",
   "author": {
     "name": "Rocket Tycoon",
@@ -15,6 +15,5 @@
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/rkt-wrapper.sh",
       "args": ["serve"]
     }
-  },
-  "hooks": "./hooks/hooks.json"
+  }
 }
